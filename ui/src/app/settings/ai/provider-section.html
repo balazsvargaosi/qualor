@@ -623,6 +623,38 @@
                 5 to 600. AI review calls always wait at least 300 seconds.
               </p>
             </div>
+            <div class="fold-field">
+              <label
+                class="lbl"
+                for="ai-context-window"
+                [class.changed]="changed().has('contextWindow')"
+                >{{ texts.contextWindow }}</label
+              >
+              <div class="num-line">
+                <q-number-field
+                  inputId="ai-context-window"
+                  [digits]="10"
+                  [unit]="texts.tokens"
+                  [value]="draft().contextWindow"
+                  [invalid]="errorOf('context-window') !== null"
+                  [describedBy]="
+                    errorOf('context-window')
+                      ? 'ai-context-window-error ai-context-window-hint'
+                      : 'ai-context-window-hint'
+                  "
+                  (valueChange)="setContextWindow($event)"
+                />
+              </div>
+              @if (errorOf('context-window'); as message) {
+                <p id="ai-context-window-error" class="field-error">
+                  <q-icon name="alert" />{{ message }}
+                </p>
+              }
+              <p id="ai-context-window-hint" class="hint" i18n="@@aiProvider.contextWindow.hint">
+                The most the model reads in one call, in tokens. Empty means 1,000,000. With several
+                models, give the smallest of their windows.
+              </p>
+            </div>
             @if (draft().kind === 'openai') {
               <div class="switch-row">
                 <input

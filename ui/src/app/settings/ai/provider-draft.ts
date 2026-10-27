@@ -46,6 +46,8 @@ export interface Draft {
   json: boolean;
   maxTokensField: OutputLimit;
   timeout: string;
+  /** Empty means the default (1 000 000 tokens). */
+  contextWindow: string;
   temperatureSet: boolean;
   temperature: string;
   /** Remove the key was pressed: a save removes the stored key. */
@@ -68,6 +70,7 @@ export const FIELDS = [
   'price-fast-input',
   'price-fast-output',
   'timeout',
+  'context-window',
   'temperature',
 ] as const;
 export type Field = (typeof FIELDS)[number];
@@ -95,6 +98,9 @@ const MAX_TEMPERATURE = 2;
 /** The most a price may be, in US dollars per million tokens. */
 const MAX_PRICE = 10_000;
 export const DEFAULT_TIMEOUT = 60;
+/** The bounds of the context window, in tokens, as the server holds them. */
+export const CONTEXT_WINDOW_MIN = 8000;
+export const CONTEXT_WINDOW_MAX = 10_000_000;
 /** OpenAI's own host, whose newest models call tools only through the Responses API. */
 export const OPENAI_HOST = 'api.openai.com';
 /**
@@ -142,6 +148,7 @@ export function draftOf(settings: LlmSettings | null, locale: string): Draft {
     json: (p?.jsonMode ?? 'json_object') === 'json_object',
     maxTokensField: p?.maxTokensField ?? 'max_tokens',
     timeout: formatWhole(p?.timeoutSeconds ?? DEFAULT_TIMEOUT, locale),
+    contextWindow: p?.contextWindowTokens ? formatWhole(p.contextWindowTokens, locale) : '',
     temperatureSet: (p?.temperature ?? null) !== null,
     temperature: (p?.temperature ?? null) === null ? '' : String(p?.temperature),
     removeKey: false,
@@ -188,6 +195,7 @@ export function changesOf(d: Draft, b: Draft, keyTyped: boolean): ReadonlySet<st
     openAi(b, b.maxTokensField, 'max_tokens'),
   );
   differ('timeout', wholeValue(d.timeout), wholeValue(b.timeout));
+  differ('contextWindow', wholeValue(d.contextWindow), wholeValue(b.contextWindow));
   differ('temperature', temperatureValue(d), temperatureValue(b));
   if (d.removeKey || keyTyped) changed.add('key');
   return changed;
@@ -314,6 +322,8 @@ export function refusal(field: Field): string {
       return $localize`:@@ai.settings.badWorkspaceId:Use the workspace ID as the console shows it: wrkspc_ and then letters and digits.`;
     case 'timeout':
       return $localize`:@@ai.settings.badTimeout:Use a whole number of seconds from 5 to 600.`;
+    case 'context-window':
+      return $localize`:@@aiProvider.contextWindow.error:Enter a whole number of tokens from 8,000 to 10,000,000, or leave it empty.`;
     case 'temperature':
       return $localize`:@@ai.settings.badTemperature:Use a number from 0 to 2, or leave it empty.`;
     case 'price-input':

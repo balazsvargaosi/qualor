@@ -43,6 +43,8 @@ import type { LlmBody, LlmSettings } from './llm-body';
 import { namesOf } from './names';
 import {
   changesOf,
+  CONTEXT_WINDOW_MAX,
+  CONTEXT_WINDOW_MIN,
   DEFAULT_TIMEOUT,
   defaultOutputLimitField,
   type Draft,
@@ -82,7 +84,7 @@ export type SaveProvider = (change: ProviderChange) => Promise<LlmSettings>;
 
 type Errors = Partial<Record<Field, string>>;
 /** The fields inside Connection options: a refusal of one opens the fold. */
-const OPTION_FIELDS: readonly Field[] = ['timeout', 'temperature'];
+const OPTION_FIELDS: readonly Field[] = ['timeout', 'context-window', 'temperature'];
 
 const PRICE_FIELD_NAMES = Object.keys(PRICE_FIELDS) as PriceField[];
 
@@ -96,6 +98,7 @@ const SERVER_PATHS: [string, Field][] = [
   ['body.provider.apiKey', 'key'],
   ['body.provider.workspaceId', 'workspace-id'],
   ['body.provider.timeoutSeconds', 'timeout'],
+  ['body.provider.contextWindowTokens', 'context-window'],
   ['body.provider.temperature', 'temperature'],
   ['body.pricing.inputUsdPerMTok', 'price-input'],
   ['body.pricing.outputUsdPerMTok', 'price-output'],
@@ -201,6 +204,8 @@ export class ProviderSection {
     colOutput: $localize`:@@aiProvider.prices.col.output:Output`,
     usd: $localize`:@@numberField.usd:US$`,
     seconds: $localize`:@@numberField.seconds:seconds`,
+    tokens: $localize`:@@numberField.tokens:tokens`,
+    contextWindow: $localize`:@@aiProvider.contextWindow.label:Context window`,
     options: $localize`:@@aiProvider.options:Connection options`,
     apiLabel: $localize`:@@ai.settings.api:API`,
     auth: $localize`:@@ai.settings.auth:Key header`,
@@ -400,8 +405,8 @@ export class ProviderSection {
     ),
   );
   protected readonly optionsChanged = computed(() =>
-    ['api', 'auth', 'json', 'maxTokensField', 'timeout', 'temperature'].some((key) =>
-      this.changed().has(key),
+    ['api', 'auth', 'json', 'maxTokensField', 'timeout', 'contextWindow', 'temperature'].some(
+      (key) => this.changed().has(key),
     ),
   );
   /** Edits wait to be saved: leaving the page asks first. */
@@ -564,6 +569,11 @@ export class ProviderSection {
   protected setTimeoutSeconds(text: string): void {
     if (this.draft().timeout === text) return;
     this.edit((d) => ({ ...d, timeout: text }), 'timeout');
+  }
+
+  protected setContextWindow(text: string): void {
+    if (this.draft().contextWindow === text) return;
+    this.edit((d) => ({ ...d, contextWindow: text }), 'context-window');
   }
 
   protected setTemperatureSet(event: Event): void {
@@ -800,6 +810,11 @@ export class ProviderSection {
     }
     const timeoutSeconds = parseWhole(d.timeout, 5, 600);
     if (timeoutSeconds === null) refuse('timeout');
+    // Empty is the default: sent as null. Anything else is a whole number within the bounds.
+    const windowText = d.contextWindow.trim();
+    const contextWindowTokens =
+      windowText === '' ? null : parseWhole(windowText, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX);
+    if (windowText !== '' && contextWindowTokens === null) refuse('context-window');
     const temperature = temperatureOf(d);
     if (Number.isNaN(temperature)) refuse('temperature');
     const pricing = pricingOf(d, refuse);
@@ -820,6 +835,7 @@ export class ProviderSection {
         : { workspaceId: workspaceId === '' ? null : workspaceId }),
       temperature,
       timeoutSeconds,
+      contextWindowTokens,
     };
     return {
       change: { provider, pricing },
@@ -997,6 +1013,8 @@ export class ProviderSection {
         return t.fastModel;
       case 'timeout':
         return t.timeout;
+      case 'context-window':
+        return t.contextWindow;
       case 'temperature':
         return t.temperature;
       default:

@@ -82,6 +82,7 @@ function storedAfter(body: PutBody): LlmSettings {
       temperature: null,
       workspaceId: null,
       timeoutSeconds: 60,
+      contextWindowTokens: null,
       ...given,
       baseUrl: given.baseUrl.replace(/\/+$/, ''),
       apiKeySet: apiKey === undefined ? (before?.apiKeySet ?? false) : apiKey !== null,
@@ -1235,6 +1236,76 @@ describe('ProviderSection: the connection options', () => {
     await fill(fixture, root, '#ai-timeout', '120');
     await saveAndTest(fixture, root);
     expect(puts(server)[0]?.provider).toMatchObject({ timeoutSeconds: 120 });
+  });
+
+  it('the Connection options show Context window, empty for 1 000 000', async () => {
+    setup();
+    const { root } = await render();
+    expect(labelOf(root, 'ai-context-window')).toBe('Context window');
+    expect(field(root, 'ai-context-window').value).toBe('');
+    expect(textOf(root, '#ai-context-window-unit')).toBe('tokens');
+    expect(textOf(root, '#ai-context-window-hint')).toBe(
+      'The most the model reads in one call, in tokens. Empty means 1,000,000. With several models, give the smallest of their windows.',
+    );
+    expect(field(root, 'ai-context-window').getAttribute('aria-describedby')).toBe(
+      'ai-context-window-hint ai-context-window-unit',
+    );
+    const ids = [...root.querySelectorAll('#ai-options input[id]')].map((i) => i.id);
+    expect(ids.indexOf('ai-context-window')).toBe(ids.indexOf('ai-timeout') + 1);
+  });
+
+  it('shows a stored context window', async () => {
+    setup();
+    const { root } = await render({
+      settings: {
+        ...CONFIGURED,
+        provider: { ...CONFIGURED.provider, contextWindowTokens: 32_000 },
+      },
+    });
+    expect(field(root, 'ai-context-window').value).toBe('32,000');
+  });
+
+  it('a value outside 8,000–10,000,000 is refused before saving', async () => {
+    const server = setup();
+    const { fixture, root } = await render();
+    for (const bad of ['7999', '10000001', '12.5', 'many']) {
+      await fill(fixture, root, '#ai-context-window', bad);
+      await saveAndTest(fixture, root);
+      expect(puts(server)).toHaveLength(0);
+      expect(field(root, 'ai-context-window').getAttribute('aria-invalid')).toBe('true');
+      expect(textOf(root, '#ai-context-window-error')).toBe(
+        'Enter a whole number of tokens from 8,000 to 10,000,000, or leave it empty.',
+      );
+      expect(openOptions(root).open).toBe(true);
+      expect(document.activeElement).toBe(field(root, 'ai-context-window'));
+    }
+  });
+
+  it('saving sends contextWindowTokens', async () => {
+    const server = setup();
+    const { fixture, root } = await render();
+    await fill(fixture, root, '#ai-context-window', '200000');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[0]?.provider).toMatchObject({ contextWindowTokens: 200_000 });
+    await fill(fixture, root, '#ai-context-window', '8,000');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[1]?.provider).toMatchObject({ contextWindowTokens: 8000 });
+    await fill(fixture, root, '#ai-context-window', '');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[2]?.provider).toMatchObject({ contextWindowTokens: null });
+  });
+
+  it('keeps a stored context window through a save that does not touch the field', async () => {
+    const server = setup();
+    const { fixture, root } = await render({
+      settings: {
+        ...CONFIGURED,
+        provider: { ...CONFIGURED.provider, contextWindowTokens: 32_000 },
+      },
+    });
+    await touch(fixture, root);
+    await saveAndTest(fixture, root);
+    expect(puts(server)[0]?.provider).toMatchObject({ contextWindowTokens: 32_000 });
   });
 
   it('asks for a JSON object unless its switch is off', async () => {

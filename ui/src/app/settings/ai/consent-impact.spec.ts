@@ -95,6 +95,13 @@ describe('pausesReview', () => {
     expect(pausesReview(saved, consentOf({ ...saved, ...change }))).toBe(false);
   });
 
+  it('a context window change pauses nothing', () => {
+    const changed: Provider = { ...SAVED, contextWindowTokens: 32_000 };
+    expect(consentOf(changed)).toEqual(consentOf(SAVED));
+    expect(pausesReview(SAVED, consentOf(changed))).toBe(false);
+    expect(pausesReview(changed, consentOf({ ...changed, contextWindowTokens: null }))).toBe(false);
+  });
+
   it('pauses for the removal of a saved provider, and nothing without one', () => {
     expect(pausesReview(SAVED, null)).toBe(true);
     expect(pausesReview(null, null)).toBe(false);

@@ -19,6 +19,18 @@ export async function setTierModels(admin: APIRequestContext, models: TierModels
 }
 
 /**
+ * The instance admin's save of the AI provider settings with the provider's context window set (or
+ * none), everything else as it is stored: what a test that set the window puts back in its
+ * `finally`.
+ */
+export async function setContextWindow(
+  admin: APIRequestContext,
+  contextWindowTokens: number | null,
+): Promise<void> {
+  await saveStored(admin, (provider) => ({ provider: { ...provider, contextWindowTokens } }));
+}
+
+/**
  * The instance admin's save of the AI provider settings with the limits given, everything else as
  * it is stored, as `setTierModels` saves: what a test that changed the limits puts back in its
  * `finally`, so that a failure midway never leaves them changed in the shared e2e database.
@@ -40,6 +52,7 @@ interface ProviderBody {
   maxTokensField: string;
   temperature: number | null;
   timeoutSeconds: number;
+  contextWindowTokens: number | null;
 }
 
 /**
@@ -67,6 +80,7 @@ async function saveStored(
     maxTokensField: p.maxTokensField,
     temperature: p.temperature,
     timeoutSeconds: p.timeoutSeconds,
+    contextWindowTokens: p.contextWindowTokens,
   };
   const saved = await admin.put('/api/v0/system/llm', {
     headers: { 'x-qualor-csrf': me.csrfToken },

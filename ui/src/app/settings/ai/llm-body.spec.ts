@@ -228,6 +228,7 @@ describe('bodyFrom', () => {
       workspaceId: 'wrkspc_01AbCdEf',
       temperature: null,
       timeoutSeconds: 120,
+      contextWindowTokens: null,
     });
   });
 
@@ -256,7 +257,34 @@ describe('bodyFrom', () => {
       maxTokensField: 'max_completion_tokens',
       temperature: 0.2,
       timeoutSeconds: 60,
+      contextWindowTokens: null,
     });
     expect(bodyFrom(EMPTY as unknown as LlmSettings, DATA).provider).toBeNull();
+  });
+
+  it("sends the stored context window with every section's save, null when none is set", () => {
+    const window32k = {
+      ...SAVED,
+      provider: { ...SAVED.provider!, contextWindowTokens: 32_000 },
+    } as unknown as LlmSettings;
+    // A save that does not touch the field sends it back as stored, so an API-set window survives.
+    expect(bodyFrom(window32k, LIMITS).provider).toMatchObject({ contextWindowTokens: 32_000 });
+    expect(bodyFrom(window32k, DATA).provider).toMatchObject({ contextWindowTokens: 32_000 });
+    expect(storedProviderBody(window32k.provider!)).toMatchObject({ contextWindowTokens: 32_000 });
+    expect(bodyFrom(SAVED, LIMITS).provider).toMatchObject({ contextWindowTokens: null });
+  });
+
+  it("sends an Anthropic provider's context window, and null once the section clears it", () => {
+    const anthropic = {
+      ...ANTHROPIC,
+      provider: { ...ANTHROPIC.provider!, contextWindowTokens: 200_000 },
+    } as unknown as LlmSettings;
+    expect(bodyFrom(anthropic, DATA).provider).toMatchObject({ contextWindowTokens: 200_000 });
+    const cleared = bodyFrom(anthropic, {
+      section: 'provider',
+      provider: { ...storedProviderBody(anthropic.provider!), contextWindowTokens: null },
+      pricing: null,
+    });
+    expect(cleared.provider).toMatchObject({ contextWindowTokens: null });
   });
 });

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Page } from '@playwright/test';
-import { setBudgets } from './ai-provider';
+import { setBudgets, setContextWindow } from './ai-provider';
 import { expect, expectAccessible, test } from './fixtures';
 import { PAYMENTS } from './seed-data';
 
@@ -289,6 +289,40 @@ test.describe("the provider's dialogs", () => {
     expect(saves).toEqual([]);
     expect(await stored(page)).toEqual(before);
   });
+});
+
+test('the AI provider page saves the context window, and keeps it after a reload', async ({
+  page,
+}) => {
+  const windowOf = async () =>
+    (
+      (await (await page.request.get('/api/v0/system/llm')).json()) as {
+        provider: { contextWindowTokens: number | null };
+      }
+    ).provider.contextWindowTokens;
+  const before = await windowOf();
+  try {
+    await page.goto('/settings/ai');
+    const provider = page.locator('#provider');
+    await provider.locator('summary', { hasText: 'Connection options' }).click();
+    const field = provider.getByLabel('Context window');
+    await expect(field).toHaveValue(before === null ? '' : before.toLocaleString('en-US'));
+    await field.fill('200000');
+    const saved = page.waitForResponse(
+      (r) => r.request().method() === 'PUT' && r.url().endsWith('/api/v0/system/llm'),
+    );
+    await provider.getByRole('button', { name: 'Save and test' }).click();
+    expect((await saved).status()).toBe(200);
+    expect(await windowOf()).toBe(200_000);
+
+    await page.reload();
+    await provider.locator('summary', { hasText: 'Connection options' }).click();
+    await expect(provider.getByLabel('Context window')).toHaveValue('200,000');
+    await expectAccessible(page);
+  } finally {
+    // Whatever failed above, the shared server keeps the window it had.
+    if ((await windowOf()) !== before) await setContextWindow(page.request, before);
+  }
 });
 
 test.describe('a budget reached for today', () => {
