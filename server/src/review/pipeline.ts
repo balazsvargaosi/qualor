@@ -14,12 +14,14 @@ import { scrubKeyDeep } from './key-scrub';
 import { tierOfCall, type ConversationRole, type ModelTier } from './model-tiers';
 import {
   judgeData,
+  LIST_CAP_STEPS,
   listedDataChars,
   SPECIALISTS,
   specialistData,
   SYSTEM_PROMPTS,
   verifyData,
   type LabelledFinding,
+  type ListCaps,
   type ReviewRole,
   type Specialist,
 } from './prompts';
@@ -256,11 +258,12 @@ function evenCut(lengths: readonly number[], total: number, max: number): number
  * instructions files and the slices: a third of them, less the longest system prompt, the envelope
  * and the lists, counted as the change has them. Not positive when the lists alone do not fit.
  */
-function roomIn(shape: ContextShape, tokens: number): number {
+function roomIn(shape: ContextShape, tokens: number, caps: ListCaps): number {
   const { specialists } = planReview(shape.reviewed);
   const prompt = Math.max(...specialists.map((role) => SYSTEM_PROMPTS[role].length));
   return Math.floor(
-    (firstMessageChars(tokens) - prompt - ENVELOPE_CHARS - listedDataChars(shape)) / JSON_ALLOWANCE,
+    (firstMessageChars(tokens) - prompt - ENVELOPE_CHARS - listedDataChars(shape, caps)) /
+      JSON_ALLOWANCE,
   );
 }
 
@@ -272,10 +275,10 @@ function roomIn(shape: ContextShape, tokens: number): number {
  * the other half, less the lists. A reviewer's own third, of a larger cap and after a shorter
  * prompt, is never the smaller once anything fits. `window` Infinity: no window.
  */
-function windowRoom(shape: ContextShape, window: number): number {
+function windowRoom(shape: ContextShape, window: number, caps: ListCaps): number {
   const judgeRoom =
     firstMessageChars(callInputCap(window, 'judge')) - SYSTEM_PROMPTS.judge.length - ENVELOPE_CHARS;
-  return Math.floor((Math.floor(judgeRoom / 2) - listedDataChars(shape)) / JSON_ALLOWANCE);
+  return Math.floor((Math.floor(judgeRoom / 2) - listedDataChars(shape, caps)) / JSON_ALLOWANCE);
 }
 
 /**
@@ -283,11 +286,11 @@ function windowRoom(shape: ContextShape, window: number): number {
  * specialist's part and half the judge's share (`roomIn`), and its room in the model's context
  * window (`windowRoom`).
  */
-function dataRoom(shape: ContextShape, budget: number, window: number): number {
+function dataRoom(shape: ContextShape, budget: number, window: number, caps: ListCaps): number {
   const { specialists } = planReview(shape.reviewed);
   const part = Math.floor(shareOf(budget, STAGE_SHARES.specialists) / specialists.length);
   const judgeHalf = Math.floor(shareOf(budget, STAGE_SHARES.judge) / 2);
-  return Math.min(roomIn(shape, Math.min(part, judgeHalf)), windowRoom(shape, window));
+  return Math.min(roomIn(shape, Math.min(part, judgeHalf), caps), windowRoom(shape, window, caps));
 }
 
 /**
@@ -303,25 +306,43 @@ const instructionFloors = (shape: ContextShape): number =>
     0,
   );
 
+/** Whether the lists of `caps` leave room, as `listCapsFor` asks. */
+const fitsWith = (shape: ContextShape, budget: number, window: number, caps: ListCaps): boolean =>
+  dataRoom(shape, budget, window, caps) > 0 &&
+  windowRoom(shape, window, caps) - instructionFloors(shape) > 0;
+
+/**
+ * The lists a review of `budget` tokens shows of a change of this shape, on a model of `window`
+ * tokens (DEFAULT_CONTEXT_WINDOW_TOKENS when left out; Infinity: no window, to ask whether the
+ * budget alone holds it), or null when none does (R47): the first of LIST_CAP_STEPS, longest
+ * first, with which the smallest share of the review, and the judge's cap in the window, have room
+ * for the first message, as `reviewLimits` counts it; and the window has room for the instructions
+ * files' floors too, which the budget's room does not count. A change that fits the lists of today
+ * is given them, whatever else.
+ */
+export function listCapsFor(
+  shape: ContextShape,
+  budget: number,
+  window: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
+): ListCaps | null {
+  return LIST_CAP_STEPS.find((caps) => fitsWith(shape, budget, window, caps)) ?? null;
+}
+
 /**
  * Whether a review of `budget` tokens can run on a change of this shape, on a model of `window`
- * tokens (DEFAULT_CONTEXT_WINDOW_TOKENS when left out; Infinity: no window, to ask whether the
- * budget alone holds it): its smallest share, and the judge's cap in the window, have room for its
- * first message, as `reviewLimits` counts it; and the window has room for the instructions files'
- * floors too, which the budget's room does not count. When it has none, `reviewLimits` still gives
- * the instructions their floors, and the review would send a first message larger than a third of
- * its share or of that cap: the job skips it instead (`budget_spent`, detail `too_large` when the
- * budget is too small for the merge request, `window_too_small` when only the window is, never the
- * day's budget spent).
+ * tokens (as `listCapsFor` takes them): some step of the ladder of lists has room. When none has,
+ * `reviewLimits` still gives the instructions their floors, and the review would send a first
+ * message larger than a third of its share or of that cap: the job skips it instead
+ * (`budget_spent`, detail `too_large` when the budget is too small for the merge request even
+ * with the shortest lists, `window_too_small` when only the window is, never the day's budget
+ * spent).
  */
 export function reviewFits(
   shape: ContextShape,
   budget: number,
   window: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ): boolean {
-  return (
-    dataRoom(shape, budget, window) > 0 && windowRoom(shape, window) - instructionFloors(shape) > 0
-  );
+  return listCapsFor(shape, budget, window) !== null;
 }
 
 /**
@@ -341,7 +362,12 @@ export function reviewLimits(
   budget: number,
   window: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ): ContextLimits {
-  const room = dataRoom(shape, budget, window);
+  // The shortest lists when none has room: the job has skipped such a review already.
+  const lists =
+    listCapsFor(shape, budget, window) ??
+    LIST_CAP_STEPS[LIST_CAP_STEPS.length - 1] ??
+    LIST_CAP_STEPS[0];
+  const room = dataRoom(shape, budget, window, lists);
   const labels = shape.instructionChars.length * CUT_LABEL_CHARS;
   const instructionsChars = Math.max(
     INSTRUCTIONS_MIN_CHARS,
@@ -355,6 +381,7 @@ export function reviewLimits(
   return {
     sliceChars: Math.min(CONTEXT_MAXIMA.sliceChars, Math.max(0, room - instructions)),
     instructionsChars,
+    lists,
   };
 }
 
@@ -567,6 +594,10 @@ export async function runReviewPipeline(
   const judgeShare = shareOf(budget, STAGE_SHARES.judge);
   // Without a judge nothing can be kept: a budget too small for its share is not spent at all.
   if (judgeShare <= 0) return NOT_JUDGED;
+  // Once, whatever the reviewers do: the lists they were shown are the context's.
+  if (JSON.stringify(context.listCaps) !== JSON.stringify(LIST_CAP_STEPS[0])) {
+    review.note('lists_shortened');
+  }
 
   // The specialists, one after the other, each with an even part of their share and what the ones
   // before it left of theirs: one that overshoots what it was given takes nothing from the next.

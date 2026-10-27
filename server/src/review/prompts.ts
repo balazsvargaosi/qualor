@@ -33,7 +33,8 @@ import type { ReviewSuggestion } from './suggestion';
  * `Qualor review: <role>`.
  *
  * A data object is made field by field from the review's context, whose texts are masked already,
- * and holds at most PROMPT_LIMITS of each list: the context keeps them all.
+ * and holds at most the review's ListCaps of each list (a long merge request is listed in less,
+ * LIST_CAP_STEPS) and PROMPT_LIMITS of the rest: the context keeps them all.
  *
  * The answer to a person's reply (6I-4) is told the same way, with a version of its own: one prompt
  * for each set of verdicts its thread allows (`replySystemPrompt`), and one data object made from
@@ -57,6 +58,42 @@ export const PROMPT_LIMITS = {
   /** Ranges of lines listed for one change; the others are counted. */
   lineRanges: 10,
 } as const;
+
+/**
+ * How much of each list of the context the first message holds (R47). A merge request with too
+ * many changes for its lists is given a shorter step of LIST_CAP_STEPS, and the reviewers read the
+ * rest with their tools; what a list leaves out is counted.
+ */
+export interface ListCaps {
+  /** Changes listed; the most important first. */
+  changes: number;
+  /** Ranges of lines listed for one change. */
+  lineRanges: number;
+  analyzerFindings: number;
+  /** Skipped changes listed. */
+  skipped: number;
+  /** Changes with no slices listed. */
+  notInSlices: number;
+}
+
+/**
+ * The lists a review is shown, longest first: a review takes the first step its budget and the
+ * model's window have room for (`listCapsFor`). The first is the limits of today, so a merge
+ * request that fits them is not changed.
+ */
+export const LIST_CAP_STEPS: readonly [ListCaps, ListCaps, ListCaps, ListCaps, ListCaps] = [
+  {
+    changes: PROMPT_LIMITS.changes,
+    lineRanges: PROMPT_LIMITS.lineRanges,
+    analyzerFindings: PROMPT_LIMITS.analyzerFindings,
+    skipped: PROMPT_LIMITS.skipped,
+    notInSlices: 200,
+  },
+  { changes: 200, lineRanges: 3, analyzerFindings: 50, skipped: 50, notInSlices: 100 },
+  { changes: 100, lineRanges: 2, analyzerFindings: 20, skipped: 0, notInSlices: 0 },
+  { changes: 50, lineRanges: 1, analyzerFindings: 10, skipped: 0, notInSlices: 0 },
+  { changes: 20, lineRanges: 1, analyzerFindings: 0, skipped: 0, notInSlices: 0 },
+];
 
 /**
  * The characters a whole answer aims to stay within, well inside what a review reads of it (four
@@ -139,10 +176,10 @@ const dataList = (items: readonly string[]): string =>
 const REVIEW_DATA_ITEMS = [
   'mergeRequest: its title, description and target branch',
   "instructions: the repository's instructions files (such as AGENTS.md or REVIEW.md), as the target branch has them",
-  'changes: the changed files, each with its path, status, oldPath (a rename), changedLines, and lines: the ranges of lines, as pairs of a first and a last, that findings in it belong on, with unlistedLines for how many more ranges it has; unlistedChanges: how many more files',
-  'notInSlices: changed files whose lines are not in slices, to read with the tools',
+  'changes: the changed files, each with its path, status, oldPath (a rename), changedLines, and lines: the ranges of lines, as pairs of a first and a last, that findings in it belong on, with unlistedLines for how many more ranges it has; unlistedChanges: how many more files (a long merge request has shorter lists: read the files they leave out with the tools)',
+  'notInSlices: changed files whose lines are not in slices, to read with the tools; unlistedNotInSlices: how many more',
   'skipped: changed files that are not reviewed (lock, generated, minified or binary); unlistedSkipped: how many more',
-  "analyzerFindings: what Qualor's code analyzers already reported on these files",
+  "analyzerFindings: what Qualor's code analyzers already reported on these files; unlistedAnalyzerFindings: how many more",
   'snapshotPartial: true when the copy of the repository lacks some files, so one you cannot find may exist',
   'slices: the changed lines of the files, with the lines around them',
 ];
@@ -427,7 +464,7 @@ export interface ListedChange {
   status: SnapshotChange['status'];
   oldPath?: string;
   changedLines: number;
-  /** The lines findings in it belong on (`scopeRanges`): the first PROMPT_LIMITS.lineRanges ranges. */
+  /** The lines findings in it belong on (`scopeRanges`): the first ListCaps.lineRanges ranges. */
   lines: [number, number][];
   /** How many ranges there are past those; only when there are any. */
   unlistedLines?: number;
@@ -440,6 +477,8 @@ export interface ReviewData {
   changes: ListedChange[];
   unlistedChanges: number;
   notInSlices: string[];
+  /** How many changes with no slices the list leaves out. */
+  unlistedNotInSlices: number;
   skipped: { path: string; why: SkipReason }[];
   unlistedSkipped: number;
   analyzerFindings: {
@@ -449,6 +488,7 @@ export interface ReviewData {
     severity: string;
     message: string;
   }[];
+  unlistedAnalyzerFindings: number;
   snapshotPartial: boolean;
   slices: string;
 }
@@ -475,30 +515,30 @@ const byImportance = (a: ReviewableChange, b: ReviewableChange): number =>
  * The changes listed: all of them when they fit, else the most important, in the path order of the
  * context either way.
  */
-function listedChanges(reviewed: readonly ReviewableChange[]): ReviewableChange[] {
-  if (reviewed.length <= PROMPT_LIMITS.changes) return [...reviewed];
+function listedChanges(reviewed: readonly ReviewableChange[], cap: number): ReviewableChange[] {
+  if (reviewed.length <= cap) return [...reviewed];
   return reviewed
     .map((change, index) => ({ change, index }))
     .sort((a, b) => byImportance(a.change, b.change) || a.index - b.index)
-    .slice(0, PROMPT_LIMITS.changes)
+    .slice(0, cap)
     .sort((a, b) => a.index - b.index)
     .map(({ change }) => change);
 }
 
 /**
- * A change as the data lists it: its first PROMPT_LIMITS.lineRanges ranges of lines as the scope
- * has them, never joined (a range wider than the scope would lead findings out of it), and how many
- * more there are.
+ * A change as the data lists it: its first `maxRanges` ranges of lines as the scope has them,
+ * never joined (a range wider than the scope would lead findings out of it), and how many more
+ * there are.
  */
-function changeData(change: ReviewableChange): ListedChange {
+function changeData(change: ReviewableChange, maxRanges: number): ListedChange {
   const ranges = scopeRanges(change);
-  const unlisted = ranges.length - PROMPT_LIMITS.lineRanges;
+  const unlisted = ranges.length - maxRanges;
   return {
     path: change.path,
     status: change.status,
     ...(change.oldPath === null ? {} : { oldPath: change.oldPath }),
     changedLines: change.changedLines,
-    lines: ranges.slice(0, PROMPT_LIMITS.lineRanges),
+    lines: ranges.slice(0, maxRanges),
     ...(unlisted > 0 ? { unlistedLines: unlisted } : {}),
   };
 }
@@ -534,8 +574,11 @@ function shownPriorFindings(prior: readonly PriorFinding[]): ShownFinding[] {
 /** The data every specialist is given: the merge request, its changes and the analyzers' findings. */
 export function specialistData(context: ReviewContext): ReviewData {
   const { meta } = context;
-  const changes = listedChanges(context.reviewed);
-  const skipped = context.skipped.slice(0, PROMPT_LIMITS.skipped);
+  const caps = context.listCaps;
+  const changes = listedChanges(context.reviewed, caps.changes);
+  const skipped = context.skipped.slice(0, caps.skipped);
+  const notInSlices = context.omittedFromSlices.slice(0, caps.notInSlices);
+  const analyzerFindings = context.analyzer.slice(0, caps.analyzerFindings);
   return {
     mergeRequest: {
       title: meta.mrTitle,
@@ -543,18 +586,21 @@ export function specialistData(context: ReviewContext): ReviewData {
       targetBranch: meta.targetBranch,
     },
     instructions: meta.instructions.map((file) => ({ name: file.name, text: file.text })),
-    changes: changes.map(changeData),
+    changes: changes.map((change) => changeData(change, caps.lineRanges)),
     unlistedChanges: context.reviewed.length - changes.length,
-    notInSlices: [...context.omittedFromSlices],
+    notInSlices,
+    unlistedNotInSlices:
+      context.unlistedFromSlices + (context.omittedFromSlices.length - notInSlices.length),
     skipped: skipped.map((change) => ({ path: change.path, why: change.why })),
     unlistedSkipped: context.skipped.length - skipped.length,
-    analyzerFindings: context.analyzer.slice(0, PROMPT_LIMITS.analyzerFindings).map((finding) => ({
+    analyzerFindings: analyzerFindings.map((finding) => ({
       path: finding.path,
       line: finding.line,
       rule: finding.ruleKey,
       severity: finding.severity,
       message: finding.message,
     })),
+    unlistedAnalyzerFindings: context.analyzer.length - analyzerFindings.length,
     snapshotPartial: meta.partial,
     slices: context.slices,
   };
@@ -810,17 +856,21 @@ const ANALYZER_KEYS_CHARS = 80;
  * the changes, the analyzers' findings and the merge request's words as they are, and the changes
  * without slices and the skipped ones at most.
  */
-export function listedDataChars(shape: ContextShape): number {
-  const changes = JSON.stringify(listedChanges(shape.reviewed).map(changeData)).length;
+export function listedDataChars(shape: ContextShape, caps: ListCaps): number {
+  const changes = JSON.stringify(
+    listedChanges(shape.reviewed, caps.changes).map((change) =>
+      changeData(change, caps.lineRanges),
+    ),
+  ).length;
   // The context lists as many changes with no slices, and one line for the others.
   const notInSlices = shape.reviewed
-    .slice(0, PROMPT_LIMITS.changes)
+    .slice(0, caps.notInSlices)
     .reduce((sum, change) => sum + change.path.length + NOT_IN_SLICES_CHARS, NOT_IN_SLICES_CHARS);
   const skipped = shape.skipped
-    .slice(0, PROMPT_LIMITS.skipped)
+    .slice(0, caps.skipped)
     .reduce((sum, change) => sum + change.path.length + SKIPPED_CHARS, 0);
   const analyzer = shape.analyzerChars
-    .slice(0, PROMPT_LIMITS.analyzerFindings)
+    .slice(0, caps.analyzerFindings)
     .reduce((sum, chars) => sum + chars + ANALYZER_KEYS_CHARS, 0);
   return WORDS_KEYS_CHARS + shape.wordsChars + changes + notInSlices + skipped + analyzer;
 }

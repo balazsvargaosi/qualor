@@ -2,11 +2,18 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { ReplyVerdict } from '../db/schema';
-import { SENSITIVE_PATH, type ReviewableChange, type ReviewContext } from './context';
+import {
+  SENSITIVE_PATH,
+  type ContextShape,
+  type ReviewableChange,
+  type ReviewContext,
+} from './context';
 import { CONVERSATION_TEXTS } from './conversation';
 import type { AnalyzerFinding, PriorFinding } from './findings-query';
 import {
   judgeData,
+  LIST_CAP_STEPS,
+  listedDataChars,
   PROMPT_LIMITS,
   REPLY_LIMITS,
   REPLY_PROMPT_VERSION,
@@ -99,14 +106,16 @@ const PROMPT_HASHES: Record<string, Record<string, string>> = {
     'loop.tooManyCalls': '23833c21f587117534ed60d7532211b3a4ed637a43049715e5eb909f4682dcca',
     'loop.badArguments': '849a9e7482301279245ba0e9a762cddc975972e74c6446623be53e82184d85e3',
   },
-  // review-2 (R46): the loop sends a tool answer that the model's context window has no room
-  // for as a fixed line. Every other text is as in review-1.
+  // review-2 (R46, R47): the loop sends a tool answer that the model's context window has no room
+  // for as a fixed line, and the data counts the lists it shortens (unlistedNotInSlices,
+  // unlistedAnalyzerFindings), which the reviewers' and the judge's prompts name. The loop's other
+  // texts, the verifier's and the reply's are as in review-1.
   'review-2': {
-    quality: '628f40e89ddc46422959a226cd9e0e4f5dac70af22432c3d44e9f82076091dd6',
-    tests: '5523ee924bd83e39e5dbca38528db4ee600278b6bb0f85f43e0a62d8efd3036b',
-    security: '377d4978f364aa6d861a17edd42b4d1d4e59a0db2efc453abb0eacb3b20ee307',
-    performance: 'ee9a3ee60f3302be6dc367d3193ac9170c8a89887f2d2f4df9f2b23003af7204',
-    judge: '2ca56107d1046ac25e04b56a90d8621e0cccc4e512548238fbf0200ef76e91ae',
+    quality: '56b30131404f62af02eba8060242f5548141b7189f76f56ccc5a89fe641a18e6',
+    tests: '5eec4dd457713f2087fedf58a1f0121ab9ed4889003900514c6b6b6caf331b90',
+    security: '84744468e5bcf7a44632c7beaeef68d66bf419827b9f01d84d1662857e48a726',
+    performance: '909824e834b0bd09b94e5b37cdbdb4796822127020c1a13805f3ce2064465111',
+    judge: '78a51ef7bc12cfbfdf7b67beb4cd37c5097bb6aac84705c53ea9c357d31f7126',
     verify: '04e3c867ffbc76f0a1a6e0596e1a3973436f2d2826a8ab47ac8ce9680ad5a404',
     'loop.wrapUp': 'cc5c64c44240094b389da80979aa2ad0821c0e38bb88a763d0a481acb9cd2340',
     'loop.shorter': '572e61f09a58f0033bb47d4170be06b712ef434b1a6f75cab203c4c1b1079b3d',
@@ -162,9 +171,11 @@ const REVIEW_DATA_KEYS = [
   'changes',
   'unlistedChanges',
   'notInSlices',
+  'unlistedNotInSlices',
   'skipped',
   'unlistedSkipped',
   'analyzerFindings',
+  'unlistedAnalyzerFindings',
   'snapshotPartial',
   'slices',
 ];
@@ -357,6 +368,8 @@ function contextOf(over: Partial<ReviewContext> = {}): ReviewContext {
     slices:
       '@@ src/cart.ts lines 1–3 of 40 @@\n 1 const a = 1;\n 2 const b = 2;\n  -const removedLineText = 1;\n 3+const total = a + b;',
     omittedFromSlices: ['src/new.ts: changed, its text is not in the snapshot'],
+    unlistedFromSlices: 0,
+    listCaps: LIST_CAP_STEPS[0],
     analyzer: [analyzer(3)],
     prior: [prior('issue-1'), prior('issue-2', { status: 'wont_fix', severity: 'high' })],
     redactions: 7,
@@ -460,6 +473,7 @@ describe('the review prompts', () => {
       ],
       unlistedChanges: 0,
       notInSlices: ['src/new.ts: changed, its text is not in the snapshot'],
+      unlistedNotInSlices: 0,
       skipped: [{ path: 'pnpm-lock.yaml', why: 'lock' }],
       unlistedSkipped: 0,
       analyzerFindings: [
@@ -471,6 +485,7 @@ describe('the review prompts', () => {
           message: 'eval of «redacted»',
         },
       ],
+      unlistedAnalyzerFindings: 0,
       snapshotPartial: true,
       slices: context.slices,
     });
@@ -656,6 +671,90 @@ describe('the review prompts', () => {
     const listed = specialistData(contextOf({ reviewed: [change('src/a.ts', { added: ten })] }));
     expect(listed.changes[0]?.lines).toHaveLength(10);
     expect(listed.changes[0]).not.toHaveProperty('unlistedLines');
+  });
+
+  it('the data lists what the caps allow and counts the rest', () => {
+    const added = new Set(Array.from({ length: 5 }, (_, i) => 1 + i * 10));
+    const reviewed = Array.from({ length: 150 }, (_, i) =>
+      change(`src/a/f${String(i).padStart(3, '0')}.ts`, { added }),
+    );
+    const context = contextOf({
+      reviewed,
+      skipped: Array.from({ length: 30 }, (_, i) => ({
+        path: `vendor/${i}.min.js`,
+        why: 'minified' as const,
+      })),
+      analyzer: Array.from({ length: 35 }, (_, i) => analyzer(i + 1)),
+      omittedFromSlices: Array.from({ length: 150 }, (_, i) => `src/a/f${i}.ts: read it`),
+      unlistedFromSlices: 0,
+    });
+    // The first step is the limits of today: nothing is counted for what they hold.
+    expect(LIST_CAP_STEPS[0]).toEqual({
+      changes: PROMPT_LIMITS.changes,
+      lineRanges: PROMPT_LIMITS.lineRanges,
+      analyzerFindings: PROMPT_LIMITS.analyzerFindings,
+      skipped: PROMPT_LIMITS.skipped,
+      notInSlices: 200,
+    });
+    const today = specialistData({ ...context, listCaps: LIST_CAP_STEPS[0] });
+    expect(today.changes).toHaveLength(150);
+    expect(today.changes[0]?.lines).toHaveLength(5);
+    expect(today.unlistedAnalyzerFindings).toBe(0);
+    expect(today.unlistedNotInSlices).toBe(0);
+
+    // The third step: 100 changes with 2 ranges, 20 analyzer findings, no skipped and no notInSlices.
+    const third = specialistData({ ...context, listCaps: LIST_CAP_STEPS[2] });
+    expect(third.changes).toHaveLength(100);
+    expect(third.unlistedChanges).toBe(50);
+    expect(third.changes[0]?.lines).toHaveLength(2);
+    expect(third.changes[0]?.unlistedLines).toBe(3);
+    expect(third.analyzerFindings).toHaveLength(20);
+    expect(third.unlistedAnalyzerFindings).toBe(15);
+    expect(third.skipped).toEqual([]);
+    expect(third.unlistedSkipped).toBe(30);
+    expect(third.notInSlices).toEqual([]);
+    expect(third.unlistedNotInSlices).toBe(150);
+
+    // The last step lists no analyzer finding, and counts them.
+    const last = specialistData({ ...context, listCaps: LIST_CAP_STEPS[4] });
+    expect(last.changes).toHaveLength(20);
+    expect(last.changes[0]?.lines).toHaveLength(1);
+    expect(last.analyzerFindings).toEqual([]);
+    expect(last.unlistedAnalyzerFindings).toBe(35);
+    // The judge is given the same lists.
+    expect(judgeData({ ...context, listCaps: LIST_CAP_STEPS[3] }, [], 1_000_000)).toMatchObject({
+      unlistedChanges: 100,
+      unlistedAnalyzerFindings: 25,
+    });
+    // What the context already left out of notInSlices is counted too.
+    expect(
+      specialistData({ ...context, unlistedFromSlices: 7, listCaps: LIST_CAP_STEPS[0] })
+        .unlistedNotInSlices,
+    ).toBe(7);
+  });
+
+  it('listedDataChars follows the caps', () => {
+    const reviewed = Array.from({ length: 300 }, (_, i) =>
+      change(`src/module${i}/handlers/file-${i}.ts`, {
+        added: new Set(Array.from({ length: 12 }, (_x, k) => 1 + k * 10)),
+      }),
+    );
+    const shape: ContextShape = {
+      reviewed,
+      skipped: Array.from({ length: 150 }, (_, i) => ({
+        path: `vendor/${i}.min.js`,
+        why: 'minified' as const,
+      })),
+      analyzerChars: Array.from({ length: 150 }, () => 120),
+      wordsChars: 500,
+      instructionChars: [],
+    };
+    const sizes = LIST_CAP_STEPS.map((caps) => listedDataChars(shape, caps));
+    for (let i = 1; i < sizes.length; i += 1) {
+      expect(sizes[i], `step ${i}`).toBeLessThan(sizes[i - 1] ?? 0);
+    }
+    // The last step lists 20 changes of one range: a small fraction of the first.
+    expect(sizes[4]).toBeLessThan((sizes[0] ?? 0) / 8);
   });
 
   it("cuts the bodies of the reviewers' findings, and only them, when the judge's data does not fit", () => {

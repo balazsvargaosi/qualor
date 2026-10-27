@@ -167,6 +167,9 @@ All notable changes to Qualor are listed here, newest first. The format follows
   in time is answered after the restart, instead of failing as "interrupted".
 - A review that a newer push replaced while it was storing its findings is replaced quietly, and no
   longer ends as "merged or closed".
+- AI review: a merge request whose list of changes is too long for the first message is reviewed
+  with shorter lists, and the reviewers read the rest with their tools; only one that Tokens per
+  review cannot hold even so (below about 110 000 tokens) is skipped as too large.
 - Telemetry: the daily report (schema 2) also counts how AI review and the AI assistant are used:
   numbers and flags only, never names, addresses or models
   ([Telemetry](docs/guide/telemetry.md)).

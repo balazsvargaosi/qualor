@@ -19,7 +19,7 @@ import {
 import { envelope } from './envelope';
 import { MaskedFiles, type MaskBudget, type MaskedFilesOptions } from './masked-files';
 import { Masker, type MaskerOptions } from './masker';
-import { specialistData } from './prompts';
+import { LIST_CAP_STEPS, specialistData } from './prompts';
 import type { SnapshotReader } from './snapshot-reader';
 import { TOOL_LIMITS } from './tools';
 
@@ -94,7 +94,7 @@ async function contextOf(
   const budget = options.budget ?? freshBudget();
   const context = await buildReviewContext(files, using, findings, {
     excluded: () => false,
-    limits: () => CONTEXT_MAXIMA,
+    limits: () => ({ ...CONTEXT_MAXIMA, lists: LIST_CAP_STEPS[0] }),
     ...options,
     budget,
   });
@@ -938,18 +938,39 @@ describe('the slice budget', () => {
         paths.map((path) => [path, { kind: 'omitted', reason: 'too_large' } as const]),
       ),
     });
-    expect(context.omittedFromSlices).toHaveLength(201);
+    expect(context.omittedFromSlices).toHaveLength(200);
     expect(context.omittedFromSlices[0]).toBe(
       'gen/f000.sql: changed, its text is not in the snapshot',
     );
     expect(context.omittedFromSlices[199]).toBe(
       'gen/f199.sql: changed, its text is not in the snapshot',
     );
-    expect(context.omittedFromSlices[200]).toBe(
-      '… 50 more changed files are not in the slices; read them with read_file',
-    );
+    expect(context.unlistedFromSlices).toBe(50);
     // They are all still reviewed.
     expect(context.reviewed).toHaveLength(250);
+  });
+
+  it('lists as many of the changes it leaves out as the caps of its limits allow, and counts the rest', async () => {
+    const paths = Array.from({ length: 30 }, (_, i) => `gen/f${String(i).padStart(2, '0')}.sql`);
+    const input = {
+      changes: paths.map((path) => ({
+        path,
+        status: 'modified' as const,
+        patch: '@@ -1 +1 @@\n-a\n+b\n',
+      })),
+      files: Object.fromEntries(
+        paths.map((path) => [path, { kind: 'omitted', reason: 'too_large' } as const]),
+      ),
+    };
+    for (const notInSlices of [25, 0]) {
+      const lists = { ...LIST_CAP_STEPS[1], notInSlices };
+      const { context } = await contextOf(memorySnapshot(input), masker, NO_FINDINGS, {
+        limits: () => ({ ...CONTEXT_MAXIMA, lists }),
+      });
+      expect(context.listCaps).toEqual(lists);
+      expect(context.omittedFromSlices).toHaveLength(notInSlices);
+      expect(context.unlistedFromSlices).toBe(30 - notInSlices);
+    }
   });
 
   it('masks the files and patches of the slices it cuts, in their order, and nothing past them', async () => {
@@ -1268,7 +1289,7 @@ describe('the slice budget', () => {
       buildReviewContext(files, closed, NO_FINDINGS, {
         excluded: () => false,
         budget,
-        limits: () => CONTEXT_MAXIMA,
+        limits: () => ({ ...CONTEXT_MAXIMA, lists: LIST_CAP_STEPS[0] }),
       }),
     ).rejects.toThrow(/closed/);
     expect(budget.maskedBytes).toBe(1_000);
@@ -2035,7 +2056,7 @@ describe('the context', () => {
     // shown past what the review's tokens can take, by chance. (The calls are not made.)
     const budget = freshBudget();
     const excluded = () => false;
-    const limits = () => CONTEXT_MAXIMA;
+    const limits = () => ({ ...CONTEXT_MAXIMA, lists: LIST_CAP_STEPS[0] });
     // @ts-expect-error the options are required
     const forgotten = () => buildReviewContext(files, masker, NO_FINDINGS);
     // @ts-expect-error the exclusions are required
@@ -2054,6 +2075,8 @@ describe('the context', () => {
       skipped: [],
       slices: '',
       omittedFromSlices: [],
+      unlistedFromSlices: 0,
+      listCaps: LIST_CAP_STEPS[0],
       analyzer: [],
       prior: [],
       redactions: 0,
@@ -2136,7 +2159,7 @@ describe('how much of the merge request a review shows, and where its findings b
           expect(spy.texts).toEqual([]);
           shapes.push(shape);
           seen.push(...shape.reviewed.map((c) => [c.path, c.changedLines, c.text, c.removed]));
-          return { sliceChars: 300, instructionsChars: 40 };
+          return { sliceChars: 300, instructionsChars: 40, lists: LIST_CAP_STEPS[0] };
         },
       },
     );
@@ -2172,7 +2195,11 @@ describe('how much of the merge request a review shows, and where its findings b
       files: { 'src/x.ts': edit.text },
     };
     const over = await contextOf(memorySnapshot(snapshot), masker, NO_FINDINGS, {
-      limits: () => ({ sliceChars: Infinity, instructionsChars: 10_000_000 }),
+      limits: () => ({
+        sliceChars: Infinity,
+        instructionsChars: 10_000_000,
+        lists: LIST_CAP_STEPS[0],
+      }),
     });
     expect(over.context.meta.instructions[0]?.text.slice(32_000)).toMatch(
       /^\n\[cut: .*40000.*32000.*\]$/,
@@ -2180,7 +2207,7 @@ describe('how much of the merge request a review shows, and where its findings b
     expect(headersOf(over.context.slices)).toEqual(['@@ src/x.ts lines 1–1 of 1 @@']);
     for (const limit of [-5, Number.NaN, -Infinity]) {
       const under = await contextOf(memorySnapshot(snapshot), masker, NO_FINDINGS, {
-        limits: () => ({ sliceChars: limit, instructionsChars: limit }),
+        limits: () => ({ sliceChars: limit, instructionsChars: limit, lists: LIST_CAP_STEPS[0] }),
       });
       expect(under.context.slices).toBe('');
       expect(under.context.omittedFromSlices).toEqual([
@@ -2215,7 +2242,7 @@ describe('how much of the merge request a review shows, and where its findings b
     });
     for (const sliceChars of [CONTEXT_MAXIMA.sliceChars, 0]) {
       const { context } = await contextOf(snapshot, masker, NO_FINDINGS, {
-        limits: () => ({ ...CONTEXT_MAXIMA, sliceChars }),
+        limits: () => ({ ...CONTEXT_MAXIMA, sliceChars, lists: LIST_CAP_STEPS[0] }),
       });
       expect(context.reviewed.map((c) => [c.path, c.removalPoints])).toEqual([
         // The last run has no line after it: its point is the last line.

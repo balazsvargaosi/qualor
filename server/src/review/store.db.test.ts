@@ -26,6 +26,7 @@ import { priorAiFindings } from './findings-query';
 import { lineCountOf, MaskedFiles, MaskedText } from './masked-files';
 import { Masker } from './masker';
 import type { JudgedFinding, PipelineOutcome } from './pipeline';
+import { LIST_CAP_STEPS } from './prompts';
 import { ensureAiRules } from './rules';
 import type { SnapshotReader } from './snapshot-reader';
 import {
@@ -273,6 +274,8 @@ describe('storeReviewOutcome (6I-3)', () => {
     skipped: [],
     slices: '',
     omittedFromSlices: [],
+    unlistedFromSlices: 0,
+    listCaps: LIST_CAP_STEPS[0],
     analyzer: [],
     prior: await priorAiFindings(t.db, branchId),
     redactions: 0,

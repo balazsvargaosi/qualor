@@ -949,6 +949,46 @@ describe('the ai-review job (6I-3, R15)', () => {
     expect(summary).not.toContain('token budget for today');
   });
 
+  it('a review of a 150-file merge request runs, notes lists_shortened, and its first message has at most 200 changes with 3 ranges each', async () => {
+    // 150 files of five ranges each, at the default 300 000 tokens per review: the lists of today
+    // leave a reviewer no room (it was skipped as too large), shorter ones do.
+    await reviewOn();
+    const lines: SnapshotLine[] = [];
+    for (let n = 0; n < 150; n += 1) {
+      const path = `server/src/module${String(n).padStart(3, '0')}/handlers/some-file.ts`;
+      const text = Array.from({ length: 60 }, (_, i) => `export const v${n}_${i + 1} = ${i + 1};`);
+      const hunk = (at: number, k: number) =>
+        [
+          `@@ -${at - 1 - k},2 +${at - 1},3 @@`,
+          ` ${text[at - 2]}`,
+          `+${text[at - 1]}`,
+          ` ${text[at]}`,
+        ].join('\n');
+      const patch = `${[3, 13, 23, 33, 43].map(hunk).join('\n')}\n`;
+      lines.push(
+        { type: 'change', path, oldPath: null, status: 'modified', patch, since: null },
+        { type: 'file', path, text: `${text.join('\n')}\n` },
+      );
+    }
+    const before = reviewCalls().length;
+    const { run } = await reviewWith(lines, {}, 5);
+    expect(run).toMatchObject({ status: 'done', tier: 'full', modelCalls: 5 });
+    expect(run.summary).toMatchObject({ notes: ['lists_shortened'] });
+    const first = reviewCalls()[before]!;
+    const messages = (first.json as { messages: { role: string; content: string }[] }).messages;
+    const user = messages.find((message) => message.role === 'user')!.content;
+    const data = JSON.parse(user.split('\n')[2]!) as {
+      changes: { lines: number[][]; unlistedLines?: number }[];
+      unlistedChanges: number;
+    };
+    expect(data.changes.length).toBeLessThanOrEqual(200);
+    expect(data.changes.length + data.unlistedChanges).toBe(150);
+    for (const change of data.changes) {
+      expect(change.lines.length).toBeLessThanOrEqual(3);
+      expect(change.lines.length + (change.unlistedLines ?? 0)).toBe(5);
+    }
+  });
+
   it('a model with a 32 000-token window: no call passes it', async () => {
     // A local model's window (Review Focus 4).
     const window = 32_000;

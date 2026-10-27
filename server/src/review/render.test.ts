@@ -350,6 +350,36 @@ describe('the AI review section', () => {
     expect(checkProse(WINDOW)).toBe(true);
   });
 
+  it('says that a large merge request was reviewed with shorter lists, in a sentence of its own, on GitLab and GitHub', () => {
+    const TOKENS = 'The review reached its token limit, so it may have missed problems.';
+    const WINDOW = 'A reviewer reached the model’s context window, so it may have missed problems.';
+    for (const provider of ['gitlab', 'github'] as const) {
+      const LISTS = `This ${provider === 'gitlab' ? 'merge' : 'pull'} request is large, so the reviewers were shown a shorter list of its changes and read the rest with their tools.`;
+      const notesLine = (over: Partial<Done>) => section(done(over), provider).at(-3);
+      expect(notesLine({ notes: ['lists_shortened'] }), provider).toBe(LISTS);
+      // Beside the others, each once: the limits first, then this.
+      expect(
+        notesLine({
+          tokenLimitReached: true,
+          notes: [
+            'lists_shortened',
+            'context_window_reached',
+            'token_limit_reached',
+            'lists_shortened',
+          ],
+        }),
+        provider,
+      ).toBe(`${TOKENS} ${WINDOW} ${LISTS}`);
+      expect(badSectionLine(section(done({ notes: ['lists_shortened'] }), provider))).toBeNull();
+    }
+    expect(
+      checkProse(
+        'This merge request is large, so the reviewers were shown a shorter list of its changes and read the rest with their tools.',
+      ),
+    ).toBe(true);
+    expect(section(done()).join('\n')).not.toContain('shorter list');
+  });
+
   it('says when the merge request has moved on, and what the next pipeline does', () => {
     const moved = (provider: 'gitlab' | 'github', head: string | null) =>
       section(done({ mergeRequestHeadSha: head }), provider).at(-1);

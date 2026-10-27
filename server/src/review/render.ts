@@ -197,7 +197,7 @@ const WINDOW_FULL = (words: Words): string =>
 const NEXT_PUSH = 'The next push reviews again.';
 
 /** What a finished review says of itself. */
-const NOTES: Record<ReviewNote, string> = {
+const NOTES: Record<Exclude<ReviewNote, 'lists_shortened'>, string> = {
   reviewer_unreadable: 'A reviewer’s answer could not be read, so part of the review is missing.',
   token_limit_reached: 'The review reached its token limit, so it may have missed problems.',
   turn_limit_reached: `A reviewer reached its limit of ${CONVERSATION_LIMITS.maxTurns} turns, so it may have missed problems.`,
@@ -206,6 +206,8 @@ const NOTES: Record<ReviewNote, string> = {
   context_window_reached:
     'A reviewer reached the model’s context window, so it may have missed problems.',
 };
+const LISTS_SHORTENED = (words: Words): string =>
+  `This ${words.request} is large, so the reviewers were shown a shorter list of its changes and read the rest with their tools.`;
 const SNAPSHOT_PARTIAL =
   'The scanner left some files out of the repository snapshot to stay within its limits, so the review did not see all of them.';
 
@@ -301,7 +303,7 @@ function unplacedItem(finding: Done['unplaced'][number]): string {
 }
 
 /** The notes the review makes of itself, once each, in the order they are told. */
-function noteSentences(state: Done): string[] {
+function noteSentences(state: Done, words: Words): string[] {
   const notes = new Set<string>(state.notes ?? []);
   const sentences: string[] = [];
   if (state.tokenLimitReached || notes.has('token_limit_reached')) {
@@ -309,6 +311,7 @@ function noteSentences(state: Done): string[] {
   }
   if (notes.has('turn_limit_reached')) sentences.push(NOTES.turn_limit_reached);
   if (notes.has('context_window_reached')) sentences.push(NOTES.context_window_reached);
+  if (notes.has('lists_shortened')) sentences.push(LISTS_SHORTENED(words));
   if (state.snapshotPartial) sentences.push(SNAPSHOT_PARTIAL);
   if (notes.has('reviewer_unreadable')) sentences.push(NOTES.reviewer_unreadable);
   if (notes.has('verification_capped')) sentences.push(NOTES.verification_capped);
@@ -403,7 +406,7 @@ function doneSection(state: Done, words: Words, maxBytes: number): string[] {
     .map((item) => `- ${item}`);
   const items = state.unplaced.slice(0, UNPLACED_LISTED).map(unplacedItem);
   const beyond = count(state.moreUnplaced) + Math.max(0, state.unplaced.length - items.length);
-  const notes = noteSentences(state).join(' ');
+  const notes = noteSentences(state, words).join(' ');
   const reviewed = reviewedLine(state, words);
 
   const assemble = (plan: Plan): string[] => {

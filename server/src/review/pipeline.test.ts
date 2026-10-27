@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { REDACTED } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import type { ReviewPhase } from '../db/schema';
@@ -16,6 +19,7 @@ import {
   CHARS_PER_TOKEN,
   planReview,
   REVIEW_OUTPUT_TOKENS,
+  listCapsFor,
   reviewFits,
   reviewLimits,
   runReviewPipeline,
@@ -24,7 +28,13 @@ import {
   type PipelineOutcome,
   type ReviewRole,
 } from './pipeline';
-import { judgeData, PROMPT_LIMITS, specialistData, SYSTEM_PROMPTS } from './prompts';
+import {
+  judgeData,
+  LIST_CAP_STEPS,
+  PROMPT_LIMITS,
+  specialistData,
+  SYSTEM_PROMPTS,
+} from './prompts';
 import { callInputCap, converseOverTools } from './tool-conversation';
 
 /** The fake provider key of a test is built at run time, so no scanner takes it for a real one. */
@@ -69,6 +79,8 @@ function contextOf(reviewed: ReviewableChange[], over: Partial<ReviewContext> = 
     slices:
       '@@ src/cart.ts lines 1–3 of 40 @@\n 1 const a = 1;\n 2 const b = 2;\n 3+const total = a + b;',
     omittedFromSlices: [],
+    unlistedFromSlices: 0,
+    listCaps: LIST_CAP_STEPS[0],
     analyzer: [],
     prior: [],
     redactions: 0,
@@ -1688,7 +1700,10 @@ describe('reviewLimits', () => {
       ['REVIEW.md', 40_000],
     ];
     // Plenty of room: each part as large as it may be.
-    expect(reviewLimits(shapeOf(changes(30, 40), 10, long), 10_000_000)).toEqual(CONTEXT_MAXIMA);
+    expect(reviewLimits(shapeOf(changes(30, 40), 10, long), 10_000_000)).toEqual({
+      ...CONTEXT_MAXIMA,
+      lists: LIST_CAP_STEPS[0],
+    });
     // Room for the instructions whole: they take it before the slices.
     const ample = reviewLimits(shapeOf(changes(30, 40), 10, long), 1_000_000);
     expect(ample.instructionsChars).toBe(CONTEXT_MAXIMA.instructionsChars);
@@ -1698,6 +1713,7 @@ describe('reviewLimits', () => {
       expect(reviewLimits(shapeOf(changes(30, 40), 10, long), budget), String(budget)).toEqual({
         sliceChars: 0,
         instructionsChars: 16_000,
+        lists: expect.anything(),
       });
     }
     // Without instructions the slices have the room.
@@ -1720,14 +1736,20 @@ describe('reviewLimits', () => {
     for (const budget of [10_000, 60_000, 120_000]) {
       expect(reviewFits(instructed, budget), String(budget)).toBe(reviewFits(bare, budget));
     }
-    // The lists count: a hundred findings of the analyzers need a larger budget.
+    // The lists count: a hundred findings of the analyzers need a larger budget to be listed whole;
+    // with less the ladder lists fewer of them (R47), and the review still runs.
     const listed = shapeOf(changes(1, 6), 100, []);
-    const smallest = (shape: ContextShape) => {
+    const smallest = (shape: ContextShape, whole = false) => {
       let budget = 0;
-      while (!reviewFits(shape, budget)) budget += 1_000;
+      while (
+        whole ? listCapsFor(shape, budget) !== LIST_CAP_STEPS[0] : !reviewFits(shape, budget)
+      ) {
+        budget += 1_000;
+      }
       return budget;
     };
-    expect(smallest(listed)).toBeGreaterThan(smallest(bare));
+    expect(smallest(listed, true)).toBeGreaterThan(smallest(bare, true));
+    expect(smallest(listed)).toBeLessThan(smallest(listed, true));
     // Nothing to spend fits nothing; a full tier needs more than a trivial one.
     for (const budget of [0, -1, Number.NaN]) expect(reviewFits(bare, budget)).toBe(false);
     expect(smallest(shapeOf(changes(30, 40), 0, []))).toBeGreaterThan(smallest(bare));
@@ -1827,5 +1849,68 @@ describe('reviewLimits', () => {
         reviewFits(bare, budget, Number.POSITIVE_INFINITY),
       );
     }
+  });
+
+  describe('the ladder of list caps (R47)', () => {
+    const EVAL = fileURLToPath(new URL('../../../fixtures/review-eval', import.meta.url));
+    const MODELS = (name: string) => path.join(EVAL, name);
+    /** The shape of a case of the evaluation: one change per file of its patch, as the evaluation sizes it. */
+    const evalShape = (name: string): ContextShape => {
+      const diff = readFileSync(path.join(MODELS(name), 'patch.diff'), 'utf8');
+      const files = Math.max(1, (diff.match(/^diff --git /gm) ?? []).length);
+      return shapeOf(changes(files, 20), 0, []);
+    };
+
+    it("a change that fits today keeps today's lists", () => {
+      const cases = readdirSync(EVAL).filter((name) =>
+        existsSync(path.join(MODELS(name), 'patch.diff')),
+      );
+      expect(cases.length).toBeGreaterThanOrEqual(10);
+      for (const name of cases) {
+        expect(listCapsFor(evalShape(name), 300_000), name).toBe(LIST_CAP_STEPS[0]);
+      }
+      expect(listCapsFor(shapeOf(changes(100, 10), 0, []), 300_000)).toBe(LIST_CAP_STEPS[0]);
+      expect(listCapsFor(oneLine, 300_000)).toBe(LIST_CAP_STEPS[0]);
+    });
+
+    it('a 150-file change at 300 000 tokens is reviewed with shortened lists', () => {
+      const shape = shapeOf(changes(150, 10), 20, []);
+      const caps = listCapsFor(shape, 300_000);
+      expect(caps).not.toBeNull();
+      expect(caps).not.toBe(LIST_CAP_STEPS[0]);
+      expect(LIST_CAP_STEPS).toContain(caps);
+      expect(reviewFits(shape, 300_000)).toBe(true);
+      // Today's lists left no room; the review is sized to the shorter ones.
+      expect(reviewFits(shape, 300_000, Number.POSITIVE_INFINITY)).toBe(true);
+      expect(reviewLimits(shape, 300_000).lists).toBe(caps);
+      expect(reviewLimits(shape, 300_000).sliceChars).toBeGreaterThanOrEqual(0);
+    });
+
+    it('a change too large for the last step does not fit', () => {
+      // The last step lists 20 changes whatever their number: what it cannot hold is a budget too
+      // small for its first message, or a window.
+      const huge = shapeOf(changes(5_000, 10), 20, []);
+      expect(listCapsFor(huge, 300_000)).not.toBeNull();
+      expect(listCapsFor(huge, 300_000)).not.toBe(LIST_CAP_STEPS[0]);
+      expect(listCapsFor(huge, 20_000)).toBeNull();
+      expect(reviewFits(huge, 20_000)).toBe(false);
+      expect(reviewFits(huge, 20_000, Number.POSITIVE_INFINITY)).toBe(false);
+      // The window alone: Tokens per review holds it, a 32 000-token window does not.
+      expect(reviewFits(huge, 300_000, Number.POSITIVE_INFINITY)).toBe(true);
+      expect(reviewFits(huge, 300_000, 32_000)).toBe(false);
+      expect(listCapsFor(oneLine, 0)).toBeNull();
+    });
+
+    it('tries the shorter lists against the window too: a change that fits a window only with them is reviewed', () => {
+      const shape = shapeOf(changes(150, 10), 20, []);
+      // Plenty of tokens per review, a window the long lists do not fit and the shorter ones do.
+      let found = false;
+      for (const window of [40_000, 60_000, 90_000, 130_000, 200_000, 300_000, 500_000]) {
+        const caps = listCapsFor(shape, 2_000_000, window);
+        if (caps !== null && caps !== LIST_CAP_STEPS[0]) found = true;
+        if (caps !== null) expect(reviewFits(shape, 2_000_000, window)).toBe(true);
+      }
+      expect(found).toBe(true);
+    });
   });
 });

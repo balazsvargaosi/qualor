@@ -1,6 +1,7 @@
 import { cutAtGrapheme } from '@qualor/shared';
 import { lineCountOf, MaskedText, type MaskBudget, type MaskedFiles } from './masked-files';
 import type { Masker } from './masker';
+import type { ListCaps } from './prompts';
 import {
   patchFacts,
   removedLines,
@@ -60,12 +61,10 @@ const CONTEXT_LINES = 40;
  * The most a context shows, whatever the review's budget: characters of slices in all, and of each
  * instructions file. The review's limits (`ContextOptions.limits`) are at most these.
  */
-export const CONTEXT_MAXIMA: Readonly<ContextLimits> = Object.freeze({
+export const CONTEXT_MAXIMA: Readonly<Omit<ContextLimits, 'lists'>> = Object.freeze({
   sliceChars: 120_000,
   instructionsChars: 32_000,
 });
-/** The most changes listed as having no slices; a merge request can change tens of thousands. */
-const MAX_OMITTED_LISTED = 200;
 /** A line is cut here, with `…`. */
 const MAX_LINE_CHARS = 400;
 const TITLE_CHARS = 255;
@@ -229,6 +228,8 @@ export interface ContextLimits {
   sliceChars: number;
   /** Characters of each instructions file; a longer one is cut, with a label. */
   instructionsChars: number;
+  /** How much of each list the first message holds (R47); the context lists the changes with no slices up to `lists.notInSlices`. */
+  lists: ListCaps;
 }
 
 /**
@@ -269,8 +270,12 @@ export interface ReviewContext {
   skipped: SkippedChange[];
   /** The slices of the reviewed changes that fit, the most important first. */
   slices: string;
-  /** The changes with no slices in `slices`, each with what to do about it. */
+  /** The changes with no slices in `slices`, each with what to do about it: the first `listCaps.notInSlices`. */
   omittedFromSlices: string[];
+  /** How many more changes have no slices than `omittedFromSlices` lists. */
+  unlistedFromSlices: number;
+  /** The caps of the lists the review's data holds (the limits' `lists`). */
+  listCaps: ListCaps;
   analyzer: AnalyzerFinding[];
   prior: PriorFinding[];
   /**
@@ -642,8 +647,8 @@ interface Tally {
  * slices fit in the room that is left, known from the stored texts before anything is masked, so a
  * merge request of thousands of files costs the masking of those that are shown. A change that does
  * not fit is left out whole, and the changes after it that do fit are still shown. Every change
- * that has no slices is listed, with the reason, except a deleted file: the first MAX_OMITTED_LISTED
- * in order of importance, then the number of the others.
+ * that has no slices is listed, with the reason, except a deleted file: the first `maxListed`
+ * (the caps' `notInSlices`) in order of importance, then the number of the others.
  */
 async function cutSlices(
   candidates: readonly Candidate[],
@@ -653,7 +658,8 @@ async function cutSlices(
   options: ContextOptions,
   tally: Tally,
   sliceChars: number,
-): Promise<{ slices: string; omitted: string[] }> {
+  maxListed: number,
+): Promise<{ slices: string; omitted: string[]; unlisted: number }> {
   const parts: string[] = [];
   const omitted: string[] = [];
   let used = 0;
@@ -712,12 +718,8 @@ async function cutSlices(
     used += joiner + slice.length;
     change.text = files.keptText(change.path);
   }
-  const listed = omitted.slice(0, MAX_OMITTED_LISTED);
-  const more = omitted.length - listed.length;
-  if (more > 0) {
-    listed.push(`… ${more} more changed files are not in the slices; read them with read_file`);
-  }
-  return { slices: parts.join('\n'), omitted: listed };
+  const listed = omitted.slice(0, maxListed);
+  return { slices: parts.join('\n'), omitted: listed, unlisted: omitted.length - listed.length };
 }
 
 // ─── The review's context ────────────────────────────────────────────────────
@@ -892,7 +894,7 @@ export async function buildReviewContext(
   const instructionsChars = heldTo(limits.instructionsChars, CONTEXT_MAXIMA.instructionsChars);
   const meta = await shownMeta(reader.meta, mask, tally, options, instructionsChars);
   const { analyzer, prior } = await shownFindings(found, findings.prior, mask, tally, options);
-  const { slices, omitted } = await cutSlices(
+  const { slices, omitted, unlisted } = await cutSlices(
     candidates,
     files,
     masker,
@@ -900,6 +902,7 @@ export async function buildReviewContext(
     options,
     tally,
     heldTo(limits.sliceChars, CONTEXT_MAXIMA.sliceChars),
+    limits.lists.notInSlices,
   );
   return {
     meta,
@@ -907,6 +910,8 @@ export async function buildReviewContext(
     skipped,
     slices,
     omittedFromSlices: omitted,
+    unlistedFromSlices: unlisted,
+    listCaps: limits.lists,
     analyzer,
     prior,
     redactions: tally.redactions,
