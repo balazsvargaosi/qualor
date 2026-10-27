@@ -595,10 +595,29 @@ function refusesStream({ detail, message }: ErrorBody): boolean {
  * no is used. The model's own id is taken out of the message first: a model named `my-tool-model`
  * would make "model my-tool-model is not available" a refusal of tools.
  */
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+/**
+ * `text` with each occurrence of `word` that stands as a word of its own replaced by a space: a
+ * short model id such as `on` is not cut out of "function".
+ */
+function withoutWord(text: string, word: string): string {
+  const inWord = (at: number): boolean =>
+    at >= 0 && at < text.length && WORD_CHAR.test(text[at] ?? '');
+  let out = '';
+  let from = 0;
+  for (let at = text.indexOf(word); at !== -1; at = text.indexOf(word, at + 1)) {
+    if (at < from || inWord(at - 1) || inWord(at + word.length)) continue;
+    out += `${text.slice(from, at)} `;
+    from = at + word.length;
+  }
+  return out + text.slice(from);
+}
+
 function refusesTools({ detail, message: asked }: ErrorBody, model: string): boolean {
   const code = detail?.code;
   // The model's own id is no word of the refusal (`my-tool-model is not available`).
-  const message = model === '' ? asked : asked.split(model).join(' ');
+  const message = model === '' ? asked : withoutWord(asked, model);
   if (SCHEMA.test(message)) return false;
   const param = detail?.param;
   const aboutTools =

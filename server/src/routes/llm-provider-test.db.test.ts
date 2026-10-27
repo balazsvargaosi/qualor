@@ -426,7 +426,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
     });
 
     // Characterisation tests (6I-3 Task 13, ledger line 313): they pin what the Test does today.
-    it('a second Test while the first checks tools waits its turn', async () => {
+    it('a second Test while the first checks tools is refused with 429', async () => {
       await useProvider('openai');
       // Observed: it does not wait, it is refused with a 429 (RATE_LIMITED, Retry-After 5) at once;
       // the first Test is not disturbed and the tool check is asked once.

@@ -770,6 +770,18 @@ describe('converse: conversations with read-only tools (R5)', () => {
       expect(err).toMatchObject({ failure: 'rejected', status: 404, refusedTools: false });
     });
 
+    it('a model whose short id sits inside a word of the refusal still has its tools refused', async () => {
+      // Only the id as a word of its own is taken out: "on" is not cut out of "function".
+      fake.enqueue({ status: 400, body: errorBody('Function calling is not supported') });
+      const err = await converse(
+        { ...configFor(kind), model: 'on' },
+        fake.apiKey,
+        start,
+        http,
+      ).catch((e: unknown) => e);
+      expect(err).toMatchObject({ failure: 'rejected', status: 400, refusedTools: true });
+    });
+
     it('is not flagged for a status that is not a refusal of the request, such as a 5xx', async () => {
       const err = await refusal(errorBody('tools are down'), 503);
       expect(err).toMatchObject({ failure: 'unavailable', refusedTools: false });
