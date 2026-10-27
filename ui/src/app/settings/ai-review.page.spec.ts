@@ -352,7 +352,7 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
         ),
       ).toEqual(['Project', 'Reviewed?']);
       expect(foot(root)).toBe('No unsaved changes');
-      expect(button(section(root), 'Save AI review')?.disabled).toBe(true);
+      expect(button(section(root), 'Save AI review')?.getAttribute('aria-disabled')).toBe('true');
 
       const remove = button(row(root, 'Web Shop'), 'Remove')!;
       expect(remove.getAttribute('aria-label')).toBe('Remove Web Shop');

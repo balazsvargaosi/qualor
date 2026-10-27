@@ -134,7 +134,7 @@ describe('LimitsSection: the fields', () => {
     expect(root.querySelector('#ai-budget-cost')).toBeNull();
     expect(root.querySelector('#ai-budget-review')).toBeNull();
     expect(foot(root)).toBe('No unsaved changes');
-    expect(saveButton(root).disabled).toBe(true);
+    expect(saveButton(root).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('names each switch by its name, and describes it by its help and the note shown with it', async () => {

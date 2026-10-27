@@ -25,9 +25,11 @@ interface RefusalPart {
  * `q-section-foot` (spec §7.2, §7.7): a section's foot. At its left a polite live region says the
  * outcome; then the buttons the section projects (Cancel, Test again); then its one Save, named
  * for what it saves ("Save limits"). Save is enabled and primary while changes wait, and after a
- * save that failed, so it can be tried again as it is; it is disabled while a save is on its way,
- * while nothing is unsaved, and while a field is refused (saving that again would be refused). A
- * refusal names the fields as links that take the focus to each.
+ * save that failed, so it can be tried again as it is; it is unavailable while a save is on its
+ * way, while nothing is unsaved, and while a field is refused (saving that again would be
+ * refused). Unavailable is `aria-disabled`, never `disabled`: a press does nothing, and a focused
+ * Save keeps the focus through its save instead of dropping it to the page's body. A refusal names
+ * the fields as links that take the focus to each.
  */
 @Component({
   selector: 'q-section-foot',

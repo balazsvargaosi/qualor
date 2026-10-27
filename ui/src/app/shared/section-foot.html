@@ -52,7 +52,7 @@
     type="button"
     class="btn"
     [class.btn-primary]="canSave()"
-    [disabled]="!canSave()"
+    [attr.aria-disabled]="canSave() ? null : true"
     (click)="onSave()"
   >
     {{ saveLabel() }}
