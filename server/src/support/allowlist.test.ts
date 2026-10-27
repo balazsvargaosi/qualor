@@ -279,7 +279,13 @@ describe('the settings allowlist copies whole subtrees only of known shape (Ruli
       current: Object.keys(budgetsSchema.shape),
     },
     'llm:pricing': {
-      classified: ['fast', 'inputUsdPerMTok', 'outputUsdPerMTok', 'strong'],
+      classified: [
+        'cachedInputUsdPerMTok',
+        'fast',
+        'inputUsdPerMTok',
+        'outputUsdPerMTok',
+        'strong',
+      ],
       current: Object.keys(pricingSchema.unwrap().shape),
     },
     'retention:*': {
@@ -312,7 +318,9 @@ describe('the settings allowlist copies whole subtrees only of known shape (Ruli
 
   it('pins the keys of the price pair that every tier of the pricing subtree holds', () => {
     // The tiers' prices travel with `llm:pricing`: a new key of the pair is classified here too.
+    // R49: the cached input price is a price like the others, a number and no secret.
     expect(Object.keys(pricePairSchema.shape).sort()).toEqual([
+      'cachedInputUsdPerMTok',
       'inputUsdPerMTok',
       'outputUsdPerMTok',
     ]);
