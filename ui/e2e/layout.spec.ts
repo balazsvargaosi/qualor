@@ -49,6 +49,11 @@ test.describe('on a laptop with two organizations', () => {
     ).json()) as { items: { id: string }[] };
     await page.goto(`/projects/${payments.id}/issues/${issues.items[0]!.id}`);
     await expect(page.getByRole('combobox', { name: 'Organization', exact: true })).toBeVisible();
+    // The issue, its code and its history in, before anything is measured: only then is the page
+    // tall enough to scroll as far as below.
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight))
+      .toBeGreaterThanOrEqual(280);
     const bar = (await page.locator('.app-header').boundingBox())!;
     expect(bar.height).toBeGreaterThan(72);
     // Scrolled, the details column sticks below the bar, not under it.
