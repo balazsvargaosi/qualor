@@ -1,4 +1,6 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { Page } from '@playwright/test';
+import { setBudgets } from './ai-provider';
 import { expect, expectAccessible, test } from './fixtures';
 import { PAYMENTS } from './seed-data';
 
@@ -9,8 +11,9 @@ import { PAYMENTS } from './seed-data';
  * (768px) nothing scrolls sideways and no control leaves its card, in the states that open the
  * most; the dark scheme keeps its contrast; and the keyboard paths reach and leave each dialog and
  * editor. The seed (`seedAi`) points the provider at the fake LLM on loopback and allows Default.
- * Nothing stays changed: one limit is saved and put back, the provider's dialogs are opened and
- * cancelled, and Default's AI review stays off, as `ai.spec.ts` expects.
+ * Nothing stays changed: one limit is saved and put back (through the API should the test fail
+ * midway), the provider's dialogs are opened and cancelled, and Default's AI review stays off, as
+ * `ai.spec.ts` expects.
  */
 
 /** A section's foot after its save: "Saved at 2:05 PM UTC." */
@@ -190,30 +193,35 @@ test.describe('by keyboard', () => {
       ((await (await page.request.get('/api/v0/system/llm')).json()) as { budgets: object })
         .budgets;
     const before = await budgets();
-    await page.goto('/settings/ai');
-    const limits = page.locator('#limits');
-    const explain = limits.locator('#ai-budget-explain');
-    const save = limits.getByRole('button', { name: 'Save limits' });
-    const stored = await explain.inputValue();
-    const saveByKeyboard = async () => {
-      const saved = page.waitForResponse(
-        (r) => r.request().method() === 'PUT' && r.url().endsWith('/api/v0/system/llm'),
-      );
-      await save.focus();
-      await page.keyboard.press('Enter');
-      expect((await saved).status()).toBe(200);
-      await expect(limits.locator('.foot-status')).toHaveText(SAVED);
-      // Nothing is left to save, and the focus stays on Save, never on the page's body.
-      await expect(save).toHaveAttribute('aria-disabled', 'true');
-      await expect(save).toBeFocused();
-    };
+    try {
+      await page.goto('/settings/ai');
+      const limits = page.locator('#limits');
+      const explain = limits.locator('#ai-budget-explain');
+      const save = limits.getByRole('button', { name: 'Save limits' });
+      const stored = await explain.inputValue();
+      const saveByKeyboard = async () => {
+        const saved = page.waitForResponse(
+          (r) => r.request().method() === 'PUT' && r.url().endsWith('/api/v0/system/llm'),
+        );
+        await save.focus();
+        await page.keyboard.press('Enter');
+        expect((await saved).status()).toBe(200);
+        await expect(limits.locator('.foot-status')).toHaveText(SAVED);
+        // Nothing is left to save, and the focus stays on Save, never on the page's body.
+        await expect(save).toHaveAttribute('aria-disabled', 'true');
+        await expect(save).toBeFocused();
+      };
 
-    await explain.fill(String(Number(stored.replaceAll(',', '')) + 1));
-    await saveByKeyboard();
-    // Put back as it was.
-    await explain.fill(stored);
-    await saveByKeyboard();
-    expect(await budgets()).toEqual(before);
+      await explain.fill(String(Number(stored.replaceAll(',', '')) + 1));
+      await saveByKeyboard();
+      // Put back as it was, by keyboard too.
+      await explain.fill(stored);
+      await saveByKeyboard();
+      expect(await budgets()).toEqual(before);
+    } finally {
+      // Whatever failed above, the shared server keeps its limits.
+      if (!isDeepStrictEqual(await budgets(), before)) await setBudgets(page.request, before);
+    }
   });
 });
 

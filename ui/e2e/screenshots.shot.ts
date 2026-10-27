@@ -47,6 +47,41 @@ async function shootThemes(page: Page, name: string): Promise<void> {
   if (desktop) await page.setViewportSize(desktop);
 }
 
+/**
+ * Default's AI review settings as they are now, through the API, and `restore`, which puts them
+ * back switched off with the same projects and budgets (the seed's review is off).
+ */
+async function reviewOfDefault(page: Page): Promise<{ restore(): Promise<void> }> {
+  const orgs = (await (await page.request.get('/api/v0/organizations?limit=100')).json()) as {
+    items: { id: string; key: string }[];
+  };
+  const id = orgs.items.find((o) => o.key === 'default')?.id;
+  if (id === undefined) throw new Error('The seed has no default organization.');
+  const url = `/api/v0/organizations/${id}/ai/review`;
+  const before = (await (await page.request.get(url)).json()) as {
+    scope: string;
+    projectIds: string[];
+    budgets: object;
+  };
+  return {
+    restore: async () => {
+      const me = (await (await page.request.get('/api/v0/auth/me')).json()) as {
+        csrfToken: string;
+      };
+      const restored = await page.request.put(url, {
+        headers: { 'x-qualor-csrf': me.csrfToken },
+        data: {
+          enabled: false,
+          scope: before.scope,
+          projectIds: before.projectIds,
+          budgets: before.budgets,
+        },
+      });
+      expect(restored.status(), await restored.text()).toBe(200);
+    },
+  };
+}
+
 test.describe('signed out', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -158,21 +193,23 @@ test('18 AI provider settings, 18b organization AI settings, 19 issue with the A
   await shoot(page, '18-settings-ai');
 
   // Default's AI page with its review on for Payments API, switched on through the dialog; off
-  // again after the shot.
-  await page.goto('/settings/ai-review');
-  const review = page.locator('li[data-key="review"]');
-  await page.getByRole('button', { name: 'Add projects' }).click();
-  await page.getByRole('checkbox', { name: /^Payments API/ }).check();
-  await page.getByRole('button', { name: 'Add 1 project' }).click();
-  await review.getByRole('button', { name: 'Switch on AI review…' }).click();
-  await page.getByRole('button', { name: /^Switch on and send code to / }).click();
-  await expect(review.locator('.badge')).toHaveText('On');
-  await expect(page.locator('#review .foot-status')).toContainText('Saved at');
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await shoot(page, '18b-settings-ai-review');
-  await review.getByRole('button', { name: 'Switch off AI review' }).click();
-  await page.getByRole('button', { name: 'Switch off', exact: true }).click();
-  await expect(review.locator('.badge')).toHaveText('Off');
+  // again after the shot, as it was, through the API even should the shot fail.
+  const defaultReview = await reviewOfDefault(page);
+  try {
+    await page.goto('/settings/ai-review');
+    const review = page.locator('li[data-key="review"]');
+    await page.getByRole('button', { name: 'Add projects' }).click();
+    await page.getByRole('checkbox', { name: /^Payments API/ }).check();
+    await page.getByRole('button', { name: 'Add 1 project' }).click();
+    await review.getByRole('button', { name: 'Switch on AI review…' }).click();
+    await page.getByRole('button', { name: /^Switch on and send code to / }).click();
+    await expect(review.locator('.badge')).toHaveText('On');
+    await expect(page.locator('#review .foot-status')).toContainText('Saved at');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await shoot(page, '18b-settings-ai-review');
+  } finally {
+    await defaultReview.restore();
+  }
 
   // The eqeqeq issue of merge request !42: the fake LLM (serve.ts) explains, triages and fixes it.
   await page.goto('/projects');

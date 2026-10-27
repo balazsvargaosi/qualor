@@ -15,38 +15,62 @@ export interface TierModels {
  * and a failure of that never hides the test's own.
  */
 export async function setTierModels(admin: APIRequestContext, models: TierModels): Promise<void> {
+  await saveStored(admin, (provider) => ({ provider: { ...provider, ...models } }));
+}
+
+/**
+ * The instance admin's save of the AI provider settings with the limits given, everything else as
+ * it is stored, as `setTierModels` saves: what a test that changed the limits puts back in its
+ * `finally`, so that a failure midway never leaves them changed in the shared e2e database.
+ */
+export async function setBudgets(admin: APIRequestContext, budgets: object): Promise<void> {
+  await saveStored(admin, () => ({ budgets }));
+}
+
+/** The stored provider as the `PUT` takes it: the answer's fields without its key's state. */
+interface ProviderBody {
+  kind: string;
+  api: string;
+  baseUrl: string;
+  model: string;
+  strongModel: string | null;
+  fastModel: string | null;
+  auth: string;
+  jsonMode: string;
+  maxTokensField: string;
+  temperature: number | null;
+  timeoutSeconds: number;
+}
+
+/**
+ * Saves the stored settings with `change` in place of their fields, as the AI provider page's
+ * sections send them. The key is left out, so the stored one stays.
+ */
+async function saveStored(
+  admin: APIRequestContext,
+  change: (provider: ProviderBody) => object,
+): Promise<void> {
   const me = (await (await admin.get('/api/v0/auth/me')).json()) as { csrfToken: string };
   const stored = (await (await admin.get('/api/v0/system/llm')).json()) as {
-    provider: {
-      kind: string;
-      api: string;
-      baseUrl: string;
-      model: string;
-      auth: string;
-      jsonMode: string;
-      maxTokensField: string;
-      temperature: number | null;
-      timeoutSeconds: number;
-    };
+    provider: ProviderBody;
   };
-  const { provider } = stored;
+  const p = stored.provider;
+  const provider: ProviderBody = {
+    kind: p.kind,
+    api: p.api,
+    baseUrl: p.baseUrl,
+    model: p.model,
+    strongModel: p.strongModel,
+    fastModel: p.fastModel,
+    auth: p.auth,
+    jsonMode: p.jsonMode,
+    maxTokensField: p.maxTokensField,
+    temperature: p.temperature,
+    timeoutSeconds: p.timeoutSeconds,
+  };
   const saved = await admin.put('/api/v0/system/llm', {
     headers: { 'x-qualor-csrf': me.csrfToken },
-    data: {
-      ...stored,
-      provider: {
-        kind: provider.kind,
-        api: provider.api,
-        baseUrl: provider.baseUrl,
-        model: provider.model,
-        ...models,
-        auth: provider.auth,
-        jsonMode: provider.jsonMode,
-        maxTokensField: provider.maxTokensField,
-        temperature: provider.temperature,
-        timeoutSeconds: provider.timeoutSeconds,
-      },
-    },
+    data: { ...stored, provider, ...change(provider) },
   });
   expect(saved.status(), await saved.text()).toBe(200);
 }
