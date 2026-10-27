@@ -73,10 +73,16 @@ const LONE_SURROGATES = new RegExp(LONE_SURROGATE_SOURCE, 'g');
  * provider, and a commit hash beside one is still a hash it links: they are no plain core.
  */
 const PROSE_WORD =
-  /^[("“‘]?((?:\p{L}\p{M}*|\p{Nd})+(?:['’-](?:\p{L}\p{M}*|\p{Nd})+)*)([.,;:!?)"”’…]*)$/u;
+  /^[("“‘]?((?:\p{L}\p{M}*|\p{Nd})+(?:['’-](?:\p{L}\p{M}*|\p{Nd})+)*)([.,;:!?)"”’…。।]*)$/u;
 /** The mark a plain word may open with, and the ones it may end in. */
 const PROSE_OPENERS = '("“‘';
-const PROSE_CLOSERS = '.,;:!?)"”’…';
+/** ... with the full stops of CJK (。) and of Devanagari (।), which close a sentence as `.` does. */
+const PROSE_CLOSERS = '.,;:!?)"”’…。।';
+/**
+ * A range of numbers, `2–3`: two digit runs and an en dash, with the marks a word may open with
+ * and end in. A part that is as long as a commit hash is no number (it is linked, see COMMIT_LIKE).
+ */
+const PROSE_RANGE = /^[("“‘]?(\p{Nd}+)–(\p{Nd}+)[.,;:!?)"”’…。।]*$/u;
 /**
  * The marks that join two code spans of one word and stay plain between them, one at a time:
  * `try`/`catch`, (`a`,`b`). None of them can begin a link, a reference or a quick action there: a
@@ -100,8 +106,10 @@ const COMMIT_LIKE = /^[0-9a-f]{7,64}$/i;
  * `CU-abc`, the autolinks a GitHub repository sets up can match an alphanumeric id (`TICKET-abc`),
  * and a GitLab Jira integration can be given a `jira_issue_regex` of its own. All of them link only
  * to what the project or the repository has configured.
+ * Written with a lookbehind so that a long word without a hyphen is read in linear time: the
+ * hyphen and its digit are looked for first, the letter before them only where they are.
  */
-const TRACKER_LIKE = /\p{L}[^-'’]*-\p{Nd}/u;
+export const TRACKER_LIKE = /(?<=\p{L}[^-'’]*)-\p{Nd}/u;
 /** A combining mark, which changes nothing of a word a provider reads for a link or a reference. */
 const COMBINING_MARKS = /\p{M}/gu;
 /** Where a hash may begin or end inside a plain core: at a hyphen, an apostrophe or a combining mark. */
@@ -127,6 +135,8 @@ const CLOSING_OF: Readonly<Record<string, string>> = { '(': ')', '"': '"', '“'
  */
 function isPlainProse(word: string): boolean {
   if (PROSE_DASHES.has(word)) return true;
+  const range = PROSE_RANGE.exec(word);
+  if (range !== null) return !COMMIT_LIKE.test(range[1] ?? '') && !COMMIT_LIKE.test(range[2] ?? '');
   const match = PROSE_WORD.exec(word);
   if (match === null) return false;
   const marked = match[1] ?? '';

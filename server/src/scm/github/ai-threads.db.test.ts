@@ -443,6 +443,39 @@ describe('GitHub decoration: AI review threads (6I-3, R16, R18)', () => {
     ).toEqual([]);
   });
 
+  it('with the listing cut at its page bound, a decoration posts no AI thread twice and resolves none it did not see', async () => {
+    const s = await setup('gh-ai/cut', { findings: [finding({ path: PATH, line: 3 })] });
+    const { repo, branchId } = s;
+    const posted = await aiFinding(branchId, { line: 5 });
+    await runDecorations(h, githubDeps(h));
+    expect(threadsOf(repo.id).has(posted)).toBe(true);
+    const total = threadsOf(repo.id).size;
+    // The finding is fixed, and another is found; the review comments run past the page bound, so
+    // that the thread already posted is not in the listing.
+    await closeFindings([posted]);
+    await aiFinding(branchId, { line: 9 });
+    const next = { link: '<https://x.example/?page=2>; rel="next"' };
+    fake.inject(
+      'GET',
+      new RegExp(`^/repos/acme/${repo.name}/pulls/7/comments`),
+      ...Array.from({ length: MAX_COMMENT_PAGES }, () => ({
+        status: 200,
+        body: [],
+        headers: next,
+      })),
+    );
+    fake.clearRequests();
+    await decorateAgain(s);
+    // The listing was cut, and the decoration wrote nothing into it.
+    expect(
+      fake.requests.filter((r) => r.method === 'GET' && r.path.includes('/pulls/7/comments')),
+    ).toHaveLength(MAX_COMMENT_PAGES);
+    expect([...reviewsOf(repo.name), ...singlesOf(repo.name)]).toEqual([]);
+    expect(mutations()).toEqual([]);
+    expect(threadsOf(repo.id).size).toBe(total);
+    expect(threadOf(threadsOf(repo.id).get(posted)!)).toMatchObject({ resolved: false });
+  });
+
   it('a moved-on pull request gets no AI thread', async () => {
     const s = await setup('gh-ai/moved-on');
     const { repo, branchId, project } = s;

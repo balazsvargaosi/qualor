@@ -23,6 +23,7 @@ import {
   reviewSnapshots,
   type AiCategory,
 } from '../db/schema';
+import { MAX_DISCUSSION_PAGES } from './inline';
 import { markerOf } from './markdown';
 import { enqueueDecoration } from './queue';
 
@@ -445,6 +446,39 @@ describe('GitLab decoration: AI review threads (6I-3, R16, R18)', () => {
       resolved: true,
       resolvedBy: HUMAN,
     });
+  });
+
+  it('with the listing cut at its page bound, a decoration posts no AI thread twice and resolves none it did not see', async () => {
+    const { gitlabId, analysisId, branchId } = await setup('ai/cut');
+    const posted = await aiFinding(branchId, { line: 5 });
+    await runDecorations(h, decorationDeps(h));
+    expect(threadsOf(gitlabId).has(posted)).toBe(true);
+    const total = fake.discussions(gitlabId, 12).length;
+    // The finding is fixed, and another is found; the discussions run past the page bound, so that
+    // the thread already posted is not in the listing.
+    await h.ctx.db
+      .update(issues)
+      .set({ status: 'closed', closedAt: sql`now()` })
+      .where(eq(issues.id, posted));
+    await aiFinding(branchId, { line: 9 });
+    fake.inject(
+      'GET',
+      new RegExp(`^/projects/${gitlabId}/merge_requests/12/discussions$`),
+      ...Array.from({ length: MAX_DISCUSSION_PAGES }, (_, i) => ({
+        status: 200,
+        body: [],
+        headers: { 'x-next-page': String(i + 2) },
+      })),
+    );
+    fake.clearRequests();
+    await decorateAgain(analysisId, branchId);
+    // The listing was cut, and the decoration wrote nothing into it.
+    expect(
+      fake.requests.filter((r) => r.method === 'GET' && r.path.endsWith('/discussions')),
+    ).toHaveLength(MAX_DISCUSSION_PAGES);
+    expect(threadWrites()).toEqual([]);
+    expect(fake.discussions(gitlabId, 12)).toHaveLength(total);
+    expect(threadsOf(gitlabId).get(posted)?.notes[0]).toMatchObject({ resolved: false });
   });
 
   it('a low finding without a suggestion gets no thread', async () => {

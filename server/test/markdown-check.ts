@@ -96,7 +96,7 @@ export const FORBIDDEN_ANYWHERE =
  * GitHub gives a meaning to is among them. (The mark that joins two spans of a word, as in
  * `try`/`catch`, is taken out with the spans: {@link outsideProseSpans}.)
  */
-export const PROSE_TEXT = /^[\p{L}\p{M}\p{Nd} .,;:!?'’"“”‘()…—–-]*$/u;
+export const PROSE_TEXT = /^[\p{L}\p{M}\p{Nd} .,;:!?'’"“”‘()…。।—–-]*$/u;
 /** A list marker at the start of a line, as `safeProse` writes it. */
 const LIST_MARKER = /^(?:- |\d+\. )/;
 

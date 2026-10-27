@@ -26,6 +26,7 @@ import {
   ruleKeyMarkdown,
   safeProse,
   summaryMarker,
+  TRACKER_LIKE,
 } from './markdown';
 import {
   commitStatusFor,
@@ -1321,6 +1322,85 @@ describe('safeProse: the model’s words made inert', () => {
     expect(prose('word`glued` and `a`b')).toBe('`` word`glued` `` and ` a `b');
     expect(prose('`` ` ``')).toBe('`` ` ``');
     expect(prose('` `')).toBe('` `');
+  });
+
+  it('a sentence ending in 。 or । keeps its last word plain', () => {
+    expect(prose('Fix the bug。')).toBe('Fix the bug。');
+    expect(prose('バグを直す。 次へ。')).toBe('バグを直す。 次へ。');
+    expect(prose('यह ठीक है।')).toBe('यह ठीक है।');
+    expect(prose('(done।)')).toBe('(done।)');
+    // A mark of no sentence still puts the word in a span, and a hash before 。 is still a hash.
+    expect(prose('a、b')).toBe('` a、b `');
+    expect(prose('abc1234。')).toBe('` abc1234 `。');
+    expectInertProse(prose('Fix the bug。 यह ठीक है।'), 'Fix the bug。 यह ठीक है।');
+  });
+
+  it('2–3 stays plain', () => {
+    expect(prose('Lines 2–3 changed, see 10–12.')).toBe('Lines 2–3 changed, see 10–12.');
+    expect(prose('(5–6)')).toBe('(5–6)');
+    // A range of hashes, a dash with a letter and a hyphen are no number range.
+    expect(prose('1234567–1234890')).toBe('` 1234567–1234890 `');
+    expect(prose('a–3')).toBe('` a–3 `');
+    expect(prose('2–')).toBe('` 2– `');
+  });
+
+  it('TRACKER_LIKE matches as before on the corpus, and a 20 000-character word takes under 20 ms', () => {
+    const before = /\p{L}[^-'’]*-\p{Nd}/u;
+    const corpus = [
+      'GH-26',
+      'JIRA-123',
+      'AB1-123',
+      'X9-1',
+      '9GH-1',
+      'CU-abc',
+      'TICKET-abc',
+      'bug-12',
+      'task-3',
+      'a-b-1',
+      "it's-1",
+      'it’s-1',
+      'état-3',
+      '9-1',
+      '-1',
+      'a-',
+      'a-٣',
+      '٣GH-1',
+      'x’٣GH-1',
+      '',
+      'abc',
+      'a'.repeat(300) + '-9',
+      `${'9'.repeat(300)}-9`,
+    ];
+    // Words of a small alphabet, in every order up to six characters (a seeded walk through them).
+    const alphabet = ['a', 'Z', '9', '٣', '-', "'", '’', 'é', '.', '\u0301'];
+    let seed = 7;
+    const next = (): number => (seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648);
+    for (let i = 0; i < 4_000; i += 1) {
+      let word = '';
+      for (let length = next() % 7; length > 0; length -= 1) {
+        word += alphabet[next() % alphabet.length];
+      }
+      corpus.push(word);
+    }
+    for (const word of corpus)
+      expect(TRACKER_LIKE.test(word), JSON.stringify(word)).toBe(before.test(word));
+    // The cases that matter match.
+    for (const word of ['GH-26', 'JIRA-123', 'AB1-123', 'X9-1', '9GH-1'])
+      expect(TRACKER_LIKE.test(word)).toBe(true);
+    for (const word of ['CU-abc', 'TICKET-abc', '9-1', '-1'])
+      expect(TRACKER_LIKE.test(word)).toBe(false);
+    // A long word without a hyphen, or with hyphens that no digit follows, is read in linear time.
+    for (const word of [
+      'a'.repeat(20_000),
+      `${'a'.repeat(10_000)}${'9'.repeat(10_000)}`,
+      '9'.repeat(20_000),
+      `${'a'.repeat(19_990)}-x`,
+      'a-'.repeat(10_000),
+    ]) {
+      const started = performance.now();
+      expect(TRACKER_LIKE.test(word)).toBe(false);
+      expect(performance.now() - started).toBeLessThan(20);
+    }
   });
 
   it('`try`/`catch` becomes two code spans with a plain slash', () => {
