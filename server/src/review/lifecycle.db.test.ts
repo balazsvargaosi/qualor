@@ -38,6 +38,7 @@ import { reviewSnapshotHandlers } from './jobs';
 import {
   MR_STATE_CHECK_SECONDS,
   purgeInactiveSnapshots,
+  purgeProjectSnapshots,
   REVIEW_MR_STATE_QUEUE,
   scheduleMergeRequestCheck,
 } from './lifecycle';
@@ -742,6 +743,56 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
         .update(projects)
         .set({ scmProjectRef: String(a1.key.length) })
         .where(eq(projects.id, a1.id));
+    }
+  });
+
+  it('a remap purge that skips a locked old snapshot fails, and its retry deletes it', async () => {
+    const [locked] = [await snapshotOf(a1)];
+    const cutoff = new Date(Date.now() + 60_000);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => (held = resolve));
+    const other = h.ctx.db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM review_snapshots WHERE id = ${locked} FOR UPDATE`);
+      held();
+      await gate;
+    });
+    await holding;
+    try {
+      // The row another transaction holds is skipped, but the purge must not report success.
+      await expect(purgeProjectSnapshots(h.ctx.db, a1.id, cutoff)).rejects.toThrow(/locked/);
+      expect(await snapshotIds(a1)).toEqual([locked]);
+    } finally {
+      release();
+      await other;
+    }
+    // The job queue retries a throwing handler; the retry finds the row free.
+    expect(await purgeProjectSnapshots(h.ctx.db, a1.id, cutoff)).toBe(1);
+    expect(await snapshotIds(a1)).toEqual([]);
+  });
+
+  it('unmap then remap before the purge runs still drops the old repository snapshots', async () => {
+    await seedAll();
+    await h.ctx.db.delete(jobs).where(eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE));
+    const patch = (payload: object) => call('PATCH', `/projects/${a1.id}`, h.orgAdmin, payload);
+    const other = await connect(orgA);
+    try {
+      // A no-op PATCH (same mapping) queues nothing.
+      const same = await patch({
+        scmConnectionId: connectionA,
+        scmProjectRef: String(a1.key.length),
+      });
+      expect(same.statusCode, same.body).toBe(200);
+      expect(await purgeJobs()).toEqual([]);
+
+      expect((await patch({ scmConnectionId: null })).statusCode).toBe(200);
+      expect((await patch({ scmConnectionId: other })).statusCode).toBe(200);
+      await runSnapshotJobs();
+      // a3 was never mapped, so the unmap's organisation purge takes its copy too.
+      expect(await counts()).toEqual([0, 1, 0, 1]);
+    } finally {
+      await mapTo(a1, connectionA);
     }
   });
 

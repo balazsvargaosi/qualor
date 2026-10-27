@@ -48,7 +48,9 @@ export async function queueSnapshotPurge(
 /**
  * Queues the deletion of the snapshots of `projectId` made before this transaction's `now()`: the
  * project was mapped to another repository or connection, and AI review must not read the old
- * one's code. A snapshot uploaded after the remap is newer, so it stays.
+ * one's code. The cutoff is `now()` of this transaction, which is its start, not its commit: a
+ * snapshot created after the transaction began stays, even one of the old mapping. That is
+ * conservative.
  */
 export async function queueRemapPurge(tx: Executor, projectId: string): Promise<void> {
   const { rows } = await tx.execute<{ now: Date | string }>(sql`SELECT now() AS now`);

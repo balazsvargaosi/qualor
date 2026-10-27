@@ -209,7 +209,9 @@ export async function purgeInactiveSnapshots(
 /**
  * Deletes the snapshots of one project made before `createdBefore`: it was mapped to another
  * repository or connection, and the copies of the old one must go at once. Same batches and row
- * skipping as `purgeInactiveSnapshots`. Answers how many were deleted.
+ * skipping as `purgeInactiveSnapshots`. The project is still active, so no later sweep would take
+ * a row that was skipped because a job held it: when any matching row is left, this throws and the
+ * job queue retries it with its backoff. Answers how many were deleted.
  */
 export async function purgeProjectSnapshots(
   db: Db,
@@ -226,6 +228,14 @@ export async function purgeProjectSnapshots(
          FOR UPDATE SKIP LOCKED)`);
     const n = result.rowCount ?? 0;
     deleted += n;
-    if (n < PURGE_BATCH) return deleted;
+    if (n < PURGE_BATCH) break;
   }
+  const left = await db.execute(sql`
+    SELECT 1 FROM review_snapshots
+     WHERE project_id = ${projectId} AND created_at < ${createdBefore.toISOString()}::timestamptz
+     LIMIT 1`);
+  if ((left.rowCount ?? 0) > 0) {
+    throw new Error('old review snapshots of a remapped project are locked; retrying');
+  }
+  return deleted;
 }

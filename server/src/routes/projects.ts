@@ -27,6 +27,7 @@ import {
   projectMemberships,
   projects,
   qualityGates,
+  reviewSnapshots,
   scmConnections,
   type OrganizationRole,
   type ProjectRole,
@@ -596,14 +597,25 @@ export const projectRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
           if (saved.scmConnectionId === null && locked.scmConnectionId !== null) {
             await queueSnapshotPurge(tx, saved.organizationId);
           }
-          // Mapped to another repository or connection: the copies of the old one go (R41).
+          // Mapped to another repository or connection, or mapped again after an unmap whose
+          // purge has not run yet (it would find the project active and keep the old copies):
+          // the copies of the old mapping go (R41).
           if (
-            locked.scmConnectionId !== null &&
             saved.scmConnectionId !== null &&
             (saved.scmConnectionId !== locked.scmConnectionId ||
               saved.scmProjectRef !== locked.scmProjectRef)
           ) {
-            await queueRemapPurge(tx, saved.id);
+            // A first mapping has copies to drop only after an unmap whose purge is still queued.
+            const holdsCopies =
+              locked.scmConnectionId !== null ||
+              (
+                await tx
+                  .select({ id: reviewSnapshots.id })
+                  .from(reviewSnapshots)
+                  .where(eq(reviewSnapshots.projectId, saved.id))
+                  .limit(1)
+              ).length > 0;
+            if (holdsCopies) await queueRemapPurge(tx, saved.id);
           }
           // rbac-audit.md §8: only the fields whose value changed.
           const fieldChanges = PROJECT_CHANGE_FIELDS.filter(
