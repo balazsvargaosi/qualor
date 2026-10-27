@@ -103,7 +103,7 @@ All notable changes to Qualor are listed here, newest first. The format follows
   `provider` of `GET` and `PUT /api/v0/system/llm` gains `contextWindowTokens` (8 000 to
   10 000 000, or `null`).
 - AI review and replies use the provider's prompt cache, and the AI provider's prices take a
-  **Cached input** price per model. Budgets count every prompt token, cached or not.
+  **Cached input** price per model. Token budgets count every prompt token, cached or not.
 
 ### Changed
 
