@@ -4,6 +4,7 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import {
   REDACTED,
+  redactText,
   reportSchema,
   REVIEW_SNAPSHOT_CONTENT_TYPE,
   type Language,
@@ -15,6 +16,7 @@ import {
   type SnapshotOmittedLine,
 } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
+import { describeWithTools } from '../../test/analyzers';
 import { commitAll, gitSync, initRepo, SCAN_TEST_ENV } from '../../test/git';
 import { json, problem, useTestServers } from '../../test/http';
 import { captureIO } from '../../test/io';
@@ -1143,6 +1145,83 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
       expect(stderr).not.toContain(TOKEN);
       expect(stderr).not.toContain(headSecret);
       expect(stderr).not.toContain(baseSecret);
+    },
+  );
+
+  describeWithTools(['gitleaks'])(
+    'the merge-base secret scan with the real Gitleaks (6I, R43)',
+    () => {
+      // The fixture's own value (mixed-secrets/src/config.ts:2, `apiKey = "Zx9Q…"`) is caught by the
+      // shared patterns, which read the name. A Shopify token under a plain name is found by
+      // Gitleaks' default shopify-access-token rule only. A made-up value, no real token, put
+      // together at run time so that this file holds no token of that form: Qualor's own Gitleaks
+      // scan of the repository (.gitleaks.toml) and a host's push protection would flag one.
+      const SECRET = ['shpat', 'a1b2c3d4e5f60718293a4b5c6d7e8f90'].join('_');
+      const REMOVED_LINE = `const store = "${SECRET}";`;
+      const KEPT = 'export const endpoint = "https://api.example.com";\n';
+      /** A merge request whose only change to src/config.ts removes the line with the secret. */
+      const removingRepo = (yml?: string) =>
+        mrRepo({
+          ...(yml === undefined ? {} : { yml }),
+          base: { 'src/config.ts': `${KEPT}${REMOVED_LINE}\nexport const after = 1;\n` },
+          head: { 'src/config.ts': `${KEPT}export const after = 1;\n` },
+        });
+      const configPatch = (server: Fake): string =>
+        sent(server)
+          .lines.filter(isChange)
+          .find((l) => l.path === 'src/config.ts')?.patch ?? '';
+
+      it(
+        'the real Gitleaks masks a secret the merge request removes, which the shared patterns miss (R13)',
+        { timeout: 120_000 },
+        async () => {
+          // The precondition: if a shared pattern ever catches this value, the test would pass
+          // without Gitleaks. Pick another format that only Gitleaks finds, then.
+          expect(redactText(REMOVED_LINE).text).toContain(SECRET);
+          const mr = removingRepo();
+          const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+          const { code, stderr } = await scan(
+            mr.root,
+            server,
+            [],
+            { analyzers: [realGitleaks()] },
+            gitlabMr(mr.head),
+          );
+          expect(code, stderr).toBe(0);
+          expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, SNAPSHOT, GATE]);
+          expect(configPatch(server)).toContain(`-const store = "${REDACTED}";`);
+          expect(sent(server).text).not.toContain(SECRET);
+          expect(stderr).not.toContain(SECRET);
+        },
+      );
+
+      it(
+        'with Gitleaks off in qualor.yml, the removed line is not sent',
+        { timeout: 120_000 },
+        async () => {
+          const mr = removingRepo(`${MR_YML}analyzers:\n  gitleaks:\n    enabled: false\n`);
+          const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+          const { code, stderr } = await scan(
+            mr.root,
+            server,
+            [],
+            { analyzers: [realGitleaks()] },
+            gitlabMr(mr.head),
+          );
+          expect(code, stderr).toBe(0);
+          expect(configPatch(server)).toContain('\n-[1 removed line not sent]\n');
+          expect(sent(server).text).not.toContain(SECRET);
+          expect(
+            stderr
+              .split('\n')
+              .filter(
+                (l) =>
+                  l ===
+                  'AI review: the secret scan is off in qualor.yml; only built-in patterns mask secrets in the snapshot',
+              ),
+          ).toHaveLength(1);
+        },
+      );
     },
   );
 });
