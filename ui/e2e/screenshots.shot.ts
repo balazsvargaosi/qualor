@@ -149,11 +149,31 @@ test('22 members, 23 project access', async ({ page }) => {
   await shoot(page, '23-project-access');
 });
 
-test('18 AI provider settings, 19 issue with the AI panel', async ({ page }) => {
+test('18 AI provider settings, 18b organization AI settings, 19 issue with the AI panel', async ({
+  page,
+}) => {
   await page.goto('/settings/ai');
   await expect(page.getByRole('heading', { name: 'AI provider', level: 2 })).toBeVisible();
   await expect(page.getByText('An API key is set.')).toBeVisible();
   await shoot(page, '18-settings-ai');
+
+  // Default's AI page with its review on for Payments API, switched on through the dialog; off
+  // again after the shot.
+  await page.goto('/settings/ai-review');
+  const review = page.locator('li[data-key="review"]');
+  await page.getByRole('button', { name: 'Add projects' }).click();
+  await page.getByRole('checkbox', { name: /^Payments API/ }).check();
+  await page.getByRole('button', { name: 'Add 1 project' }).click();
+  await review.getByRole('button', { name: 'Switch on AI review…' }).click();
+  await page.getByRole('button', { name: /^Switch on and send code to / }).click();
+  await expect(review.locator('.badge')).toHaveText('On');
+  await expect(page.locator('#review .foot-status')).toContainText('Saved at');
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await shoot(page, '18b-settings-ai-review');
+  await review.getByRole('button', { name: 'Switch off AI review' }).click();
+  await page.getByRole('button', { name: 'Switch off', exact: true }).click();
+  await expect(review.locator('.badge')).toHaveText('Off');
+
   // The eqeqeq issue of merge request !42: the fake LLM (serve.ts) explains, triages and fixes it.
   await page.goto('/projects');
   await page.getByRole('link', { name: 'Payments API' }).click();
