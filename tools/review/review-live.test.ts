@@ -197,7 +197,19 @@ describe('liveEnabled and readLiveEnv', () => {
     expect(capOf('0.01')).toBe(0.01);
     expect(capOf('1000')).toBe(1000);
     expect(capOf('', {})).toBeNull();
-    for (const cap of ['0', '-1', '1000.01', '1e4', 'much', 'NaN', 'Infinity']) {
+    for (const cap of [
+      '0',
+      '-1',
+      '1000.01',
+      '1e4',
+      'much',
+      'NaN',
+      'Infinity',
+      '0x10',
+      '1e2',
+      '.5',
+      '5.',
+    ]) {
       expect(() => capOf(cap), cap).toThrow('QUALOR_LIVE_REVIEW_MAX_USD');
     }
     // No prices at all, or no pair, for the model the calls go to.
@@ -595,6 +607,26 @@ describe('runLive against the fake LLM', () => {
       expect(request.headers['api-key']).toBe(fake.apiKey);
       expect(request.headers.authorization).toBeUndefined();
     }
+  });
+
+  it('refuses a cost cap whose prices leave a called tier unpriced, before any call', async () => {
+    const priced = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null };
+    for (const over of [
+      { prices: null },
+      { prices: priced, strongModel: 'big' },
+      { prices: priced, fastModel: 'small', strongPrices: priced },
+    ]) {
+      await expect(
+        runLive(options({ maxCostUsd: 5, ...over })),
+        JSON.stringify(over),
+      ).rejects.toThrow('QUALOR_LIVE_REVIEW_MAX_USD');
+    }
+    expect(fake.requests).toHaveLength(0);
+    // A tier on the same model needs no prices of its own.
+    enqueueAnswers();
+    await expect(
+      runLive(options({ maxCostUsd: 5, prices: priced, strongModel: 'fake-model' })),
+    ).resolves.toBeDefined();
   });
 
   it('stops before the next review at the cost cap, and says so', async () => {

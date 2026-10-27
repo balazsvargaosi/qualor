@@ -590,6 +590,9 @@ async function reviewCase(
       if (!(err instanceof CaseSkipped)) throw err;
       return { kind: 'failed', reason: err.detail, ...spent };
     }
+    // The verifications of this review: they count once it ends scored (a failed review's
+    // findings are not, so its verifications would only inflate "rejected or unread").
+    const verified = { run: 0, starved: 0 };
     const pipeline = deps.pipelineFor({
       evalCase: c,
       reader,
@@ -607,8 +610,8 @@ async function reviewCase(
         converse: async (role, user, nonce, tokenBudget, accept, modelTier) => {
           const stage = stageOf(role);
           if (role === 'verify') {
-            measures.verification.run += 1;
-            if (policy.budget.calls === 0) measures.verification.starved += 1;
+            verified.run += 1;
+            if (policy.budget.calls === 0) verified.starved += 1;
           }
           const result = await pipeline.converse(role, user, nonce, tokenBudget, accept, modelTier);
           spent.input += result.inputTokens;
@@ -635,6 +638,8 @@ async function reviewCase(
       const reason = outcome.kind === 'failed' ? (outcome.detail ?? outcome.reason) : outcome.kind;
       return { kind: 'failed', reason, ...spent };
     }
+    measures.verification.run += verified.run;
+    measures.verification.starved += verified.starved;
     if (outcome.notes.includes('lists_shortened')) measures.listsShortened += 1;
     for (const finding of outcome.findings) {
       if (finding.verification === 'confirmed') measures.verification.confirmed += 1;
@@ -783,6 +788,11 @@ export interface EvalReport {
   listsShortened: number;
   /** The evaluation stopped before its last review: the cost had reached the cap. */
   stoppedAtCostCap: boolean;
+  /**
+   * The evaluation stopped before its last review because a cost cap was set and a review's cost
+   * was unknown (a call had no prices), so the cap could not be kept.
+   */
+  stoppedAtUnknownCost: boolean;
 }
 
 /** The median of sorted values: the mean of the middle two when their count is even. */
@@ -840,6 +850,7 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
     cache: { read: 0, write: 0, hitRate: null, byStage: newMeasures().cache.byStage },
     listsShortened: 0,
     stoppedAtCostCap: false,
+    stoppedAtUnknownCost: false,
   };
   const measures = newMeasures();
   const planned = report.reviews;
@@ -850,6 +861,11 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
   stopped: for (let run = 0; run < runs; run += 1) {
     for (const c of cases) {
       // The cap is checked before a review starts: the one running finishes.
+      if (cap !== null && done > 0 && costUsd === null) {
+        // A review's cost came back unknown: the cap cannot be kept, so no quiet uncapped run.
+        report.stoppedAtUnknownCost = true;
+        break stopped;
+      }
       if (cap !== null && costUsd !== null && costUsd >= cap) {
         report.stoppedAtCostCap = true;
         break stopped;
@@ -953,6 +969,11 @@ export function formatReport(report: EvalReport): string {
     `${plural(report.cases, 'case')} (${report.clean} clean), ${plural(report.runs, 'run')} each, ${plural(report.reviews, 'review')}`,
     ...(report.stoppedAtCostCap
       ? [`stopped at the cost cap after ${report.reviews} of ${report.cases * report.runs} reviews`]
+      : []),
+    ...(report.stoppedAtUnknownCost
+      ? [
+          `stopped after ${report.reviews} of ${report.cases * report.runs} reviews: the cost of a review was unknown, so the cost cap could not be kept`,
+        ]
       : []),
     ...(failedCount === 0 ? [] : [`failed reviews: ${failedCount} (${failedWhy})`]),
     '',

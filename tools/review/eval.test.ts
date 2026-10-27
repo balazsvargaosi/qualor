@@ -2,13 +2,14 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AiCategory } from '../../server/src/db/schema';
 import type { PricePair } from '../../server/src/llm/settings';
 import type { ConversationResult } from '../../server/src/review/conversation';
 import type { ReviewRole } from '../../server/src/review/prompts';
 import type { ModelTier } from '../../server/src/review/model-tiers';
-import type { PipelineDeps } from '../../server/src/review/pipeline';
+import type * as PipelineModule from '../../server/src/review/pipeline';
+import { runReviewPipeline, type PipelineDeps } from '../../server/src/review/pipeline';
 import type { SnapshotReader } from '../../server/src/review/snapshot-reader';
 import {
   EVAL_DIR,
@@ -25,6 +26,12 @@ import {
 } from './eval';
 // @ts-expect-error: a plain ES module of the repository's tooling, without type declarations
 import { buildPatch } from './make-case.mjs';
+
+// The real pipeline, which one test wraps to script the notes of an outcome.
+vi.mock('../../server/src/review/pipeline', async (importOriginal) => {
+  const actual = await importOriginal<typeof PipelineModule>();
+  return { ...actual, runReviewPipeline: vi.fn(actual.runReviewPipeline) };
+});
 
 /*
  * Plan 6I-3 Task 14: the evaluation set of the AI review and the harness that scores it. Nothing
@@ -88,6 +95,8 @@ interface Script {
   before?: (role: ReviewRole, run: CaseRun) => void;
   /** The verdicts of the verifications, in the order they are asked; 'confirmed' once spent. */
   verdicts?: string[];
+  /** What a verification of a case answers instead of a verdict. */
+  verifyResult?: (c: EvalCase) => ConversationResult | null;
 }
 
 /**
@@ -126,6 +135,8 @@ function scripted(script: Script): { deps: EvalDeps; roles: string[]; tiers: Mod
         return Promise.resolve(said(JSON.stringify(report)));
       }
       if (role === 'verify') {
+        const instead = script.verifyResult?.(evalCase) ?? null;
+        if (instead !== null) return Promise.resolve(instead);
         const verdict = {
           verdict: script.verdicts?.shift() ?? 'confirmed',
           reason: 'The code shows it.',
@@ -1165,20 +1176,114 @@ describe('runEval scores', () => {
       expect(told).toEqual([1, 3]);
       expect(formatReport(capped)).toContain('stopped at the cost cap after 1 of 3 reviews');
 
-      // A cap above the whole cost, no cap, and a cap with no prices stop nothing.
+      // A cap above the whole cost, and no cap, stop nothing.
       for (const over of [
         { maxCostUsd: first * 10, prices },
         { maxCostUsd: null, prices },
-        { maxCostUsd: first },
       ]) {
         const all = await runEval(cases, { ...fresh(), ...over });
         expect(all, JSON.stringify(over)).toMatchObject({ reviews: 3, stoppedAtCostCap: false });
       }
     });
 
-    it('counts no shortened lists for a review whose lists fit', async () => {
-      const report = await runEval([synthetic({ id: 'one' })], nothing().deps);
-      expect(report.listsShortened).toBe(0);
+    it('with a cap set, a review whose cost is unknown stops the run before the next review', async () => {
+      const cases = ['a', 'b', 'c'].map((id) => synthetic({ id }));
+      const fresh = () => scripted({ said: () => [], tokens: [2_000, 500] }).deps;
+
+      // No prices, so no review has a cost: the cap cannot be kept, and the run says so.
+      const unknown = await runEval(cases, { ...fresh(), maxCostUsd: 5 });
+      expect(unknown).toMatchObject({
+        reviews: 1,
+        costUsd: null,
+        stoppedAtCostCap: false,
+        stoppedAtUnknownCost: true,
+      });
+      expect(formatReport(unknown)).toContain(
+        'stopped after 1 of 3 reviews: the cost of a review was unknown, so the cost cap could not be kept',
+      );
+
+      // Prices of only some tiers: it stops at the first review that used an unpriced one.
+      const some = await runEval(cases, {
+        ...fresh(),
+        maxCostUsd: 5,
+        prices: (tier) =>
+          tier === 'strong'
+            ? null
+            : { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
+      });
+      expect(some).toMatchObject({ reviews: 1, stoppedAtUnknownCost: true });
+
+      // Without a cap an unknown cost stops nothing.
+      const free = await runEval(cases, fresh());
+      expect(free).toMatchObject({ reviews: 3, stoppedAtUnknownCost: false });
+    });
+
+    it('counts the reviews whose outcome noted lists_shortened, and not other notes', async () => {
+      const notesOf = (notes: string[]) =>
+        vi.mocked(runReviewPipeline).mockImplementationOnce(async (...args) => {
+          const actual = await vi.importActual<typeof PipelineModule>(
+            '../../server/src/review/pipeline',
+          );
+          const real = await actual.runReviewPipeline(...args);
+          return real.kind === 'reviewed' ? { ...real, notes: notes as typeof real.notes } : real;
+        });
+      const one = synthetic({ id: 'one' });
+
+      // A review whose lists fit notes nothing.
+      expect((await runEval([one], nothing().deps)).listsShortened).toBe(0);
+
+      notesOf(['lists_shortened']);
+      expect((await runEval([one], nothing().deps)).listsShortened).toBe(1);
+
+      // A review that noted only the window is not one with shortened lists.
+      notesOf(['context_window_reached']);
+      expect((await runEval([one], nothing().deps)).listsShortened).toBe(0);
+
+      notesOf(['context_window_reached', 'lists_shortened']);
+      notesOf(['lists_shortened']);
+      expect((await runEval([one, one], nothing().deps)).listsShortened).toBe(2);
+    });
+
+    it('counts the verifications of the reviews that end scored, not those of a failed review', async () => {
+      const failedVerify = (c: EvalCase): ConversationResult | null =>
+        c.id === 'a'
+          ? {
+              kind: 'failed',
+              reason: 'provider_error',
+              inputTokens: 700,
+              outputTokens: 70,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              turns: 1,
+              toolCalls: 0,
+            }
+          : null;
+      const { deps } = scripted({
+        said: twoSecurity,
+        tokens: [1_000, 100],
+        verifyResult: failedVerify,
+        before: (role, run) => {
+          if (role === 'judge' && run.evalCase.id === 'a') run.policy.budget.calls = 0;
+        },
+      });
+
+      const report = await runEval(
+        ['a', 'b'].map((id) => synthetic({ id })),
+        deps,
+      );
+
+      expect(report.failed).toEqual({ provider_error: 1 });
+      // Review a failed in its first verification (begun with no calls left): not counted.
+      // Review b's two confirmed: all that count.
+      expect(report.verification).toEqual({
+        run: 2,
+        confirmed: 2,
+        needsValidation: 0,
+        rejectedOrUnread: 0,
+        starved: 0,
+      });
+      // The tokens of the failed review's verification are still spent.
+      expect(report.stageTokens.verification).toBe(770 + 2 * 1_100);
     });
   });
 
@@ -1353,6 +1458,7 @@ describe('the report', () => {
     },
     listsShortened: 2,
     stoppedAtCostCap: false,
+    stoppedAtUnknownCost: false,
   };
 
   /** The cells of the table row that starts with `label`. */

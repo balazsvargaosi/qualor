@@ -172,6 +172,31 @@ function tierModel(env: Env, name: string): string | null {
   return value === '' ? null : value;
 }
 
+/**
+ * A cost cap is checked against the cost, which is known only when every call has prices: the
+ * model's, and those of each tier that runs on a model of its own. Throws, naming what to set,
+ * when they do not cover every tier that will be called.
+ */
+function requireCapPrices(
+  o: Pick<
+    LiveOptions,
+    'model' | 'strongModel' | 'fastModel' | 'prices' | 'strongPrices' | 'fastPrices'
+  >,
+): void {
+  const missing = [
+    o.prices === null ? 'QUALOR_LIVE_REVIEW_PRICE_IN and _OUT' : null,
+    o.strongModel !== null && o.strongModel !== o.model && o.strongPrices === null
+      ? 'QUALOR_LIVE_REVIEW_STRONG_PRICE_IN and _OUT (the strong tier has a model of its own)'
+      : null,
+    o.fastModel !== null && o.fastModel !== o.model && o.fastPrices === null
+      ? 'QUALOR_LIVE_REVIEW_FAST_PRICE_IN and _OUT (the fast tier has a model of its own)'
+      : null,
+  ].filter((name) => name !== null);
+  if (missing.length > 0) {
+    throw new Error(`QUALOR_LIVE_REVIEW_MAX_USD needs the prices: set ${missing.join('; ')}`);
+  }
+}
+
 export function readLiveEnv(env: Env): LiveOptions {
   const url = env.QUALOR_LIVE_REVIEW_URL ?? '';
   const model = env.QUALOR_LIVE_REVIEW_MODEL ?? '';
@@ -227,9 +252,13 @@ export function readLiveEnv(env: Env): LiveOptions {
       `QUALOR_LIVE_REVIEW_CONTEXT_WINDOW must be a whole number of tokens from ${CONTEXT_WINDOW_MIN_TOKENS} to ${CONTEXT_WINDOW_MAX_TOKENS}`,
     );
   }
-  const rawCap = env.QUALOR_LIVE_REVIEW_MAX_USD ?? '';
+  // Trimmed; a plain decimal only: no hex, no exponent, no sign.
+  const rawCap = (env.QUALOR_LIVE_REVIEW_MAX_USD ?? '').trim();
   const maxCostUsd = rawCap === '' ? null : Number(rawCap);
-  if (maxCostUsd !== null && !(maxCostUsd > 0 && maxCostUsd <= MAX_COST_CAP_USD)) {
+  if (
+    maxCostUsd !== null &&
+    !(/^\d+(\.\d+)?$/.test(rawCap) && maxCostUsd > 0 && maxCostUsd <= MAX_COST_CAP_USD)
+  ) {
     throw new Error(
       `QUALOR_LIVE_REVIEW_MAX_USD must be a number of USD above 0 and up to ${MAX_COST_CAP_USD}`,
     );
@@ -240,19 +269,7 @@ export function readLiveEnv(env: Env): LiveOptions {
   const strongPrices = pricePair(env, 'QUALOR_LIVE_REVIEW_STRONG_PRICE');
   const fastPrices = pricePair(env, 'QUALOR_LIVE_REVIEW_FAST_PRICE');
   if (maxCostUsd !== null) {
-    // A cap is checked against the cost, which is known only when every call has prices.
-    const missing = [
-      prices === null ? 'QUALOR_LIVE_REVIEW_PRICE_IN and _OUT' : null,
-      strongModel !== null && strongModel !== model && strongPrices === null
-        ? 'QUALOR_LIVE_REVIEW_STRONG_PRICE_IN and _OUT (the strong tier has a model of its own)'
-        : null,
-      fastModel !== null && fastModel !== model && fastPrices === null
-        ? 'QUALOR_LIVE_REVIEW_FAST_PRICE_IN and _OUT (the fast tier has a model of its own)'
-        : null,
-    ].filter((name) => name !== null);
-    if (missing.length > 0) {
-      throw new Error(`QUALOR_LIVE_REVIEW_MAX_USD needs the prices: set ${missing.join('; ')}`);
-    }
+    requireCapPrices({ model, strongModel, fastModel, prices, strongPrices, fastPrices });
   }
   const names = (env.QUALOR_LIVE_REVIEW_CASES ?? '')
     .split(',')
@@ -366,6 +383,8 @@ export async function runLive(
   progress?: EvalDeps['progress'],
 ): Promise<LiveResult> {
   const { config, http } = providerOf(o);
+  // Whoever built the options, a cap is never run without the prices to keep it.
+  if (o.maxCostUsd !== null) requireCapPrices(o);
   const cases = chosen(loadCases(EVAL_DIR), o.cases);
   const models = { model: o.model, strongModel: o.strongModel, fastModel: o.fastModel };
   /** The prices as the AI settings would hold them: of the model, and of each tier that has its own. */
