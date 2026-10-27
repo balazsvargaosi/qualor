@@ -97,6 +97,18 @@ export function createLlmRuntime(now: () => number = Date.now): LlmRuntime {
   return { circuit: new CircuitBreaker(now), slots: new OrganizationSlots(1) };
 }
 
+/**
+ * The two circuits of the model calls (6I R40): the `llm` worker's runtime for Explain, Suggest
+ * triage and Suggest a fix, and a circuit of their own for AI reviews and replies, keyed by the same
+ * base URL. Failing background reviews never pause the assistant, and the other way round.
+ */
+export function createModelRuntimes(now: () => number = Date.now): {
+  llm: LlmRuntime;
+  reviewCircuit: CircuitBreaker;
+} {
+  return { llm: createLlmRuntime(now), reviewCircuit: new CircuitBreaker(now) };
+}
+
 export interface LlmJobDeps {
   db: Db;
   secretKey: string;

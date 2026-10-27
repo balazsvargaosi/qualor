@@ -170,9 +170,9 @@ tools ([In Qualor](./ai-review.md#in-qualor)).
   in `QUALOR_LLM_INTERNAL_HOSTS` (see [a local model](#a-local-model-with-ollama)). Redirects are
   not followed, and no proxy is used.
 - After 5 failures in a row (timeouts, no answer, rate limits) Qualor pauses calls to the address
-  for 10 minutes. [AI review](./ai-review.md) calls the same provider and its failures count too:
-  repeated timeouts or rate limits during reviews pause **Explain**, **Suggest triage** and
-  **Suggest a fix** for those 10 minutes, and the reverse.
+  for 10 minutes. [AI review](./ai-review.md) calls the same provider, with a pause of its own:
+  failing reviews never pause **Explain**, **Suggest triage** and **Suggest a fix**, and their
+  failures never pause reviews.
 
 ### The current models
 
@@ -516,7 +516,7 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 | Message | What to do |
 |---|---|
 | "The model did not answer in time" | raise the **Timeout** in the **Connection options** of **Settings → AI provider**; a local model on a CPU needs more |
-| "The model provider could not be reached" | check the base URL and that the server can reach the host. After 5 failures in a row Qualor pauses calls to that address for 10 minutes, and failures of AI reviews count too ([The provider](#the-provider-instance-admins)) |
+| "The model provider could not be reached" | check the base URL and that the server can reach the host. After 5 failures in a row Qualor pauses calls to that address for 10 minutes ([The provider](#the-provider-instance-admins)) |
 | "The model provider is rate limiting Qualor; try later" | the provider's own limit. Qualor retries after the time the provider asks for; try again later, or lower the budgets |
 | "The provider refused the API key (HTTP 401)" | set a valid key; check the key header (`api-key` for Azure) |
 | "The provider refused the request (HTTP 403): the key lacks access to this model, or the account has no credit" | the key is valid but may not use this model: check the model's name, the key's project or workspace permissions, and the account's billing or credit |

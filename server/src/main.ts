@@ -23,7 +23,7 @@ import { reconcileDeadAnalyses } from './ingest/process';
 import { LicenseFileError } from './license/source';
 import { autoFixHandlers } from './llm/auto-fix';
 import {
-  createLlmRuntime,
+  createModelRuntimes,
   LLM_LEASE_MS,
   LLM_WORKER_CONCURRENCY,
   llmHandlers,
@@ -310,9 +310,10 @@ async function main(): Promise<void> {
     leaseMs: SCM_LEASE_MS,
     logger,
   });
-  // One runtime for the AI requests and the AI reviews: a provider that is failing is left alone by
-  // both (its circuit). Only the `llm` worker takes an organisation's slots.
-  const llmRuntime = createLlmRuntime();
+  // Two circuits (6I R40): the AI requests (explain, triage, fix) have the `llm` runtime, AI reviews
+  // and replies one of their own, so failing background reviews never pause the assistant. Only the
+  // `llm` worker takes an organisation's slots.
+  const { llm: llmRuntime, reviewCircuit } = createModelRuntimes();
   // llm.md §12.3: AI requests have their own worker, so a slow or absent model never delays
   // analyses, deliveries or decorations. It also runs the automatic fix suggestions of an analysed
   // merge request (4E-3a §3), which queue requests and never call the model themselves. Its calls
@@ -345,14 +346,14 @@ async function main(): Promise<void> {
     },
   });
   // 6I-3 R21: AI reviews have their own worker, so a review never holds explain, triage or fix
-  // behind it, nor an analysis or a decoration. It shares the `llm` worker's circuit, and the `scm`
+  // behind it, nor an analysis or a decoration. It has a circuit of its own (R40), and the `scm`
   // worker's runtime for what the answers to replies read and write on GitLab and GitHub (6I-4).
   const reviewShutdown = new AbortController();
   const reviewDeps = {
     db: database.db,
     config,
     logger,
-    llmCircuit: llmRuntime.circuit,
+    llmCircuit: reviewCircuit,
     scm: { secretKey: config.secretKey, internalHosts: config.scmInternalHosts },
     scmRuntime,
     shutdown: reviewShutdown.signal,

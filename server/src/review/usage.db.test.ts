@@ -1316,7 +1316,7 @@ const port = 8080;
       expect(await rows()).toHaveLength(0);
     });
 
-    it('counts transient failures against the circuit it shares, and opens it', async () => {
+    it('counts transient failures against its circuit, and opens it', async () => {
       const sender = senderFor('openai');
       await failing(sender, 503, SCM_CIRCUIT_FAILURES);
       expect(runtime.circuit.openUntil(fake.openAiBaseUrl)).not.toBeNull();

@@ -83,9 +83,9 @@ export interface ReviewJobDeps {
   config: Config;
   logger: Logger;
   /**
-   * The `llm` worker's circuit: one LlmRuntime serves both workers, so a provider that is failing
-   * is left alone by explain, triage and fix and by the reviews at once. A review takes no slot of
-   * the organisation's AI requests (R21).
+   * The circuit of reviews and replies (R40): one of their own, keyed by the provider's base URL,
+   * apart from the `llm` worker's, so failing reviews never pause explain, triage and fix, and the
+   * other way round. A review takes no slot of the organisation's AI requests (R21).
    */
   llmCircuit: LlmRuntime['circuit'];
   scm: DecorationDeps['scm'];
