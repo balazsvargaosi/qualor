@@ -342,10 +342,9 @@ where](#what-is-sent-and-where)), and the same files and rules are never sent.
    **Suggest a fix** goes off after they were switched on, the section says "On, but not running:
    Suggest a fix is off for Acme. An instance admin turns it on in Settings → AI provider." The
    permission is `org.ai.manage`, held by the Organization admin role
-   ([Roles and the audit log](./roles-and-audit.md)). Without the licence the section shows
-   "Automatic fix suggestions need the Enterprise plan." in place of the switch, and the community
-   edition has no such section: the page's Status ends with "Automatic fix suggestions are part of
-   Qualor Enterprise." The old address `/settings/auto-fix` opens the section.
+   ([Roles and the audit log](./roles-and-audit.md)). Without a licence that lists
+   `llm.auto-fix` the page has no such section, and its Status ends with "Automatic fix suggestions
+   are part of Qualor Enterprise." The old address `/settings/auto-fix` opens the section.
 3. A **project admin** can opt one project out in the project's **AI** panel (**Project →
    Settings → AI**), with the switch **Post fix suggestions to this project's merge requests
    automatically** under **Fixes**. It saves at once. A project cannot switch it on when the
@@ -541,7 +540,8 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 | "Not posted: the merge request has a newer commit" | analyse the latest commit, then ask for a new fix |
 | "Not posted: the lines are not added lines of the merge request" / "the code on the merge request differs" | suggestions can only replace lines the merge request added, unchanged. Fix it by hand |
 | No automatic suggestions on a merge request | check, in order: the licence lists `llm.auto-fix`; **Post fix suggestions automatically** is on in **Settings → AI** for the organisation, and the organisation may use AI with **Suggest a fix** on in **Settings → AI provider**; the project did not opt out and is not excluded from AI; the project is mapped to GitLab or GitHub; the findings are new in this merge request, open and at the minimum severity; no suggestion was made for them before; the daily fix budget is not used up |
-| "Automatic fix suggestions need the Enterprise plan." (the **Automatic fix suggestions** section of **Settings → AI**, or the API's 403 `FEATURE_NOT_LICENSED`) | apply a key that lists `llm.auto-fix` ([Enterprise](./enterprise.md)) |
+| No **Automatic fix suggestions** section in **Settings → AI**, whose Status ends with "Automatic fix suggestions are part of Qualor Enterprise." | the licence does not list `llm.auto-fix`, or it lapsed: apply a key that lists it ([Enterprise](./enterprise.md)) |
+| "Automatic fix suggestions need the Enterprise plan." in the **Automatic fix suggestions** section, or the API's 403 `FEATURE_NOT_LICENSED` | the licence does not list `llm.auto-fix`; on the page, it lapsed while the page was open. Apply a key that lists it, then open the page again |
 | "Switching them on needs AI set up on this server and allowed for this organization, with Suggest a fix. …" when saving automatic fix suggestions (the API's 409 `AI_DISABLED`) | an instance admin connects a provider, allows the organisation and turns on **Suggest a fix** first, in **Settings → AI provider** |
 | 409 `AUTO_FIX_OPT_OUT_LIMIT_REACHED` | an organisation lists at most 1 000 projects that opted out; let a project back in first |
 | "The project is not mapped to GitLab or GitHub" | map it in **Settings → Repositories** ([GitLab](./gitlab.md), [GitHub](./github.md)) |
