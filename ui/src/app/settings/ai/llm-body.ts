@@ -57,8 +57,9 @@ export function bodyFrom(saved: LlmSettings, change: SectionChange): LlmBody {
 /**
  * The stored provider as a body sends it back unchanged: its kind's own fields, without a key, so
  * the stored key stays. The context window goes always, null for none, so that a save never
- * resets a window another admin set through the API. Anthropic's current models take no temperature, and none of the
- * OpenAI-compatible options; an OpenAI-compatible provider has no workspace.
+ * resets a window another admin set through the API. Anthropic's current models take no
+ * temperature, and none of the OpenAI-compatible options; an OpenAI-compatible provider has no
+ * workspace.
  */
 export function storedProviderBody(
   p: NonNullable<LlmSettings['provider']>,
