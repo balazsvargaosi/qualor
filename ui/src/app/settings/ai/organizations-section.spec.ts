@@ -648,6 +648,18 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     expect(document.activeElement).toBe(button(row(root, 'Research'), 'Edit'));
   });
 
+  it('forgets “Save or cancel…” once the editor is cancelled', async () => {
+    setup();
+    const { fixture, root } = await render();
+    await edit(fixture, root, 'Acme');
+    await click(fixture, field(root, `org-${ACME}-triage`));
+    await click(fixture, button(row(root, 'Research'), 'Edit'));
+    expect(status(root)).toBe('Save or cancel the changes to Acme first.');
+    await click(fixture, footButton(root, 'Cancel'));
+    expect(editor(root)).toBeNull();
+    expect(status(root)).toBe('');
+  });
+
   it('keeps the row being edited in view whatever the filter finds', async () => {
     setup();
     const { fixture, root } = await render();

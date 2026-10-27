@@ -383,6 +383,7 @@ export class OrganizationsSection {
     this.editor.set(null);
     this.saving.set(false);
     this.saveError.set(null);
+    this.status.set('');
     keepFocus(
       this.injector,
       this.document,
@@ -444,11 +445,14 @@ export class OrganizationsSection {
     this.status.set('');
     try {
       await this.saveEntry()(editor.id, sent);
-      this.status.set($localize`:@@aiProvider.orgs.saved:${org.name}:org: saved.`);
       const now = this.editor();
-      if (generation !== this.generation || now === null) return;
-      if (changes(now.draft, sent) === 0) this.close();
-      else this.editor.set({ ...now, base: sent });
+      if (generation === this.generation && now !== null) {
+        if (changes(now.draft, sent) === 0) this.close();
+        else this.editor.set({ ...now, base: sent });
+      }
+      // Said once the editor closed, which clears the status: a Cancel meanwhile changes nothing
+      // of what the server stored.
+      this.status.set($localize`:@@aiProvider.orgs.saved:${org.name}:org: saved.`);
     } catch (err) {
       if (generation === this.generation) this.saveError.set(problemMessage(err));
     } finally {
