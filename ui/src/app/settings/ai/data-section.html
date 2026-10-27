@@ -1,0 +1,218 @@
+<section id="data" class="card panel" aria-labelledby="ai-data-heading">
+  <div class="panel-head">
+    <div class="sec-title">
+      <h3 id="ai-data-heading" tabindex="-1">{{ texts.title }}</h3>
+      <p class="sec-purpose" i18n="@@aiProvider.data.purpose">
+        What leaves this server, and what Qualor keeps of it.
+      </p>
+    </div>
+  </div>
+
+  <!-- What each feature sends, and what is never sent. -->
+  <div class="setting-row">
+    <div class="setting-text">
+      <span id="ai-data-sent-name" class="setting-name" i18n="@@aiProvider.data.sent"
+        >What is sent</span
+      >
+      @if (host(); as to) {
+        <p id="ai-data-sent-help" i18n="@@aiProvider.data.sentHelp">
+          To {{ to }}, for the organizations you allow.
+        </p>
+      }
+    </div>
+    <div class="setting-field">
+      <div class="mini">
+        <table class="stack-table sent" aria-labelledby="ai-data-sent-name">
+          <thead>
+            <tr>
+              <th scope="col">{{ texts.colFeature }}</th>
+              <th scope="col">{{ texts.colStarts }}</th>
+              <th scope="col">{{ texts.colGets }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th
+                scope="row"
+                [attr.data-label]="texts.colFeature"
+                i18n="@@aiProvider.data.assistant"
+              >
+                Explain, triage, a fix
+              </th>
+              <td [attr.data-label]="texts.colStarts" i18n="@@aiProvider.data.assistantStarts">
+                A person, for one issue
+              </td>
+              <td [attr.data-label]="texts.colGets" i18n="@@aiProvider.data.assistantGets">
+                The rule, the message, the path, the language, 3 lines of code each side, redacted
+              </td>
+            </tr>
+            <tr>
+              <th scope="row" [attr.data-label]="texts.colFeature">
+                <span i18n="@@aiProvider.data.autoFix">Automatic fix suggestions</span>&ngsp;<span
+                  class="badge badge-tag"
+                  >{{ texts.enterprise }}</span
+                >
+              </th>
+              <td [attr.data-label]="texts.colStarts" i18n="@@aiProvider.data.autoFixStarts">
+                Each merge request analysis, once an organization admin switched them on
+              </td>
+              <td [attr.data-label]="texts.colGets" i18n="@@aiProvider.data.autoFixGets">
+                As for a fix, for the new findings
+              </td>
+            </tr>
+            <tr>
+              <th scope="row" [attr.data-label]="texts.colFeature" i18n="@@aiProvider.data.review">
+                AI review
+              </th>
+              <td [attr.data-label]="texts.colStarts" i18n="@@aiProvider.data.reviewStarts">
+                Each merge request analysis, once an organization admin switched it on and confirmed
+              </td>
+              <td [attr.data-label]="texts.colGets" i18n="@@aiProvider.data.reviewGets">
+                The diff, and any file the model reads from the masked copy of the repository
+              </td>
+            </tr>
+            <tr>
+              <th scope="row" [attr.data-label]="texts.colFeature" i18n="@@aiProvider.data.replies">
+                Answers to replies
+              </th>
+              <td [attr.data-label]="texts.colStarts" i18n="@@aiProvider.data.repliesStarts">
+                A person replying in one of Qualor's threads
+              </td>
+              <td [attr.data-label]="texts.colGets" i18n="@@aiProvider.data.repliesGets">
+                That thread, and the files the model reads
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p id="ai-data-never" class="hint" i18n="@@aiProvider.data.never">
+        Never sent: findings of secret rules (by the three actions), credentials files, and the
+        projects and paths you exclude.
+      </p>
+    </div>
+  </div>
+
+  <!-- The paths never sent: a list of globs, each with its Remove, and the field that adds one. -->
+  <div class="setting-row">
+    <div class="setting-text">
+      <span id="ai-exclude-name" class="setting-name" [class.changed]="pathsChanged()">{{
+        texts.paths
+      }}</span>
+      <p id="ai-exclude-help" i18n="@@aiProvider.data.pathsHelp">
+        For every organization and for AI review: the model never sees these files. The scanner
+        still uploads them to this server.
+      </p>
+    </div>
+    <div class="setting-field">
+      @if (paths().length > 0) {
+        <ul class="list-editor" aria-labelledby="ai-exclude-name">
+          @for (item of paths(); track item.path; let index = $index) {
+            <li>
+              <span class="item"
+                ><code>{{ item.path }}</code></span
+              >
+              <button
+                type="button"
+                class="btn-quiet danger"
+                [attr.aria-label]="item.removeLabel"
+                (click)="remove(item.path, index)"
+                i18n="@@aiProvider.data.remove"
+              >
+                Remove
+              </button>
+            </li>
+          }
+        </ul>
+      }
+      <div class="list-add">
+        <input
+          #addField
+          id="ai-exclude-add"
+          class="mono"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          [attr.aria-label]="texts.addLabel"
+          [attr.aria-invalid]="errorOf('exclude') ? true : null"
+          [attr.aria-describedby]="addDescribedBy()"
+          [value]="pattern()"
+          (input)="setPattern($event)"
+          (keydown)="onPatternKey($event)"
+        />
+        <button type="button" class="btn" (click)="add()">
+          <q-icon name="plus" /><span i18n="@@aiProvider.data.add">Add</span>
+        </button>
+      </div>
+      @if (errorOf('exclude'); as message) {
+        <p id="ai-exclude-add-error" class="field-error"><q-icon name="alert" />{{ message }}</p>
+      }
+      <p id="ai-exclude-add-hint" class="hint" i18n="@@aiProvider.data.addHint">
+        A glob from the repository root; at most 100.
+      </p>
+    </div>
+  </div>
+
+  <!-- The copies of what is sent: the switch, and the days they are kept under it. -->
+  <div class="setting-row">
+    <div class="setting-text">
+      <span id="ai-copies-name" class="setting-name" i18n="@@aiProvider.data.copies"
+        >Copies of what is sent</span
+      >
+      <p id="ai-copies-help" i18n="@@aiProvider.data.copiesHelp">
+        Off: only the model, the tokens, the time and the answer are kept.
+      </p>
+    </div>
+    <div class="setting-field">
+      <div class="switch-row">
+        <input
+          id="ai-store-prompts"
+          class="switch"
+          type="checkbox"
+          role="switch"
+          aria-labelledby="ai-store-prompts-name"
+          aria-describedby="ai-store-prompts-help"
+          [checked]="draft().storePrompts"
+          (change)="setStorePrompts($event)"
+        />
+        <label for="ai-store-prompts"
+          ><span
+            id="ai-store-prompts-name"
+            class="sw-name"
+            [class.changed]="copiesChanged()"
+            i18n="@@aiProvider.data.keep"
+            >Keep a copy of what is sent</span
+          >&ngsp;<span id="ai-store-prompts-help" class="sw-help" i18n="@@aiProvider.data.keepHelp"
+            >The exact data, after masking; for AI review that includes repository code.</span
+          ></label
+        >
+      </div>
+      @if (showRetention()) {
+        <div class="dep">
+          <div class="fold-field">
+            <label class="lbl" for="ai-retention" [class.changed]="retentionChanged()">{{
+              texts.keepFor
+            }}</label>
+            <div class="num-line">
+              <q-number-field
+                inputId="ai-retention"
+                [digits]="3"
+                [unit]="texts.days"
+                [value]="draft().retention"
+                [invalid]="errorOf('retention') !== null"
+                [describedBy]="errorOf('retention') ? 'ai-retention-error' : null"
+                (valueChange)="setRetention($event)"
+              />
+            </div>
+            @if (errorOf('retention'); as message) {
+              <p id="ai-retention-error" class="field-error">
+                <q-icon name="alert" />{{ message }}
+              </p>
+            }
+          </div>
+        </div>
+      }
+    </div>
+  </div>
+
+  <q-section-foot [outcome]="footOutcome()" [saveLabel]="texts.save" (save)="save()" />
+</section>

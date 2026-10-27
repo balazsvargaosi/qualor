@@ -1,0 +1,39 @@
+/*
+ * The instance's data and privacy (spec §3.4 M-I7, §7.3 row 13): a section card of setting rows,
+ * what is sent as a small table (.mini, one card per row on a phone), the paths never sent as a
+ * list editor, and the copies under their switch: the shared parts of styles.css.
+ */
+:host {
+  display: block;
+  min-width: 0;
+}
+section {
+  margin: 0;
+}
+.setting-field > p,
+.fold-field > p {
+  margin: 0;
+}
+/* The feature column keeps room for its name and its tag beside the longer sentences. */
+.sent tbody th {
+  width: 26%;
+}
+/* A path is what the row is about: in the mono face, as strong as the text. */
+.list-editor .item code {
+  color: var(--text);
+}
+/* What a machine reads (a glob) is in the mono face. */
+.mono {
+  font-family: var(--mono);
+}
+.list-add input {
+  flex: 1 1 16rem;
+  min-width: 0;
+  max-width: 22rem;
+}
+@media (max-width: 40rem) {
+  /* One card per row: the cell takes the card's width. */
+  .sent tbody th {
+    width: auto;
+  }
+}
