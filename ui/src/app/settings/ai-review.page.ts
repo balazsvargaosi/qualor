@@ -61,6 +61,7 @@ import {
   type OrgAiReview,
   parseBudgets,
   pickerUnavailable,
+  unchangedCost,
 } from './ai-review';
 import { AUTO_FIX_FEATURE } from './auto-fix';
 import { FixSuggestionsSection } from './org-ai/fix-suggestions-section';
@@ -363,7 +364,7 @@ export class AiReviewPage implements LeaveGuarded {
     return (
       (this.scope() === settings.scope ? 0 : 1) +
       projects +
-      changedBudgets(this.budgets(), settings.budgets)
+      changedBudgets(this.budgets(), settings.budgets, this.locale)
     );
   });
   /** The sections with unsaved edits, by their headings: AI review, the fix suggestions. */
@@ -398,7 +399,9 @@ export class AiReviewPage implements LeaveGuarded {
     const tokens = budgetNumber('tokensPerDay', draft.tokensPerDay);
     const perReview = budgetNumber('maxTokensPerReview', draft.maxTokensPerReview);
     const perProject = budgetNumber('perProjectTokensPerDay', draft.perProjectTokensPerDay);
-    const cost = budgetNumber('costPerDayUsd', draft.costPerDayUsd);
+    const cost =
+      unchangedCost(draft.costPerDayUsd, this.current()?.budgets ?? null, this.locale) ??
+      budgetNumber('costPerDayUsd', draft.costPerDayUsd);
     const shown = (n: number | null, typed: string) => (n === null ? typed : this.whole(n));
     const unset = (field: AiReviewBudgetField) =>
       draft[field].trim() === ''
@@ -424,7 +427,7 @@ export class AiReviewPage implements LeaveGuarded {
         : { text: $localize`:@@orgAi.chip.noPerProject:No limit per project`, set: false },
       draft.costLimited
         ? (unset('costPerDayUsd') ?? {
-            text: $localize`:@@orgAi.chip.cost:${cost === null ? draft.costPerDayUsd : this.usd(cost)}:amount: a day`,
+            text: $localize`:@@orgAi.chip.cost:${cost === null ? draft.costPerDayUsd : this.costLimit(cost)}:amount: a day`,
             set: true,
           })
         : { text: $localize`:@@orgAi.chip.noCost:No cost limit`, set: false },
@@ -918,7 +921,7 @@ export class AiReviewPage implements LeaveGuarded {
    * sent, which is then shown refused.
    */
   private sendableBudgets(): AiReviewBudgets | null {
-    const parsed = parseBudgets(this.budgets());
+    const parsed = parseBudgets(this.budgets(), this.current()?.budgets ?? null, this.locale);
     if ('errors' in parsed) {
       this.refuse(parsed.errors);
       return null;
@@ -1176,6 +1179,15 @@ export class AiReviewPage implements LeaveGuarded {
     return new Intl.NumberFormat(this.locale, { style: 'currency', currency: 'USD' }).format(
       amount,
     );
+  }
+
+  /** A cost limit in US dollars, with every decimal it has ("$12.50", "$1.255"). */
+  private costLimit(amount: number): string {
+    return new Intl.NumberFormat(this.locale, {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: 20,
+    }).format(amount);
   }
 }
 

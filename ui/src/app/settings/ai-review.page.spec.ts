@@ -1373,6 +1373,40 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(root.querySelector('#ai-review-cost')).toBeNull();
     });
 
+    it('sends a stored cost back as stored, its decimals all, unless its field is edited', async () => {
+      // An API client may store more decimals than the field takes.
+      const { server } = setup('orgAdmin', {
+        usage: PRICED,
+        organizations: { [ORG_ID]: { budgets: { ...DEFAULT_BUDGETS, costPerDayUsd: 1.255 } } },
+      });
+      const { fixture, root } = await render();
+      expect(field(root, 'ai-review-cost').value).toBe('1.255');
+      expect(chips(root)[3]).toEqual({ text: '$1.255 a day', set: true });
+      expect(foot(root)).toBe('No unsaved changes');
+      // Left, the field keeps it as it is.
+      field(root, 'ai-review-cost').dispatchEvent(new Event('blur'));
+      await settle(fixture);
+      expect(field(root, 'ai-review-cost').value).toBe('1.255');
+
+      type(root, 'ai-review-tokens', '3000000');
+      await settle(fixture);
+      expect(foot(root)).toBe('1 unsaved change');
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        budgets: { ...DEFAULT_BUDGETS, tokensPerDay: 3_000_000, costPerDayUsd: 1.255 },
+      });
+      expect(field(root, 'ai-review-cost').value).toBe('1.255');
+      expect(foot(root)).toMatch(SAVED_AT);
+
+      // Edited, it is the amount typed.
+      type(root, 'ai-review-cost', '1.26');
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)[1]?.body).toMatchObject({
+        budgets: { costPerDayUsd: 1.26 },
+      });
+      expect(field(root, 'ai-review-cost').value).toBe('1.26');
+    });
+
     it('lets a cost limit stored before the prices went be switched off', async () => {
       const { server } = setup('orgAdmin', {
         organizations: { [ORG_ID]: { budgets: { ...DEFAULT_BUDGETS, costPerDayUsd: 5 } } },

@@ -1,6 +1,6 @@
 import { ApiError } from '../api/errors';
 import type { ItemOf, RequestBody, ResponseBody } from '../api/types';
-import { formatMoney, formatWhole, parseMoney, parseWhole } from '../shared/numbers';
+import { formatAmount, formatWhole, parseMoney, parseWhole } from '../shared/numbers';
 
 /**
  * 6I-2: an organisation's AI review as its admin reads it (`GET /organizations/{id}/ai/review`):
@@ -69,7 +69,10 @@ export const DEFAULT_AI_REVIEW_BUDGETS: Readonly<AiReviewBudgets> = Object.freez
   maxTokensPerReview: 300_000,
 });
 
-/** The fields of stored budgets, grouped as the locale writes numbers ("2,000,000", "12.50"). */
+/**
+ * The fields of stored budgets, grouped as the locale writes numbers ("2,000,000", "12.50"); the
+ * cost with every decimal it has, none rounded away ("1.255").
+ */
 export function budgetsDraftOf(budgets: AiReviewBudgets, locale: string): AiReviewBudgetsDraft {
   return {
     tokensPerDay: formatWhole(budgets.tokensPerDay, locale),
@@ -80,7 +83,8 @@ export function budgetsDraftOf(budgets: AiReviewBudgets, locale: string): AiRevi
         ? ''
         : formatWhole(budgets.perProjectTokensPerDay, locale),
     costLimited: budgets.costPerDayUsd !== null,
-    costPerDayUsd: budgets.costPerDayUsd === null ? '' : formatMoney(budgets.costPerDayUsd, locale),
+    costPerDayUsd:
+      budgets.costPerDayUsd === null ? '' : formatAmount(budgets.costPerDayUsd, locale),
   };
 }
 
@@ -98,11 +102,28 @@ export function budgetRefusal(field: AiReviewBudgetField): string {
 }
 
 /**
+ * The stored cost per day while the draft's field still shows it as stored, with every decimal it
+ * has; null once the field is edited. An API client may store more decimals than the field takes
+ * (1.255): a save of another budget sends it back unchanged, never rounded.
+ */
+export function unchangedCost(
+  text: string,
+  stored: AiReviewBudgets | null,
+  locale: string,
+): number | null {
+  const cost = stored?.costPerDayUsd ?? null;
+  return cost !== null && text === formatAmount(cost, locale) ? cost : null;
+}
+
+/**
  * The typed budgets as the `PUT` body wants them (a limit switched off is `null`), or the fields
- * refused with the page's own words.
+ * refused with the page's own words. The stored cost goes back as it is while its field shows it
+ * (`stored`, the budgets as saved).
  */
 export function parseBudgets(
   draft: AiReviewBudgetsDraft,
+  stored: AiReviewBudgets | null,
+  locale: string,
 ): { budgets: AiReviewBudgets } | { errors: AiReviewBudgetErrors } {
   const errors: AiReviewBudgetErrors = {};
   const refuse = (field: AiReviewBudgetField): null => {
@@ -119,7 +140,9 @@ export function parseBudgets(
       refuse('perProjectTokensPerDay'))
     : null;
   const costPerDayUsd = draft.costLimited
-    ? (parseMoney(draft.costPerDayUsd, MAX_REVIEW_COST_PER_DAY_USD) ?? refuse('costPerDayUsd'))
+    ? (unchangedCost(draft.costPerDayUsd, stored, locale) ??
+      parseMoney(draft.costPerDayUsd, MAX_REVIEW_COST_PER_DAY_USD) ??
+      refuse('costPerDayUsd'))
     : null;
   if (Object.keys(errors).length > 0 || tokensPerDay === null || maxTokensPerReview === null) {
     return { errors };
@@ -136,9 +159,14 @@ export function budgetNumber(field: AiReviewBudgetField, text: string): number |
 
 /**
  * How many budgets the draft changes from those stored. A limit switched off stands for none, and
- * a text that is no number changes its budget; digits only grouped otherwise change nothing.
+ * a text that is no number changes its budget; digits only grouped otherwise change nothing, nor
+ * does a stored cost its field still shows.
  */
-export function changedBudgets(draft: AiReviewBudgetsDraft, stored: AiReviewBudgets): number {
+export function changedBudgets(
+  draft: AiReviewBudgetsDraft,
+  stored: AiReviewBudgets,
+  locale: string,
+): number {
   const value = (field: AiReviewBudgetField, text: string) =>
     budgetNumber(field, text) ?? Number.NaN;
   const pairs: [number | null, number | null][] = [
@@ -150,7 +178,13 @@ export function changedBudgets(draft: AiReviewBudgetsDraft, stored: AiReviewBudg
         : null,
       stored.perProjectTokensPerDay,
     ],
-    [draft.costLimited ? value('costPerDayUsd', draft.costPerDayUsd) : null, stored.costPerDayUsd],
+    [
+      draft.costLimited
+        ? (unchangedCost(draft.costPerDayUsd, stored, locale) ??
+          value('costPerDayUsd', draft.costPerDayUsd))
+        : null,
+      stored.costPerDayUsd,
+    ],
   ];
   return pairs.filter(([typed, saved]) => typed !== saved).length;
 }
