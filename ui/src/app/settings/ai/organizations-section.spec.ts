@@ -184,6 +184,9 @@ const field = (root: HTMLElement, id: string) => root.querySelector<HTMLInputEle
 const editor = (root: HTMLElement) => root.querySelector<HTMLElement>('tr.editor');
 const status = (root: HTMLElement) => text(root.querySelector('.orgs-status'));
 const foot = (root: HTMLElement) => text(editor(root)?.querySelector('.foot-status'));
+/** A button of the open editor's foot (the picker has a Cancel of its own). */
+const footButton = (root: HTMLElement, name: string) =>
+  button(editor(root)!.querySelector('q-section-foot')!, name);
 const items = (root: HTMLElement) =>
   [...(editor(root)?.querySelectorAll('.list-editor li') ?? [])].map((li) => text(li));
 /** The texts of the ids an attribute names (`aria-labelledby`, `aria-describedby`). */
@@ -655,6 +658,33 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     expect(editor(root)?.previousElementSibling).toBe(row(root, 'Acme'));
     await click(fixture, button(row(root, 'Acme'), 'Close'));
     expect(rows(root).map(nameOf)).toEqual(['Research']);
+  });
+
+  it('gives the focus to the filter when the row it edited leaves with its editor', async () => {
+    setup();
+    const { fixture, root } = await render();
+    await edit(fixture, root, 'Acme');
+    type(root, 'ai-orgs-filter', 'research');
+    await settle(fixture);
+    const cancel = footButton(root, 'Cancel')!;
+    cancel.focus();
+    await click(fixture, cancel);
+    expect(rows(root).map(nameOf)).toEqual(['Research']);
+    expect(document.activeElement).toBe(field(root, 'ai-orgs-filter'));
+
+    // After a save too.
+    type(root, 'ai-orgs-filter', '');
+    await settle(fixture);
+    await edit(fixture, root, 'Acme');
+    await click(fixture, field(root, `org-${ACME}-triage`));
+    type(root, 'ai-orgs-filter', 'research');
+    await settle(fixture);
+    const save = footButton(root, 'Save Acme')!;
+    save.focus();
+    await click(fixture, save);
+    expect(status(root)).toBe('Acme saved.');
+    expect(rows(root).map(nameOf)).toEqual(['Research']);
+    expect(document.activeElement).toBe(field(root, 'ai-orgs-filter'));
   });
 
   it('shows new settings in an editor without changes, and keeps a draft that has some', async () => {

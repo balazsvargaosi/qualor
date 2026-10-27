@@ -372,7 +372,10 @@ export class OrganizationsSection {
     this.open(org.id);
   }
 
-  /** Close and Cancel: the draft goes, and the focus goes back to the row's Edit. */
+  /**
+   * Close and Cancel: the draft goes, and the focus goes back to the row's Edit; to the filter when
+   * the row leaves with its editor (it showed only while edited), else to the section's heading.
+   */
   protected close(): void {
     const id = this.editingId();
     if (id === null) return;
@@ -380,7 +383,13 @@ export class OrganizationsSection {
     this.editor.set(null);
     this.saving.set(false);
     this.saveError.set(null);
-    this.focusLater(`org-${id}-edit`);
+    keepFocus(
+      this.injector,
+      this.document,
+      () => this.document.getElementById(`org-${id}-edit`),
+      () => this.document.getElementById('ai-orgs-filter'),
+      () => this.document.getElementById('ai-orgs-heading'),
+    );
   }
 
   protected setAllowed(event: Event): void {
