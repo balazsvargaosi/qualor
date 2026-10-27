@@ -107,15 +107,20 @@ export class AiSettingsPage implements LeaveGuarded {
     const provider = this.saved()?.provider;
     return provider ? consentFields(provider).host : null;
   });
+  /**
+   * The status, from what is saved. Its Test again tests the saved provider: it is hidden while
+   * the Provider section has unsaved edits, as the section hides its own.
+   */
   protected readonly statusLines = computed(() => {
     const settings = this.saved();
-    return settings === null
-      ? []
-      : instanceStatusLines(
-          settings,
-          this.organizationsFailed() ? null : this.organizations(),
-          this.locale,
-        );
+    if (settings === null) return [];
+    const lines = instanceStatusLines(
+      settings,
+      this.organizationsFailed() ? null : this.organizations(),
+      this.locale,
+    );
+    if (!this.providerSection()?.dirty()) return lines;
+    return lines.map((line) => (line.action?.id === 'test' ? { ...line, action: null } : line));
   });
   /** The sections, in the page's order, as the index leads to them. */
   protected readonly index: readonly { id: string; label: string }[] = [

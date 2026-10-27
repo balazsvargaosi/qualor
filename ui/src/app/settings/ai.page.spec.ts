@@ -596,6 +596,19 @@ describe('AiSettingsPage: its actions', () => {
     expect(server.requestsTo('GET', '/api/v0/system/llm')).toHaveLength(2);
   });
 
+  it('hides the status’s Test again while the provider has unsaved edits, as the section hides its own', async () => {
+    setup(configured());
+    const { fixture, root } = await render();
+    expect(button(statusLine(root, 'provider'), 'Test again')).toBeDefined();
+    await fill(fixture, root, 'ai-model', 'qwen3-coder');
+    expect(root.querySelector('#ai-test-again')).toBeNull();
+    expect(button(statusLine(root, 'provider'), 'Test again')).toBeUndefined();
+    // The rest of the line stays.
+    expect(text(statusLine(root, 'provider').querySelector('.badge'))).toBe('Connected');
+    await fill(fixture, root, 'ai-model', 'qwen2.5-coder');
+    expect(button(statusLine(root, 'provider'), 'Test again')).toBeDefined();
+  });
+
   it('leads from the status to the organizations and to the prices', async () => {
     catchScrolls();
     setup(configured());
