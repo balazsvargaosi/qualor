@@ -239,11 +239,19 @@ describe('/system/llm (llm.md §3, §16)', () => {
         const res = await check();
         expect(res.json()).toMatchObject({ ok: true, problem: null, toolCalling: 'supported' });
         expect(fake.requests.map((r) => r.path)).toEqual(['/v1/messages', '/v1/messages']);
+        // A conversation's call: the system prompt as one block, and the last block of the last
+        // message, carry the prompt-cache markers (R49).
+        const mark = { type: 'ephemeral' };
         expect(fake.requests[1]!.json).toEqual({
           model: 'claude-x',
           max_tokens: 4_256,
-          system: expect.stringContaining('echo'),
-          messages: [{ role: 'user', content: [{ type: 'text', text: expect.any(String) }] }],
+          system: [{ type: 'text', text: expect.stringContaining('echo'), cache_control: mark }],
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'text', text: expect.any(String), cache_control: mark }],
+            },
+          ],
           tools: [{ name: 'echo', description: expect.any(String), input_schema: ECHO_PARAMETERS }],
           // Only auto: the current models refuse a forced choice.
           tool_choice: { type: 'auto' },
