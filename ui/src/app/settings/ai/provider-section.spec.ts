@@ -2003,6 +2003,26 @@ describe('ProviderSection: before pausing AI review (Review Focus 3)', () => {
     expect(dialog(root).open).toBe(true);
   });
 
+  it('sends the key typed once the question is confirmed, in one save, and empties its field', async () => {
+    const server = setup();
+    const { fixture, root } = await render({ settings: REVIEWED });
+    await fill(fixture, root, '#ai-url', 'http://ollama:11434/api/v1');
+    await fill(fixture, root, '#ai-key', KEY);
+    await saveAndTest(fixture, root);
+    expect(dialog(root).open).toBe(true);
+    const key = field(root, 'ai-key');
+    expect(key.value).toBe(KEY);
+    await press(fixture, root, 'Save and pause AI review', '#ai-pause-dialog');
+    expect(puts(server)).toHaveLength(1);
+    expect(puts(server)[0]?.provider).toMatchObject({
+      baseUrl: 'http://ollama:11434/api/v1',
+      apiKey: KEY,
+    });
+    expect(key.value).toBe('');
+    expect(root.querySelector<HTMLInputElement>('#ai-key')?.value ?? '').toBe('');
+    expect(root.textContent).not.toContain(KEY);
+  });
+
   it('asks nothing where review is paused already', async () => {
     const server = setup();
     const paused = {
