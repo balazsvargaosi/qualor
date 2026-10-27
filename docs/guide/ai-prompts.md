@@ -553,14 +553,15 @@ Inputs:
 - projects to review: <group/app-a, group/app-b | all projects>
 
 Do this:
-1. Check the provider. If none is configured, tell me what an
-   instance admin has to set under Settings > AI provider (base URL,
-   models, key) and stop. If one is, run its Test through
-   POST /api/v0/system/llm/test (or read lastTest from
-   GET /api/v0/system/llm) and check that every model reports
-   toolCalling supported. AI review needs a model that can call
-   tools: if the Test says it cannot, or the result is unknown, tell
-   me what the Test and its hint say, and stop.
+1. Check the provider. Read GET /api/v0/organizations/{id}/ai/review:
+   if it has no provider, tell me what an instance admin has to set
+   under Settings > AI provider (base URL, models, key) and stop. If
+   it has one, check that its providerTest says toolCalling
+   supported. AI review needs a model that can call tools: if it
+   says not_supported, name the modelsWithoutTools and stop; if it
+   says unknown, an instance admin has to press Save and test (or
+   Test again) under Settings > AI provider first, so tell me that
+   and stop.
 2. Read GET /api/v0/organizations/{id}/ai/review. Show me the
    provider host and models, the warning text (notice), and which
    projects would be reviewed (a project not linked to its GitLab or
