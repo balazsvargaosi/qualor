@@ -72,7 +72,7 @@ The whole report, as an example:
 | `assistant30d` | how many Explain, Suggest triage and Suggest a fix requests were made in the last 30 days |
 
 Servers before 0.12.0 send `schema` 1, without `aiReview`, `assistant30d` and the `aiReview` flag
-of `features`.
+of `features`. A newer server also sends `schema` 1 on a day it cannot count its AI use.
 
 ## What is never sent
 

@@ -4,7 +4,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import { VERSION } from '../index';
 import type { Edition } from '../license/edition';
-import { readLlmSettings } from '../llm/settings';
+import { readLlmSettings, type StoredLlmSettings } from '../llm/settings';
 import {
   collectAiReviewUsage,
   collectAssistantUsage,
@@ -19,11 +19,11 @@ const OS = ['linux', 'darwin', 'win32', 'freebsd', 'openbsd'] as const;
 const ARCH = ['x64', 'arm64', 'arm', 'ia32', 'ppc64', 's390x', 'riscv64'] as const;
 
 /**
- * telemetry.md: the daily report. Schema 2 (0.12.0, R39) adds `features.aiReview`, `aiReview` and
- * `assistant30d` to schema 1 and changes nothing else; the receiver takes both.
+ * telemetry.md: the daily report of schema 1, which a server before 0.12.0 sends, and which a newer
+ * one sends on a day it cannot count its AI use.
  */
-export interface TelemetryPayload {
-  schema: 2;
+export interface TelemetryPayloadV1 {
+  schema: 1;
   installationId: string;
   version: string;
   edition: 'community' | 'enterprise';
@@ -42,10 +42,21 @@ export interface TelemetryPayload {
   languages: string[];
   engines: string[];
   scm: string[];
-  features: { sso: boolean; scim: boolean; aiAssistant: boolean; aiReview: boolean };
+  features: { sso: boolean; scim: boolean; aiAssistant: boolean };
+}
+
+/**
+ * telemetry.md: the daily report of schema 2 (0.12.0, R39). It adds `features.aiReview`,
+ * `aiReview` and `assistant30d` to schema 1 and changes nothing else; the receiver takes both.
+ */
+export interface TelemetryPayloadV2 extends Omit<TelemetryPayloadV1, 'schema' | 'features'> {
+  schema: 2;
+  features: TelemetryPayloadV1['features'] & { aiReview: boolean };
   aiReview: AiReviewUsage;
   assistant30d: AssistantUsage;
 }
+
+export type TelemetryPayload = TelemetryPayloadV1 | TelemetryPayloadV2;
 
 export interface CollectDeps {
   db: Db;
@@ -54,7 +65,11 @@ export interface CollectDeps {
   database: 'embedded' | 'external';
   env?: Record<string, string | undefined>;
   dockerEnvExists?: boolean;
+  logger?: { debug: (obj: object, msg: string) => void } | undefined;
 }
+
+/** What the server logs, at debug, when it sends schema 1 because it could not count its AI use. */
+export const AI_USE_NOT_COUNTED = 'telemetry sends schema 1: AI use not counted';
 
 /** Lowercased, deduplicated, sorted, at most 50; a value that is not a short token is dropped. */
 export function cleanList(values: Iterable<string | null | undefined>): string[] {
@@ -95,6 +110,32 @@ export function engineTokens(ids: Iterable<string | null>): string[] {
 const oneOf = (value: string, known: readonly string[]): string =>
   known.includes(value) ? value : 'other';
 
+/**
+ * Schema 2's numbers, or null when either collector fails. The day's report is then schema 1, which
+ * the receiver takes, and never zeros, which would read as no reviews.
+ */
+async function countAiUse(
+  deps: CollectDeps,
+  settings: StoredLlmSettings,
+): Promise<{ aiReview: AiReviewUsage; assistant30d: AssistantUsage } | null> {
+  try {
+    const [aiReview, assistant30d] = await Promise.all([
+      collectAiReviewUsage(deps.db, settings),
+      collectAssistantUsage(deps.db),
+    ]);
+    return { aiReview, assistant30d };
+  } catch (err) {
+    deps.logger?.debug(
+      {
+        component: 'telemetry',
+        errorClass: err instanceof Error ? err.constructor.name : typeof err,
+      },
+      AI_USE_NOT_COUNTED,
+    );
+    return null;
+  }
+}
+
 export async function collectTelemetry(deps: CollectDeps): Promise<TelemetryPayload> {
   const { db } = deps;
   const count = async (query: SQL): Promise<number> =>
@@ -118,7 +159,6 @@ export async function collectTelemetry(deps: CollectDeps): Promise<TelemetryPayl
     engines,
     scm,
     llm,
-    assistant30d,
   ] = await Promise.all([
     count(sql`SELECT count(*) AS n FROM organizations`),
     count(sql`SELECT count(*) AS n FROM users`),
@@ -139,13 +179,12 @@ export async function collectTelemetry(deps: CollectDeps): Promise<TelemetryPayl
        WHERE a.queued_at > now() - interval '30 days' AND e ->> 'status' = 'ok'`),
     values(sql`SELECT DISTINCT provider AS v FROM scm_connections`),
     readLlmSettings(db),
-    collectAssistantUsage(db),
   ]);
   // The settings are read once: AI review's numbers are of the same settings as the features.
-  const aiReview = await collectAiReviewUsage(db, llm);
+  const aiUse = await countAiUse(deps, llm);
 
-  return {
-    schema: 2,
+  const report: TelemetryPayloadV1 = {
+    schema: 1,
     installationId: deps.installationId,
     version: VERSION,
     edition: deps.edition.edition(),
@@ -176,9 +215,14 @@ export async function collectTelemetry(deps: CollectDeps): Promise<TelemetryPayl
       sso: ssoConnections > 0,
       scim: scimTokens > 0,
       aiAssistant: llm.provider !== null && Object.values(llm.organizations).some((o) => o.enabled),
-      aiReview: aiReview.organizations > 0,
     },
-    aiReview,
-    assistant30d,
+  };
+  if (aiUse === null) return report;
+  return {
+    ...report,
+    schema: 2,
+    features: { ...report.features, aiReview: aiUse.aiReview.organizations > 0 },
+    aiReview: aiUse.aiReview,
+    assistant30d: aiUse.assistant30d,
   };
 }

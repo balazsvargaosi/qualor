@@ -1,12 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { eq, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
 import { engine, file, reportWith } from '../../test/reports';
 import { instanceSettings, organizations } from '../db/schema';
 import { DEFAULT_LLM_SETTINGS, DISABLED_ORGANIZATION, writeLlmSettings } from '../llm/settings';
 import { VERSION } from '../index';
-import { collectTelemetry } from './collect';
+import {
+  AI_USE_NOT_COUNTED,
+  collectTelemetry,
+  type CollectDeps,
+  type TelemetryPayload,
+  type TelemetryPayloadV2,
+} from './collect';
 import { installationId, TELEMETRY_SETTING_KEY } from './installation-id';
 
 const GUIDE = 'docs/guide/telemetry.md';
@@ -26,10 +32,16 @@ function fieldsOf(value: unknown, prefix = ''): string[] {
     .sort();
 }
 
+/** The report as schema 2, which it is whenever the server could count its AI use. */
+function schemaTwo(payload: TelemetryPayload): TelemetryPayloadV2 {
+  if (payload.schema !== 2) throw new Error(`a report of schema ${payload.schema}`);
+  return payload;
+}
+
 describe('telemetry payload (telemetry.md)', () => {
   let h: IngestHarness;
   let p: Awaited<ReturnType<IngestHarness['project']>>;
-  const collect = async () =>
+  const collect = async (over: Partial<CollectDeps> = {}) =>
     collectTelemetry({
       db: h.ctx.db,
       edition: { edition: () => 'community' },
@@ -37,6 +49,7 @@ describe('telemetry payload (telemetry.md)', () => {
       database: 'external',
       env: {},
       dockerEnvExists: false,
+      ...over,
     });
 
   beforeAll(async () => {
@@ -144,7 +157,7 @@ describe('telemetry payload (telemetry.md)', () => {
       provider,
       organizations: { [org!.id]: { ...DISABLED_ORGANIZATION, enabled: true } },
     });
-    const payload = await collect();
+    const payload = schemaTwo(await collect());
     expect(payload.features.aiAssistant).toBe(true);
     // The provider is named by its kind and API alone; AI review is not switched on.
     expect(payload.features.aiReview).toBe(false);
@@ -155,6 +168,45 @@ describe('telemetry payload (telemetry.md)', () => {
     });
     expect(JSON.stringify(payload)).not.toMatch(/example\.test|gpt-test/);
     await writeLlmSettings(h.ctx.db, DEFAULT_LLM_SETTINGS);
+  });
+
+  it('sends schema 1, every schema-1 field intact, on a day it cannot count its AI use', async () => {
+    const whole = schemaTwo(await collect());
+    const debug = vi.fn();
+    // A query of each collector fails: AI review's (review_replies), then the assistant's.
+    for (const table of ['review_replies', 'llm_requests']) {
+      await h.ctx.db.execute(sql.raw(`ALTER TABLE ${table} RENAME TO ${table}_away`));
+      let payload: TelemetryPayload;
+      try {
+        payload = await collect({ logger: { debug } });
+      } finally {
+        await h.ctx.db.execute(sql.raw(`ALTER TABLE ${table}_away RENAME TO ${table}`));
+      }
+      // Never zeros, which would read as no reviews: the day's report is the schema-1 one.
+      expect(payload).toEqual({
+        schema: 1,
+        installationId: whole.installationId,
+        version: whole.version,
+        edition: whole.edition,
+        platform: whole.platform,
+        database: whole.database,
+        counts: whole.counts,
+        languages: whole.languages,
+        engines: whole.engines,
+        scm: whole.scm,
+        features: {
+          sso: whole.features.sso,
+          scim: whole.features.scim,
+          aiAssistant: whole.features.aiAssistant,
+        },
+      });
+    }
+    // Once for each report, at debug, with the error's class and nothing of its text.
+    expect(debug.mock.calls).toEqual([
+      [{ component: 'telemetry', errorClass: expect.any(String) }, AI_USE_NOT_COUNTED],
+      [{ component: 'telemetry', errorClass: expect.any(String) }, AI_USE_NOT_COUNTED],
+    ]);
+    expect(schemaTwo(await collect()).aiReview).toEqual(whole.aiReview);
   });
 
   it("the guide's example names every field the report has, and no other", async () => {

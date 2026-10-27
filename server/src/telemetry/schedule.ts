@@ -83,6 +83,7 @@ export function telemetryHandlers(deps: TelemetryDeps): JobHandlers {
           edition: deps.edition,
           installationId: await installationId(deps.db),
           database: deps.database,
+          logger: deps.logger,
         });
         const outcome = await sendTelemetry(deps.url, payload, {
           userAgent: `qualor-server/${VERSION}`,
