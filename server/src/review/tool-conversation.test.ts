@@ -230,7 +230,7 @@ describe('the most one call sends: the context window less the room for the answ
         ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
       });
       const answers = sent[1]?.messages.filter((message) => message.role === 'tool') ?? [];
-      return { result, sent, shown, redactions, answers };
+      return { result, sent, shown, redactions, answers, policy };
     };
 
     const small = await play(32_000);
@@ -247,6 +247,24 @@ describe('the most one call sends: the context window less the room for the answ
     }
     expect(small.shown).toEqual([]);
     expect(small.redactions).toEqual([]);
+
+    // The file stays masked for the review: a later conversation that reads it and sends it tells
+    // the secret, which the answers kept back never did.
+    const later = await converseOverTools(callOf('judge'), {
+      reader,
+      policy: small.policy,
+      send: (() => {
+        const replies = [
+          turn({ finishReason: 'tool', toolCalls: [reads[0]!] }),
+          turn({ text: '{"findings":[]}' }),
+        ];
+        return () => Promise.resolve(replies.shift() ?? turn({ text: 'unexpected' }));
+      })(),
+      shouldStop: () => Promise.resolve(false),
+      onToolRedactions: (count) => small.redactions.push(count),
+    });
+    expect(later).toMatchObject({ kind: 'answer', toolCalls: 1 });
+    expect(small.redactions).toEqual([1]);
 
     // The default window, and a null one, take the three reads: they are sent, and told.
     for (const window of [undefined, null]) {

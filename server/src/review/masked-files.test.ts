@@ -155,6 +155,20 @@ describe('MaskedFiles', () => {
     expect(files.files).toBe(1);
   });
 
+  it('hands the replacements of a file out again once they are given back, from the text it keeps', async () => {
+    const { reader, asked } = counting(memorySnapshot({ files: { 'key.txt': KEY_FILE } }));
+    const files = filesOf(reader);
+    expect(await files.file('key.txt')).toMatchObject({ kind: 'text', redactions: 32 });
+    // The answer that showed them was never sent: the next one that is reports them, once.
+    files.giveBack('key.txt');
+    expect(await files.file('key.txt')).toMatchObject({ kind: 'text', redactions: 32 });
+    expect(await files.file('key.txt')).toMatchObject({ kind: 'text', redactions: 0 });
+    // A file never masked has nothing to give back.
+    files.giveBack('other.txt');
+    expect(asked).toEqual(['key.txt']);
+    expect(files.maskings).toBe(1);
+  });
+
   it('makes one masking of requests that overlap, and reports it to one of them', async () => {
     const { reader, asked } = counting(memorySnapshot({ files: { 'key.txt': KEY_FILE } }));
     const files = filesOf(reader);

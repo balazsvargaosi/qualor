@@ -179,6 +179,8 @@ describe('reading files', () => {
     expect(await run(reader, 'read_file', { path: 'src/bundle.js' })).toEqual({
       text: `1│ ${REDACTED}`,
       redactions: 1,
+      // The file whose replacement it reports: given back if the answer is never sent.
+      masked: ['src/bundle.js'],
       read: [{ path: 'src/bundle.js', from: 1, to: 1 }],
     });
   });

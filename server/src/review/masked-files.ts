@@ -147,6 +147,8 @@ export class MaskedFiles {
   private readonly loading = new Map<string, Promise<MaskedFile>>();
   /** Files whose replacements were handed out once already. */
   private readonly counted = new Set<string>();
+  /** The replacements of each file's masking, handed out once (`counted`) unless given back. */
+  private readonly replaced = new Map<string, number>();
   /** Files that took too long to mask: asking again would take that time again. */
   private readonly timedOut = new Set<string>();
   private readonly maxBytes: number;
@@ -184,6 +186,23 @@ export class MaskedFiles {
     return this.kept.get(path) ?? null;
   }
 
+  /**
+   * Gives back the replacements of `path` that a `file` handed out, for an answer that was never
+   * sent (the model's context window had no room for it, conversation.ts): the next request for
+   * the file hands them out again, from the text kept or masked again, so that the call that does
+   * send it reports them.
+   */
+  giveBack(path: string): void {
+    this.counted.delete(path);
+  }
+
+  /** The replacements of `path` once each review, handed out to the first that asks for them. */
+  private handOut(path: string): number {
+    if (this.counted.has(path)) return 0;
+    this.counted.add(path);
+    return this.replaced.get(path) ?? 0;
+  }
+
   /** Stops the masker these files made for themselves; one they were given is its owner's. */
   async close(): Promise<void> {
     if (this.ownsMasker) await this.masker.close();
@@ -203,13 +222,13 @@ export class MaskedFiles {
     if (kept !== undefined) {
       return this.masker.exhausted
         ? { kind: 'budget' }
-        : { kind: 'text', text: kept, redactions: 0 };
+        : { kind: 'text', text: kept, redactions: this.handOut(path) };
     }
     if (this.timedOut.has(path)) return { kind: this.masker.exhausted ? 'budget' : 'timeout' };
     const pending = this.loading.get(path);
     if (pending !== undefined) {
       const file = await pending;
-      return file.kind === 'text' ? { ...file, redactions: 0 } : file;
+      return file.kind === 'text' ? { ...file, redactions: this.handOut(path) } : file;
     }
     const started = this.load(path, budget);
     this.loading.set(path, started);
@@ -253,8 +272,7 @@ export class MaskedFiles {
       this.kept.set(path, text);
       this.keptBytes += text.bytes;
     }
-    const redactions = this.counted.has(path) ? 0 : Math.max(0, result.count - dropped);
-    this.counted.add(path);
-    return { kind: 'text', text, redactions };
+    if (!this.replaced.has(path)) this.replaced.set(path, Math.max(0, result.count - dropped));
+    return { kind: 'text', text, redactions: this.handOut(path) };
   }
 }

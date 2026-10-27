@@ -139,13 +139,19 @@ export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<C
     runTool: async (toolCall) => {
       // Nothing is run for a model that asks for a tool it was not given: it is told so.
       if (io.reader === null) return NO_TOOLS_ANSWER;
-      const { onToolRedactions, onToolRead } = io;
-      const answer = await runReviewTool(io.reader, toolCall, io.policy);
+      const { onToolRedactions, onToolRead, policy } = io;
+      const answer = await runReviewTool(io.reader, toolCall, policy);
+      // The masked files the call read from: the policy keeps them for the review.
+      const files = policy.masked;
       return {
         text: answer.text,
         sent: () => {
           onToolRedactions?.(answer.redactions);
           if (answer.read !== undefined) onToolRead?.(answer.read);
+        },
+        // Never sent: the files' replacements go to the call that does send them.
+        withheld: () => {
+          for (const path of answer.masked ?? []) files?.giveBack(path);
         },
       };
     },

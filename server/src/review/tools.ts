@@ -175,6 +175,11 @@ interface ToolAnswer {
   /** Secrets masked in it. */
   redactions: number;
   /**
+   * The files whose replacements `redactions` holds (`MaskedFiles` hands them out once): given
+   * back when the answer is never sent (`MaskedFiles.giveBack`).
+   */
+  masked?: readonly string[];
+  /**
    * The lines of files the answer shows, when it shows any: what the call really read, which its
    * text says nothing certain of. A `read_file` shows the lines its answer numbers, a range of its
    * own (the caps of a call cut what was asked for, and a range past the end of the file ends
@@ -449,6 +454,7 @@ async function readFile(
       return {
         text: lines.text,
         redactions: file.redactions,
+        ...(file.redactions > 0 ? { masked: [path] } : {}),
         ...(lines.shown === null ? {} : { read: [{ path, ...lines.shown }] }),
       };
     }
@@ -509,6 +515,8 @@ async function grep(
   budget.greps -= 1;
 
   let counted = 0;
+  /** The files whose replacements `counted` holds. */
+  const maskedPaths: string[] = [];
   /** The file the hits looked at last: the reader gives the hits of a file one after the other. */
   let current: { path: string; file: MaskedFile } | null = null;
   const found = await takeKept(
@@ -524,7 +532,10 @@ async function grep(
       // reader is asked, whether or not the masked files are kept.
       if (current?.path !== hit.path) {
         const file = await masked.file(hit.path, budget);
-        counted += file.kind === 'text' ? file.redactions : 0;
+        if (file.kind === 'text' && file.redactions > 0) {
+          counted += file.redactions;
+          maskedPaths.push(hit.path);
+        }
         current = { path: hit.path, file };
       }
       const { file } = current;
@@ -552,7 +563,11 @@ async function grep(
   else if (found.over) lines.push(MORE_MATCHES);
   // The lines shown, one range each, in the order of the hits.
   const read = found.items.map((hit) => ({ path: hit.path, from: hit.line, to: hit.line }));
-  return { ...redactedAnswer(lines.join('\n'), counted), ...(read.length > 0 ? { read } : {}) };
+  return {
+    ...redactedAnswer(lines.join('\n'), counted),
+    ...(maskedPaths.length > 0 ? { masked: maskedPaths } : {}),
+    ...(read.length > 0 ? { read } : {}),
+  };
 }
 
 async function listFiles(
