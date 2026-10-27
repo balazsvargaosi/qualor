@@ -658,6 +658,31 @@ describe('AiSettingsPage: leaving', () => {
     await expect(answer).resolves.toBe(true);
   });
 
+  it('asks once before the header switches the organisation with unsaved changes; Stay keeps it', async () => {
+    const server = setup(CONFIGURED);
+    server.on('GET', '/api/v0/organizations', { body: page([DEFAULT_ORG, RESEARCH_ORG]) });
+    const { fixture, root } = await render();
+    const org = TestBed.inject(OrgContext);
+    expect(org.currentId()).toBe(ORG_ID);
+    await fill(fixture, root, 'ai-budget-explain', '300');
+    const ask = vi.spyOn(LeaveConfirm.prototype, 'ask');
+    onTestFinished(() => ask.mockRestore());
+    const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
+
+    // As the header's select does.
+    const switching = org.switchTo(RESEARCH);
+    await settle(fixture);
+    expect(leave.open).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(text(leave.querySelector('#leave-text'))).toBe(
+      'Your changes to Limits are not saved yet.',
+    );
+    await click(fixture, button(leave, 'Stay'));
+    expect(await switching).toBe(false);
+    expect(org.currentId()).toBe(ORG_ID);
+    expect(field(root, 'ai-budget-explain').value).toBe('300');
+  });
+
   it('has the route ask it before the router leaves, under its own title', () => {
     const route = settingsRoutes.find((r) => r.path === 'ai')!;
     expect(route.title).toBe('AI provider');
