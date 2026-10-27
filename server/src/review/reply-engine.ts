@@ -439,7 +439,10 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
   );
   if (result.kind === 'stopped') return { stopped: true };
   if (result.kind === 'failed') {
-    return result.circuitOpen === true ? { circuitOpen: true } : { failed: result.reason };
+    if (result.circuitOpen === true) return { circuitOpen: true };
+    // The model's context window had no room for a call of the answer: the provider would have
+    // refused it, and a reply's row has no other reason for it.
+    return { failed: result.reason === 'window_full' ? 'provider_error' : result.reason };
   }
   // Checked again: a conversation that gave an answer back is not believed without it.
   const judged = judge(result.text);

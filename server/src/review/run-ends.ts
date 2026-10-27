@@ -29,7 +29,12 @@ import { enqueueLatestDecoration, lockBranchQueue } from '../scm/queue';
 export type RunEnd =
   | { status: 'superseded' }
   | { status: 'skipped'; reason: ReviewSkipReason; detail?: string | null }
-  | { status: 'failed'; reason: ReviewFailureReason };
+  | {
+      status: 'failed';
+      reason: ReviewFailureReason;
+      /** `window_full`: the model's context window had no room for the judge's call. */
+      detail?: string | null;
+    };
 
 /** What a run spent, as its columns hold it. */
 export interface RunSpend {
@@ -94,7 +99,7 @@ export async function endRun(
       status: end.status,
       phase: null,
       reason: end.status === 'superseded' ? null : end.reason,
-      detail: end.status === 'skipped' ? (end.detail ?? null) : null,
+      detail: end.status === 'superseded' ? null : (end.detail ?? null),
       finishedAt: sql`now()`,
       ...(extra.spend ?? {}),
       ...(extra.diffDigest === undefined || extra.diffDigest === null

@@ -151,6 +151,29 @@ describe('the AI review section', () => {
     );
   });
 
+  it('says that a review failed for the model’s context window, in each provider’s words, and what to change', () => {
+    const full = { kind: 'failed', reason: 'provider_error', detail: 'window_full' } as const;
+    expect(section(full)).toEqual([
+      '#### AI review',
+      '',
+      'AI review failed because the model’s context window is too small for this merge request; raise Context window in the AI provider settings, or use a model with a larger window.',
+    ]);
+    expect(section(full, 'github')[2]).toBe(
+      'AI review failed because the model’s context window is too small for this pull request; raise Context window in the AI provider settings, or use a model with a larger window.',
+    );
+    for (const provider of ['gitlab', 'github'] as const) {
+      const text = section(full, provider).join('\n');
+      // Not the provider's error, and not a push that would fail the same way.
+      expect(text).not.toContain('returned an error');
+      expect(text).not.toContain('The next push reviews again.');
+      expect(badSectionLine(section(full, provider))).toBeNull();
+    }
+    // Without the detail, the provider's error as before.
+    expect(section({ kind: 'failed', reason: 'provider_error', detail: null })[2]).toBe(
+      'AI review failed: the model provider returned an error or could not be reached. The next push reviews again.',
+    );
+  });
+
   it('says that a merge request is too large for the model’s context window, and never to raise Tokens per review', () => {
     const tooSmall = {
       kind: 'skipped',

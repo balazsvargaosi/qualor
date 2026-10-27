@@ -158,7 +158,23 @@ describe('the state of the AI review for the summary', () => {
       detail: null,
     });
     const failed = await setup({ status: 'failed', reason: 'bad_answer', summary: null });
-    expect(await state(failed.analysisId)).toEqual({ kind: 'failed', reason: 'bad_answer' });
+    expect(await state(failed.analysisId)).toEqual({
+      kind: 'failed',
+      reason: 'bad_answer',
+      detail: null,
+    });
+    // The window that had no room for the judge is said by the detail of a failure.
+    const windowFull = await setup({
+      status: 'failed',
+      reason: 'provider_error',
+      detail: 'window_full',
+      summary: null,
+    });
+    expect(await state(windowFull.analysisId)).toEqual({
+      kind: 'failed',
+      reason: 'provider_error',
+      detail: 'window_full',
+    });
   });
 
   it('shows nothing for a run an older analysis was superseded by', async () => {

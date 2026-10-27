@@ -24,7 +24,7 @@ import {
   type PipelineOutcome,
   type ReviewRole,
 } from './pipeline';
-import { specialistData, SYSTEM_PROMPTS } from './prompts';
+import { PROMPT_LIMITS, specialistData, SYSTEM_PROMPTS } from './prompts';
 import { callInputCap, converseOverTools } from './tool-conversation';
 
 /** The fake provider key of a test is built at run time, so no scanner takes it for a real one. */
@@ -1092,6 +1092,109 @@ describe('runReviewPipeline', () => {
     expect(Math.max(...cut)).toBeLessThan(1_200);
   });
 
+  it("keeps the judge's first message within a third of its cap, whatever the findings: their bodies, then the prior ones', then the suggestions go, and no finding", async () => {
+    // A re-review: 20 open prior findings, and 24 new ones with long bodies and suggestions (an
+    // answer a reviewer's output limit holds).
+    const lines = Array.from({ length: 8 }, (_, i) => `const value${i} = compute(${i});`);
+    const many = Array.from({ length: 24 }, (_, i) =>
+      found({
+        title: `Finding ${i}`,
+        body: 'b'.repeat(1_200),
+        suggestion: { startLine: 3, endLine: 3, lines },
+      }),
+    );
+    const priors = Array.from({ length: 20 }, (_, i) => ({
+      ...prior(`p${i}`, 'open'),
+      // As long as the judge is shown one.
+      body: 'p'.repeat(PROMPT_LIMITS.priorBodyChars),
+    }));
+    const judged = async (window: number) => {
+      const { deps, calls } = scripted({
+        quality: [answer({ findings: many })],
+        judge: [answer(judgeSays())],
+      });
+      const context = contextOf([change('src/cart.ts', 2)], { prior: priors });
+      await runReviewPipeline(context, 10_000_000, deps, () => Promise.resolve(), window);
+      const call = calls.find((c) => c.role === 'judge')!;
+      const data = call.data as {
+        specialistFindings: { body: string; suggestion: unknown }[];
+        priorFindings: { body: string }[];
+      };
+      return {
+        message: SYSTEM_PROMPTS.judge.length + call.user.length,
+        bodies: data.specialistFindings.map((f) => f.body.length),
+        priorBodies: data.priorFindings.map((f) => f.body.length),
+        suggestions: data.specialistFindings.filter((f) => f.suggestion !== null).length,
+      };
+    };
+    const thirdOf = (window: number) =>
+      Math.floor(callInputCap(window, 'judge') / 3) * CHARS_PER_TOKEN;
+    // A window with room for every body, prior body and suggestion: all whole.
+    const ample = await judged(1_000_000);
+    expect(new Set(ample.bodies)).toEqual(new Set([1_200]));
+    expect(new Set(ample.priorBodies)).toEqual(new Set([PROMPT_LIMITS.priorBodyChars]));
+    expect(ample.suggestions).toBe(24);
+    // Smaller ones: what goes, goes in that order, and the message keeps to its third.
+    const order: string[] = [];
+    for (const window of [120_000, 80_000, 60_000, 48_000, 40_000]) {
+      const shown = await judged(window);
+      expect(shown.message, String(window)).toBeLessThanOrEqual(thirdOf(window));
+      expect(shown.bodies, String(window)).toHaveLength(24);
+      expect(shown.priorBodies, String(window)).toHaveLength(20);
+      // Nothing of a prior body goes while a finding's body is left, nor a suggestion while a
+      // prior body is (a body cut to none is the mark of the cut).
+      if (Math.max(...shown.priorBodies) < PROMPT_LIMITS.priorBodyChars) {
+        expect(Math.max(...shown.bodies)).toBe(1);
+      }
+      if (shown.suggestions < 24) expect(Math.max(...shown.priorBodies)).toBe(1);
+      order.push(
+        shown.suggestions < 24
+          ? 'suggestions'
+          : Math.max(...shown.priorBodies) < PROMPT_LIMITS.priorBodyChars
+            ? 'prior bodies'
+            : Math.max(...shown.bodies) < 1_200
+              ? 'bodies'
+              : 'whole',
+      );
+    }
+    // Each step is reached, a smaller window going further.
+    expect(order).toEqual(['whole', 'whole', 'bodies', 'prior bodies', 'suggestions']);
+  });
+
+  it("a conversation the window has no room for adds nothing and is noted; a judge's fails the review and names the window", async () => {
+    const windowFull = (input: number): ConversationResult => ({
+      kind: 'failed',
+      reason: 'window_full',
+      ...spent(input, 0),
+      turns: input === 0 ? 0 : 1,
+    });
+    // A specialist whose first call had no room, one whose later call had none, and a check of a
+    // serious finding that had none: the review goes on, and says the window was reached.
+    const serious = judgedAs({ category: 'security', title: 'A' });
+    const { deps } = scripted({
+      security: [windowFull(0)],
+      quality: [windowFull(900)],
+      tests: [answer({ findings: [found()] })],
+      judge: [answer(judgeSays({ findings: [serious] }))],
+      verify: [windowFull(500)],
+    });
+    const { outcome } = await review(contextOf([change('src/auth.ts', 50)]), 100_000, deps);
+    expect(outcome).toMatchObject({
+      kind: 'reviewed',
+      specialists: ['quality', 'tests'],
+      findings: [{ title: 'A', verification: null }],
+      notes: ['context_window_reached'],
+    });
+    // The judge cannot be done without: the review fails, and says it was the window.
+    const judgeFull = scripted({
+      quality: [answer({ findings: [found()] })],
+      judge: [windowFull(0)],
+    });
+    expect(
+      (await review(contextOf([change('src/cart.ts', 2)]), 100_000, judgeFull.deps)).outcome,
+    ).toEqual({ kind: 'failed', reason: 'provider_error', detail: 'window_full' });
+  });
+
   it('verification has a share of its own and what the judge left, shared between the findings it checks', async () => {
     const serious = judgeSays({
       findings: [
@@ -1591,25 +1694,33 @@ describe('reviewLimits', () => {
   });
 
   it("sizes the first message within a third of the judge's cap", () => {
-    const window = 32_000;
-    const third = Math.floor(callInputCap(window, 'judge') / 3) * CHARS_PER_TOKEN;
-    for (const budget of [300_000, 1_000_000, 10_000_000]) {
-      for (const reviewed of [changes(1, 6), changes(2, 2), changes(2, 2, true)]) {
-        const plan = planReview(reviewed);
-        const shape = shapeOf(reviewed, 0, []);
-        const name = `${budget} ${plan.tier} ${reviewed.length}`;
-        expect(reviewFits(shape, budget, window), name).toBe(true);
-        const limits = reviewLimits(shape, budget, window);
-        const data = specialistData(sizedContext(reviewed, limits, 0, []));
-        for (const role of plan.specialists) {
-          const message = SYSTEM_PROMPTS[role].length + envelope(data, newNonce()).length;
-          expect(message, `${name} ${role}`).toBeLessThanOrEqual(third);
+    for (const window of [48_000, 64_000, 200_000]) {
+      const cap = callInputCap(window, 'judge');
+      // The data the specialists share is sized in half the judge's cap, as in half its share: the
+      // judge keeps the other half of its third for the findings.
+      const half = Math.floor(Math.floor(cap / 2) / 3) * CHARS_PER_TOKEN;
+      const third = Math.floor(cap / 3) * CHARS_PER_TOKEN;
+      for (const budget of [300_000, 1_000_000, 10_000_000]) {
+        for (const reviewed of [changes(1, 6), changes(2, 2), changes(2, 2, true)]) {
+          const plan = planReview(reviewed);
+          const shape = shapeOf(reviewed, 0, []);
+          const name = `${window} ${budget} ${plan.tier} ${reviewed.length}`;
+          expect(reviewFits(shape, budget, window), name).toBe(true);
+          const limits = reviewLimits(shape, budget, window);
+          const data = specialistData(sizedContext(reviewed, limits, 0, []));
+          for (const role of plan.specialists) {
+            const message = SYSTEM_PROMPTS[role].length + envelope(data, newNonce()).length;
+            expect(message, `${name} ${role}`).toBeLessThanOrEqual(Math.min(half, third));
+          }
+          // It is the window that holds it back, when it does: without one the slices have the
+          // budget's room.
+          if (Math.floor(cap / 2) < Math.floor((budget * STAGE_SHARES.judge) / 200)) {
+            expect(
+              reviewLimits(shape, budget, Number.POSITIVE_INFINITY).sliceChars,
+              name,
+            ).toBeGreaterThan(limits.sliceChars);
+          }
         }
-        // It is the window that holds it back: without one the slices have the budget's room.
-        expect(
-          reviewLimits(shape, budget, Number.POSITIVE_INFINITY).sliceChars,
-          name,
-        ).toBeGreaterThan(limits.sliceChars);
       }
     }
     // A window larger than the budget needs changes nothing: the budget's third is the smaller.
@@ -1620,14 +1731,47 @@ describe('reviewLimits', () => {
     expect(reviewLimits(shape, 300_000)).toEqual(reviewLimits(shape, 300_000, 1_000_000));
   });
 
-  it('a merge request that fits Tokens per review but not a 32 000-token window does not fit', () => {
+  it('a merge request that fits Tokens per review but not a small window does not fit', () => {
     const big = shapeOf(changes(80, 10), 0, []);
     expect(reviewFits(big, 300_000, Number.POSITIVE_INFINITY)).toBe(true);
     // The default window, 1 000 000 tokens, holds it.
     expect(reviewFits(big, 300_000)).toBe(true);
-    expect(reviewFits(big, 300_000, 32_000)).toBe(false);
+    expect(reviewFits(big, 300_000, 48_000)).toBe(false);
     // A small change fits that window, and no window a judge's answer leaves no room in fits any.
-    expect(reviewFits(shapeOf(changes(1, 6), 0, []), 300_000, 32_000)).toBe(true);
+    expect(reviewFits(shapeOf(changes(1, 6), 0, []), 300_000, 48_000)).toBe(true);
     expect(reviewFits(shapeOf(changes(1, 6), 0, []), 300_000, 16_384)).toBe(false);
+  });
+
+  it('a change of one line with no description needs a window of about 32 900 tokens: one of 32 000 or 32 768 fits nothing', () => {
+    // The judge's 16 384 tokens of answer, and the half of its third of the rest that the data the
+    // specialists share is sized in, after the longest prompt among them (the guide's figure).
+    const oneLine: ContextShape = {
+      reviewed: [change('src/a.ts', 1)],
+      skipped: [],
+      analyzerChars: [],
+      wordsChars: 20,
+      instructionChars: [],
+    };
+    for (const window of [32_000, 32_768, 32_800]) {
+      expect(reviewFits(oneLine, 300_000, window), String(window)).toBe(false);
+    }
+    expect(reviewFits(oneLine, 300_000, 32_900)).toBe(true);
+  });
+
+  it("counts the instructions files' floors against the window, not against the budget", () => {
+    const bare = shapeOf(changes(1, 6), 0, []);
+    const instructed = shapeOf(changes(1, 6), 0, [['AGENTS.md', 40_000]]);
+    // A window with room for the change, and not for the 16 000 characters of AGENTS.md that every
+    // first message holds: the review would pass a third of the judge's cap.
+    expect(reviewFits(bare, 300_000, 64_000)).toBe(true);
+    expect(reviewFits(instructed, 300_000, 64_000)).toBe(false);
+    // A window with room for both.
+    expect(reviewFits(instructed, 300_000, 200_000)).toBe(true);
+    // The budget alone counts no floor, as before.
+    for (const budget of [10_000, 60_000, 120_000]) {
+      expect(reviewFits(instructed, budget, Number.POSITIVE_INFINITY), String(budget)).toBe(
+        reviewFits(bare, budget, Number.POSITIVE_INFINITY),
+      );
+    }
   });
 });

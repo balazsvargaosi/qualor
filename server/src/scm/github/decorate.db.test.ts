@@ -287,6 +287,18 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     expect(await decorateAgain()).toContain(
       'AI review failed: the model provider returned an error or could not be reached. The next push reviews again.',
     );
+    // A judge the model's context window had no room for: the failure names the window, in
+    // GitHub's words, and not the provider.
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ detail: 'window_full' })
+      .where(eq(reviewRuns.id, run!.id));
+    const windowFull = await decorateAgain();
+    expect(windowFull).toContain(
+      'AI review failed because the model’s context window is too small for this pull request; raise Context window in the AI provider settings, or use a model with a larger window.',
+    );
+    expect(windowFull).not.toContain('returned an error');
+    await h.ctx.db.update(reviewRuns).set({ detail: null }).where(eq(reviewRuns.id, run!.id));
 
     // Done for another commit than the pull request is at now: GitHub's words for the move.
     await h.ctx.db

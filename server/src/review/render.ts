@@ -52,7 +52,12 @@ const PROMPT_BODY_LINES = 8;
 export type ReviewSummaryState =
   | { kind: 'pending' }
   | { kind: 'skipped'; reason: ReviewSkipReason; detail: string | null }
-  | { kind: 'failed'; reason: ReviewFailureReason }
+  | {
+      kind: 'failed';
+      reason: ReviewFailureReason;
+      /** `window_full`: the model's context window had no room for the judge's call. */
+      detail?: string | null;
+    }
   | {
       kind: 'done';
       /**
@@ -182,6 +187,13 @@ const FAILED: Record<ReviewFailureReason, string> = {
   internal: 'AI review failed because of an error in Qualor.',
 };
 const FAILED_OTHER = 'AI review failed.';
+/**
+ * A failure that is the model's context window (`provider_error`, detail `window_full`): the judge's
+ * call had no room in it, whatever was cut. The detail picks the sentence, and the next push would
+ * fail the same way, so it says what to change instead.
+ */
+const WINDOW_FULL = (words: Words): string =>
+  `AI review failed because the model’s context window is too small for this ${words.request}; raise Context window in the AI provider settings, or use a model with a larger window.`;
 const NEXT_PUSH = 'The next push reviews again.';
 
 /** What a finished review says of itself. */
@@ -262,7 +274,8 @@ function skippedText(
   return DETAIL_CODE.test(detail) ? `${sentence} ${REASON} ${codeSpan(detail)}.` : sentence;
 }
 
-function failedText(state: Extract<ReviewSummaryState, { kind: 'failed' }>): string {
+function failedText(state: Extract<ReviewSummaryState, { kind: 'failed' }>, words: Words): string {
+  if (state.detail === 'window_full') return WINDOW_FULL(words);
   const sentence = Object.hasOwn(FAILED, state.reason) ? FAILED[state.reason] : FAILED_OTHER;
   return `${sentence} ${NEXT_PUSH}`;
 }
@@ -463,7 +476,7 @@ export function aiSummarySection(
       lines = [HEADING, '', skippedText(state, words)];
       break;
     case 'failed':
-      lines = [HEADING, '', failedText(state)];
+      lines = [HEADING, '', failedText(state, words)];
       break;
     case 'done':
       return doneSection(state, words, maxBytes);

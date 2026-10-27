@@ -49,7 +49,11 @@ export class RunEnder {
     const { db } = this.deps;
     const { run } = running;
     if (outcome.kind === 'failed') {
-      return this.endRunning(run, { status: 'failed', reason: outcome.reason });
+      return this.endRunning(run, {
+        status: 'failed',
+        reason: outcome.reason,
+        detail: outcome.detail ?? null,
+      });
     }
     // Asked once more after the last call: nothing is stored for a run that should have stopped.
     if (outcome.kind === 'stopped' || (await o.shouldStop())) return this.stopped(run);

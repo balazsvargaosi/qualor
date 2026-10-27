@@ -564,22 +564,58 @@ export function specialistData(context: ReviewContext): ReviewData {
 const MIN_FINDING_BODY_CHARS = 200;
 
 /**
+ * The largest `n` from `low` to `high` that `ok` takes, or `low` when it takes none: `ok` takes
+ * every `n` below one it takes.
+ */
+function largestTaken(low: number, high: number, ok: (n: number) => boolean): number {
+  if (ok(high)) return high;
+  if (!ok(low)) return low;
+  // Between one it takes (low) and one it does not (high).
+  let taken = low;
+  let refused = high;
+  while (refused - taken > 1) {
+    const middle = Math.floor((taken + refused) / 2);
+    if (ok(middle)) taken = middle;
+    else refused = middle;
+  }
+  return taken;
+}
+
+/** The length of a text as the cut counts it: whole characters. */
+const charsOf = (text: string): number => [...text].length;
+
+/**
  * The judge's data: what the specialists were given, the prior findings, and theirs with their ids.
  * When it would be longer than `maxChars` (as JSON), the bodies of the specialists' findings are
  * cut, the longest first and all to one length, to the longest that fits; never below
  * MIN_FINDING_BODY_CHARS, so the judge is given every finding whatever the room.
+ *
+ * `windowChars` is its room in a third of the judge's cap in the model's context window (R46), at
+ * least `maxChars`. When the data is longer than that even so, it is cut further, in this order,
+ * each only as far as it takes: the bodies of the specialists' findings down to none, then the
+ * bodies of the prior findings down to none, then the suggestions, the longest first. A finding is
+ * never left out: data that does not fit even then is given as it is, and the conversation does
+ * not make a call that would pass the window (conversation.ts).
  */
 export function judgeData(
   context: ReviewContext,
   findings: readonly LabelledFinding[],
   maxChars: number,
+  windowChars: number = Number.POSITIVE_INFINITY,
 ): JudgeData {
   const shared = specialistData(context);
-  const priorFindings = shownPriorFindings(context.prior);
-  const withBodies = (cap: number): JudgeData => ({
+  const shownPrior = shownPriorFindings(context.prior);
+  /** The data with the findings' bodies cut to `cap`, the prior ones' to `priorCap`, and no suggestion of the findings at the indexes of `unsuggested`. */
+  const cutTo = (
+    cap: number,
+    priorCap = Number.POSITIVE_INFINITY,
+    unsuggested: ReadonlySet<number> = new Set(),
+  ): JudgeData => ({
     ...shared,
-    priorFindings,
-    specialistFindings: findings.map(({ id, reviewer, finding }) => ({
+    priorFindings: Number.isFinite(priorCap)
+      ? shownPrior.map((prior) => ({ ...prior, body: cutAtGrapheme(prior.body, priorCap) }))
+      : shownPrior,
+    specialistFindings: findings.map(({ id, reviewer, finding }, index) => ({
       id,
       reviewer,
       category: finding.category,
@@ -591,22 +627,36 @@ export function judgeData(
       title: finding.title,
       body: cutAtGrapheme(finding.body, cap),
       assumption: finding.assumption,
-      suggestion: finding.suggestion,
+      suggestion: unsuggested.has(index) ? null : finding.suggestion,
     })),
   });
-  const fits = (data: JudgeData): boolean => JSON.stringify(data).length <= maxChars;
-  let high = Math.max(0, ...findings.map(({ finding }) => [...finding.body].length));
-  const whole = withBodies(high);
-  if (fits(whole) || high <= MIN_FINDING_BODY_CHARS) return whole;
-  let low = MIN_FINDING_BODY_CHARS;
-  if (!fits(withBodies(low))) return withBodies(low);
-  // The longest cap that fits, between one that does (low) and one that does not (high).
-  while (high - low > 1) {
-    const middle = Math.floor((low + high) / 2);
-    if (fits(withBodies(middle))) low = middle;
-    else high = middle;
+  const within = (limit: number) => (data: JudgeData) => JSON.stringify(data).length <= limit;
+  const longest = Math.max(0, ...findings.map(({ finding }) => charsOf(finding.body)));
+  // Within maxChars as far as the floor of the bodies lets it.
+  const cap =
+    longest <= MIN_FINDING_BODY_CHARS
+      ? longest
+      : largestTaken(MIN_FINDING_BODY_CHARS, longest, (n) => within(maxChars)(cutTo(n)));
+  const inWindow = within(windowChars);
+  if (inWindow(cutTo(cap))) return cutTo(cap);
+  // Past the floor of the bodies, within the window: the findings' bodies, down to none.
+  const bodyCap = largestTaken(0, cap, (n) => inWindow(cutTo(n)));
+  if (inWindow(cutTo(bodyCap))) return cutTo(bodyCap);
+  // Then the bodies of the prior findings, down to none.
+  const longestPrior = Math.max(0, ...shownPrior.map((prior) => charsOf(prior.body)));
+  const priorCap = largestTaken(0, longestPrior, (n) => inWindow(cutTo(0, n)));
+  if (inWindow(cutTo(0, priorCap))) return cutTo(0, priorCap);
+  // Then the suggestions, the longest first.
+  const unsuggested = new Set<number>();
+  const bySize = findings
+    .map(({ finding }, index) => ({ index, size: JSON.stringify(finding.suggestion).length }))
+    .filter((_, index) => findings[index]?.finding.suggestion !== null)
+    .sort((a, b) => b.size - a.size);
+  for (const { index } of bySize) {
+    unsuggested.add(index);
+    if (inWindow(cutTo(0, 0, unsuggested))) break;
   }
-  return withBodies(low);
+  return cutTo(0, 0, unsuggested);
 }
 
 /**

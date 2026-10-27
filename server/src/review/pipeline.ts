@@ -8,7 +8,7 @@ import {
   type ReviewableChange,
   type ReviewContext,
 } from './context';
-import { CONVERSATION_TEXTS, type ConversationResult } from './conversation';
+import { CHARS_PER_TOKEN, CONVERSATION_TEXTS, type ConversationResult } from './conversation';
 import { envelope, newNonce } from './envelope';
 import { scrubKeyDeep } from './key-scrub';
 import { tierOfCall, type ConversationRole, type ModelTier } from './model-tiers';
@@ -39,6 +39,7 @@ import {
 import { callInputCap, DEFAULT_CONTEXT_WINDOW_TOKENS } from './tool-conversation';
 
 export type { ReviewRole, Specialist } from './prompts';
+export { CHARS_PER_TOKEN } from './conversation';
 export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
 
 /*
@@ -67,9 +68,12 @@ export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
  * sized to a third of the tokens its conversation is sure of (`reviewLimits`, with a specialist's
  * even part, and the judge's data, with its share): every call sends it again, and a third leaves
  * room for a turn of tools, what the tools answer, and the wrap-up. No call may send more than the
- * model's context window less the room for its answer (`callInputCap`, R46), so a third of the
- * judge's cap bounds both as well. A conversation that reached the window answers through its
- * wrap-up, and the review notes it (`context_window_reached`).
+ * model's context window less the room for its answer (`callInputCap`, R46), so the judge's first
+ * message is sized within a third of its cap as well: the data the reviewers share in half of it,
+ * as in half of its share, and the judge's data in the whole of it, cut further than its share
+ * cuts it when it must (`judgeData`). A conversation that reached the window answers through its
+ * wrap-up, and one the window had no room for adds nothing: the review notes either
+ * (`context_window_reached`); a judge the window had no room for fails it (`window_full`).
  *
  * Each conversation runs on the model of a tier (model-tiers.ts): the judge and the verification on
  * the strong one, the specialists on the standard one, and the quality reviewer of a trivial review
@@ -113,12 +117,7 @@ export const ANSWER_CHARS_PER_TOKEN = 4;
 export const answerCharLimit = (role: ConversationRole): number =>
   ANSWER_CHARS_PER_TOKEN * REVIEW_OUTPUT_TOKENS[role];
 
-/**
- * The characters a token of code or JSON stands for, at the least: what a first message may hold is
- * counted with it, so that its tokens are fewer, not more.
- */
-export const CHARS_PER_TOKEN = 3;
-/** A first message holds at most this part of its conversation's tokens. */
+/** A first message holds at most this part of its conversation's tokens (counted at CHARS_PER_TOKEN). */
 const FIRST_MESSAGE_PARTS = 3;
 /** What an envelope and the keys of its data object add to the data, at most. */
 const ENVELOPE_CHARS = 600;
@@ -168,7 +167,15 @@ export type PipelineOutcome =
       tokenLimitReached: boolean;
       notes: ReviewNote[];
     }
-  | { kind: 'failed'; reason: ReviewFailureReason }
+  | {
+      kind: 'failed';
+      reason: ReviewFailureReason;
+      /**
+       * `window_full`: the judge's call could not be made within the model's context window
+       * (`provider_error`, as the provider would have refused it), whatever was cut of its data.
+       */
+      detail?: 'window_full';
+    }
   | { kind: 'stopped' };
 
 export interface PipelineDeps {
@@ -245,43 +252,71 @@ function evenCut(lengths: readonly number[], total: number, max: number): number
 }
 
 /**
- * The characters the data the specialists share has for the instructions files and the slices: a
- * third of the smallest of a specialist's part, half the judge's share (the judge keeps the other
- * half of its third for the findings) and the judge's cap in the model's context window (the
- * smallest cap of the roles that are given this data: `callInputCap`), less the longest system
- * prompt, the envelope and the lists, counted as the change has them. Not positive when the lists
- * alone do not fit. `window` Infinity: no window.
+ * The characters of the data the specialists share that a first message of `tokens` leaves for the
+ * instructions files and the slices: a third of them, less the longest system prompt, the envelope
+ * and the lists, counted as the change has them. Not positive when the lists alone do not fit.
+ */
+function roomIn(shape: ContextShape, tokens: number): number {
+  const { specialists } = planReview(shape.reviewed);
+  const prompt = Math.max(...specialists.map((role) => SYSTEM_PROMPTS[role].length));
+  return Math.floor(
+    (firstMessageChars(tokens) - prompt - ENVELOPE_CHARS - listedDataChars(shape)) / JSON_ALLOWANCE,
+  );
+}
+
+/**
+ * The tokens of the window that the data the specialists share is sized in: half the judge's cap
+ * (`callInputCap`), as half the judge's share is, since the judge, whose cap is the smallest of the
+ * roles given this data, keeps the other half of its third for the findings (R46). `window`
+ * Infinity: no window.
+ */
+const windowShare = (window: number): number => Math.floor(callInputCap(window, 'judge') / 2);
+
+/**
+ * The room of the data the specialists share (`roomIn`): in a third of the smallest of a
+ * specialist's part, half the judge's share and half the judge's cap in the model's context window
+ * (`windowShare`).
  */
 function dataRoom(shape: ContextShape, budget: number, window: number): number {
   const { specialists } = planReview(shape.reviewed);
   const part = Math.floor(shareOf(budget, STAGE_SHARES.specialists) / specialists.length);
   const judgeHalf = Math.floor(shareOf(budget, STAGE_SHARES.judge) / 2);
-  const prompt = Math.max(...specialists.map((role) => SYSTEM_PROMPTS[role].length));
-  return Math.floor(
-    (firstMessageChars(Math.min(part, judgeHalf, callInputCap(window, 'judge'))) -
-      prompt -
-      ENVELOPE_CHARS -
-      listedDataChars(shape)) /
-      JSON_ALLOWANCE,
-  );
+  return roomIn(shape, Math.min(part, judgeHalf, windowShare(window)));
 }
+
+/**
+ * The characters the instructions files take whatever the room (`reviewLimits`): each file up to
+ * INSTRUCTIONS_MIN_CHARS, and the label of one that is cut there.
+ */
+const instructionFloors = (shape: ContextShape): number =>
+  shape.instructionChars.reduce(
+    (sum, chars) =>
+      sum +
+      Math.min(chars, INSTRUCTIONS_MIN_CHARS) +
+      (chars > INSTRUCTIONS_MIN_CHARS ? CUT_LABEL_CHARS : 0),
+    0,
+  );
 
 /**
  * Whether a review of `budget` tokens can run on a change of this shape, on a model of `window`
  * tokens (DEFAULT_CONTEXT_WINDOW_TOKENS when left out; Infinity: no window, to ask whether the
  * budget alone holds it): its smallest share, and the judge's cap in the window, have room for its
- * first message, before the instructions files' floors, as `reviewLimits` counts it. When it has
- * none, `reviewLimits` still gives the instructions their floors, and the review would send a first
- * message larger than a third of its share or of that cap: the job skips it instead
- * (`budget_spent`, detail `too_large` when the budget is too small for the merge request,
- * `window_too_small` when only the window is, never the day's budget spent).
+ * first message, as `reviewLimits` counts it; and the window has room for the instructions files'
+ * floors too, which the budget's room does not count. When it has none, `reviewLimits` still gives
+ * the instructions their floors, and the review would send a first message larger than a third of
+ * its share or of that cap: the job skips it instead (`budget_spent`, detail `too_large` when the
+ * budget is too small for the merge request, `window_too_small` when only the window is, never the
+ * day's budget spent).
  */
 export function reviewFits(
   shape: ContextShape,
   budget: number,
   window: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ): boolean {
-  return dataRoom(shape, budget, window) > 0;
+  return (
+    dataRoom(shape, budget, window) > 0 &&
+    roomIn(shape, windowShare(window)) - instructionFloors(shape) > 0
+  );
 }
 
 /**
@@ -289,7 +324,8 @@ export function reviewFits(
  * this shape, on a model of `window` tokens (as `reviewFits` takes it): what buildReviewContext's
  * `limits` answers (the job passes it this, bound to the budget and the window). The data the
  * specialists share is sized so that a specialist's first message takes at most a third of its
- * part, half of the judge's third, and a third of the judge's cap in the window (`dataRoom`). That
+ * part, half of the judge's third, and half of the judge's third of its cap in the window
+ * (`dataRoom`). That
  * room goes first to the
  * instructions files, which no tool can stand in for: each at least INSTRUCTIONS_MIN_CHARS (or all
  * of it, if shorter) even past that room, the long ones cut evenly when they do not all fit. The
@@ -358,6 +394,11 @@ type Asked<T> =
   | { kind: 'unread' }
   /** It had no tokens to start with, and did not run. */
   | { kind: 'no_tokens' }
+  /**
+   * Its call could not be made within the model's context window (`window_full`); `ran` when it
+   * made one before.
+   */
+  | { kind: 'window_full'; ran: boolean }
   | { kind: 'stopped' }
   | { kind: 'failed'; reason: 'provider_error' | 'provider_no_tools' };
 
@@ -387,7 +428,7 @@ class Review {
    * and for a shorter one when the answer is longer than it is read. `stage` is told what it spent.
    * Its answer is checked again here: a conversation that gave one back without checking it is not
    * believed. A wrap-up for the tokens is noted as the token limit, one for the turns as the turn
-   * limit, one for the model's context window as that.
+   * limit, one for the model's context window as that, and so is a call the window had no room for.
    */
   async ask<T>(
     role: ReviewRole,
@@ -422,6 +463,10 @@ class Review {
     stage.settle(tokens, result.inputTokens + result.outputTokens);
     if (result.kind === 'stopped') return { kind: 'stopped' };
     if (result.kind === 'failed') {
+      if (result.reason === 'window_full') {
+        this.note('context_window_reached');
+        return { kind: 'window_full', ran: result.turns > 0 };
+      }
       return result.reason === 'bad_answer'
         ? { kind: 'unread' }
         : { kind: 'failed', reason: result.reason };
@@ -447,6 +492,12 @@ class Review {
 
 const STOPPED = { kind: 'stopped' } as const;
 const NOT_JUDGED = { kind: 'failed', reason: 'bad_answer' } as const;
+/** A judge whose call the model's context window has no room for, whatever was cut of its data. */
+const JUDGE_WINDOW_FULL = {
+  kind: 'failed',
+  reason: 'provider_error',
+  detail: 'window_full',
+} as const;
 
 /**
  * A finding of the judge as the outcome holds it: its sources are the specialist ids it was given,
@@ -518,6 +569,11 @@ export async function runReviewPipeline(
     if (asked.kind === 'stopped') return STOPPED;
     if (asked.kind === 'failed') return { kind: 'failed', reason: asked.reason };
     if (asked.kind === 'no_tokens') continue;
+    if (asked.kind === 'window_full') {
+      // It adds nothing, and the review notes the window (`ask`).
+      if (asked.ran) ran.push(specialist);
+      continue;
+    }
     ran.push(specialist);
     if (asked.kind === 'unread') {
       review.note('reviewer_unreadable');
@@ -534,17 +590,23 @@ export async function runReviewPipeline(
 
   // The judge, with its own share and what the specialists left of theirs: what they spent past
   // what they were given is not taken from it. Its data takes a third of its share, and of its cap
-  // in the window, at most: the bodies of the findings are cut to fit.
+  // in the window, at most: the bodies of the findings are cut to fit, and within the window
+  // further (judgeData, R46).
   await onPhase('judge');
-  const judgeRoom =
-    firstMessageChars(Math.min(judgeShare, callInputCap(window, 'judge'))) -
-    SYSTEM_PROMPTS.judge.length -
-    ENVELOPE_CHARS;
-  const judgeShown = judgeData(context, labelled, judgeRoom);
+  const judgeCap = callInputCap(window, 'judge');
+  const roomOf = (tokens: number): number =>
+    firstMessageChars(tokens) - SYSTEM_PROMPTS.judge.length - ENVELOPE_CHARS;
+  const judgeShown = judgeData(
+    context,
+    labelled,
+    roomOf(Math.min(judgeShare, judgeCap)),
+    roomOf(judgeCap),
+  );
   const judge = new StageTokens(judgeShare + specialists.unspent(), 1);
   const asked = await review.ask('judge', judgeShown, judgeAnswerSchema, judge);
   if (asked.kind === 'stopped') return STOPPED;
   if (asked.kind === 'failed') return { kind: 'failed', reason: asked.reason };
+  if (asked.kind === 'window_full') return JUDGE_WINDOW_FULL;
   if (asked.kind !== 'answer') return NOT_JUDGED;
   const answer = asked.value;
   const sources = new Set(labelled.map((finding) => finding.id));
@@ -583,7 +645,8 @@ export async function runReviewPipeline(
       );
       if (told.kind === 'stopped') return STOPPED;
       if (told.kind === 'failed') return { kind: 'failed', reason: told.reason };
-      // Not verified: the finding stays as the judge left it.
+      // Not verified: the finding stays as the judge left it (a window that had no room for the
+      // check is noted by `ask`).
       if (told.kind === 'unread') review.note('reviewer_unreadable');
       if (told.kind === 'answer') verdicts.set(finding, told.value.verdict);
     }

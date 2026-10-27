@@ -7,6 +7,8 @@ import {
   llmShape,
   openAiAnswer,
   openAiToolCalls,
+  responsesAnswer,
+  responsesToolCalls,
   type FakeLlm,
   type LlmReply,
   type LlmResponder,
@@ -24,6 +26,7 @@ import {
   CONVERSATION_LIMITS,
   guessedInput,
   runConversation,
+  windowGuessedInput,
   type ConversationInput,
 } from './conversation';
 import { newNonce } from './envelope';
@@ -40,6 +43,8 @@ const WRAP_UP = 'Token budget reached: answer now, with what you have, in the re
 const TOO_MANY = 'too many calls in one turn; this one was not run';
 const BAD_ARGUMENTS = 'the arguments were not valid JSON; call again';
 const CONTEXT_FULL = "not shown: the model's context window is full; answer now with what you have";
+const SHORTER =
+  'Your answer was cut off because it was too long: answer again, shorter, in the required JSON.';
 
 const TOOLS = [
   {
@@ -234,6 +239,48 @@ const WIRES: Record<Kind, WireView> = {
       (r.json as AnthropicWire).messages
         .filter((m) => m.role === 'assistant' && m.content.every((b) => b.type === 'text'))
         .map((m) => m.content.map((b) => b.text ?? '').join('')),
+  },
+};
+
+interface ResponsesWire {
+  tools?: { name: string }[];
+  input: {
+    type?: string;
+    role?: string;
+    call_id?: string;
+    name?: string;
+    arguments?: string;
+    output?: string;
+    content?: { type: string; text?: string }[];
+  }[];
+}
+
+/** The views of every wire: the two kinds', and the Responses API's input items. */
+const VIEWS: Record<Wire, WireView> = {
+  ...WIRES,
+  responses: {
+    tools: (r) => (r.json as ResponsesWire).tools?.map((t) => t.name) ?? [],
+    echoes: (r) =>
+      (r.json as ResponsesWire).input
+        .filter((item) => item.type === 'function_call')
+        .map((item) => ({
+          id: item.call_id ?? '',
+          name: item.name ?? '',
+          arguments: item.arguments,
+        })),
+    results: (r) =>
+      (r.json as ResponsesWire).input
+        .filter((item) => item.type === 'function_call_output')
+        .map((item) => ({ id: item.call_id ?? '', text: item.output ?? '' })),
+    lastUser: (r) =>
+      (r.json as ResponsesWire).input
+        .findLast((item) => item.role === 'user')
+        ?.content?.map((part) => part.text ?? '')
+        .join('') ?? '',
+    assistantTexts: (r) =>
+      (r.json as ResponsesWire).input
+        .filter((item) => item.role === 'assistant')
+        .map((item) => (item.content ?? []).map((part) => part.text ?? '').join('')),
   },
 };
 
@@ -680,75 +727,142 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
   });
 
   describe("the model's context window (R46)", () => {
+    /** The three wires the loop runs over. */
+    const ALL_WIRES = ['openai', 'anthropic', 'responses'] as const;
     /** A cap of 10 000 tokens a call, and a budget that never wraps up first. */
     const WINDOW_LIMITS = { ...LIMITS, maxCallInputTokens: 10_000 };
-    /** A tool that answers `text` to every call, and the calls it was asked to run. */
+    const usageOf = (tokens: number[] | null) =>
+      tokens === null ? null : { input_tokens: tokens[0] ?? 0, output_tokens: tokens[1] ?? 0 };
+    /** `toolTurn` on any wire: the Responses API's items, or the kind's own. */
+    const callsOn = (
+      wire: Wire,
+      calls: Call[],
+      tokens: number[] | null = [100, 10],
+      text?: string,
+    ) =>
+      wire === 'responses'
+        ? {
+            status: 200,
+            body: responsesToolCalls(
+              calls.map(({ id, name = 'read_file', args }) => ({ id, name, arguments: args })),
+              { usage: usageOf(tokens), ...(text === undefined ? {} : { text }) },
+            ),
+          }
+        : toolTurn(wire, calls, tokens, text);
+    /** `textTurn` on any wire, ending its turn or cut off at its limit. */
+    const answerOn = (
+      wire: Wire,
+      text: string,
+      tokens: number[] | null = [100, 10],
+      finish: 'stop' | 'length' = 'stop',
+    ) =>
+      wire === 'responses'
+        ? {
+            status: 200,
+            body: responsesAnswer(text, {
+              usage: usageOf(tokens),
+              ...(finish === 'length' ? { incomplete: 'max_output_tokens' } : {}),
+            }),
+          }
+        : textTurn(wire, text, tokens, finish);
+    /** A tool that answers `text` to every call; what it was asked to run, and what was sent or not. */
     const answering = (text: string) => {
       const ran: string[] = [];
+      const told: string[] = [];
       return {
         ran,
+        told,
         runTool: (call: LlmToolCall) => {
           ran.push(call.id);
-          return Promise.resolve(text);
+          return Promise.resolve({
+            text,
+            sent: () => void told.push(`sent ${call.id}`),
+            withheld: () => void told.push(`withheld ${call.id}`),
+          });
         },
       };
     };
+    /** The run of `wire` with every conversation it sent recorded. */
+    const recorded = async (wire: Wire, over: Partial<ConversationInput>) => {
+      const sent: LlmConversation[] = [];
+      const done = await run(wire, {
+        send: (conversation) => {
+          sent.push(conversation);
+          return converse(configs[wire], fake.apiKey, conversation, http);
+        },
+        ...over,
+      });
+      return { ...done, sent };
+    };
+    /** The fake's requests start again from none, and so does its queue: a fake of its own. */
+    const freshFake = async () => {
+      await fake.close();
+      fake = await createFakeLlm({ refuseBlankText: true });
+      http = { internalHosts: parseInternalHosts(fake.host), version: '0.0.0' };
+      configs = {
+        openai: { ...configs.openai, baseUrl: fake.openAiBaseUrl },
+        anthropic: { ...configs.anthropic, baseUrl: fake.anthropicBaseUrl },
+        responses: { ...configs.responses, baseUrl: fake.openAiBaseUrl },
+      };
+    };
 
-    it.each(KINDS)(
+    it.each(ALL_WIRES)(
       "wraps up before a call would pass the model's context window (%s)",
-      async (kind) => {
-        // 3 100 tokens sent and written. A read of about 4 000 tokens makes the next call about
-        // 7 100, under the cap; the wrap-up after another turn as large would send about 11 200.
+      async (wire) => {
+        // 3 100 tokens sent and written. A read of 12 000 characters, about 4 000 tokens, makes the
+        // next call about 7 100: under the cap; the wrap-up after another turn as large would pass it.
         const play = async (text: string, limits: ConversationInput['limits']) => {
-          fake.requests.length = 0;
+          await freshFake();
           fake.enqueue(
-            toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [3_000, 100]),
-            textTurn(kind, '{"findings":[]}', [10, 1]),
+            callsOn(wire, [{ id: 'c1', args: { path: 'a.ts' } }], [3_000, 100]),
+            answerOn(wire, '{"findings":[]}', [10, 1]),
           );
-          const { result } = await run(kind, { limits, runTool: answering(text).runTool });
+          const tool = answering(text);
+          const { result } = await run(wire, { limits, runTool: tool.runTool });
           expect(fake.requests).toHaveLength(2);
-          return { result, next: fake.requests[1]! };
+          return { result, next: fake.requests[1]!, told: tool.told };
         };
-        const reached = await play('x'.repeat(16_000), WINDOW_LIMITS);
+        const reached = await play('x'.repeat(12_000), WINDOW_LIMITS);
         expect(reached.result).toMatchObject({
           kind: 'answer',
           turns: 2,
           toolCalls: 1,
           wrappedUp: 'window',
         });
-        expect(WIRES[kind].lastUser(reached.next)).toBe(WRAP_UP);
+        expect(VIEWS[wire].lastUser(reached.next)).toBe(WRAP_UP);
         // What the tool answered fits the call that wraps up: it is sent as it is.
-        expect(WIRES[kind].results(reached.next).map((r) => unwrap(r.text).result)).toEqual([
-          'x'.repeat(16_000),
+        expect(VIEWS[wire].results(reached.next).map((r) => unwrap(r.text).result)).toEqual([
+          'x'.repeat(12_000),
         ]);
+        expect(reached.told).toEqual(['sent c1']);
 
         // Half as much read: another turn and the wrap-up after it fit, and the model goes on.
-        const fits = await play('x'.repeat(8_000), WINDOW_LIMITS);
+        const fits = await play('x'.repeat(6_000), WINDOW_LIMITS);
         expect(fits.result).toMatchObject({ kind: 'answer', wrappedUp: null });
-        expect(WIRES[kind].lastUser(fits.next)).not.toBe(WRAP_UP);
+        expect(VIEWS[wire].lastUser(fits.next)).not.toBe(WRAP_UP);
         // Without a cap the large read goes on too: the token budget is a million.
-        const uncapped = await play('x'.repeat(16_000), LIMITS);
+        const uncapped = await play('x'.repeat(12_000), LIMITS);
         expect(uncapped.result).toMatchObject({ kind: 'answer', wrappedUp: null });
       },
     );
 
-    it.each(KINDS)(
+    it.each(ALL_WIRES)(
       'sends tool results that would pass it as the fixed line, and wraps up with reason window (%s)',
-      async (kind) => {
+      async (wire) => {
         // Two reads of about 4 000 tokens each would make the next call about 11 100: past the cap.
         fake.enqueue(
-          toolTurn(
-            kind,
+          callsOn(
+            wire,
             [
               { id: 'c1', args: { path: 'a.ts' } },
               { id: 'c2', args: { path: 'b.ts' } },
             ],
             [3_000, 100],
           ),
-          textTurn(kind, '{"findings":[]}', [10, 1]),
+          answerOn(wire, '{"findings":[]}', [10, 1]),
         );
-        const tool = answering('x'.repeat(16_000));
-        const { result } = await run(kind, { limits: WINDOW_LIMITS, runTool: tool.runTool });
+        const tool = answering('x'.repeat(12_000));
+        const { result } = await run(wire, { limits: WINDOW_LIMITS, runTool: tool.runTool });
         expect(result).toMatchObject({
           kind: 'answer',
           text: '{"findings":[]}',
@@ -757,79 +871,227 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           wrappedUp: 'window',
         });
         expect(tool.ran).toEqual(['c1', 'c2']);
+        // What the reads showed was never sent: each is told so, and none is told it was sent.
+        expect(tool.told).toEqual(['withheld c1', 'withheld c2']);
         expect(CONTEXT_FULL_TEXT).toBe(CONTEXT_FULL);
 
-        const wire = WIRES[kind];
+        const view = VIEWS[wire];
         expect(fake.requests).toHaveLength(2);
         const wrapUp = fake.requests[1]!;
         // Each call keeps its answer, which is the fixed line the first time it is sent: what the
         // provider has once seen never changes.
-        expect(wire.echoes(wrapUp).map((c) => c.id)).toEqual(['c1', 'c2']);
-        expect(wire.results(wrapUp).map((r) => [r.id, unwrap(r.text)])).toEqual([
+        expect(view.echoes(wrapUp).map((c) => c.id)).toEqual(['c1', 'c2']);
+        expect(view.results(wrapUp).map((r) => [r.id, unwrap(r.text)])).toEqual([
           ['c1', { tool: 'read_file', result: CONTEXT_FULL }],
           ['c2', { tool: 'read_file', result: CONTEXT_FULL }],
         ]);
         expect(wrapUp.body).not.toContain('x'.repeat(100));
-        expect(wire.lastUser(wrapUp)).toBe(WRAP_UP);
+        expect(view.lastUser(wrapUp)).toBe(WRAP_UP);
       },
     );
 
-    it.each(KINDS)('never sends a call above maxCallInputTokens (%s)', async (kind) => {
-      // A model that reads three files in every turn and never answers, on a provider that counts
-      // nothing, or far too little: whatever it counts, no call sends more than the cap, as the loop
-      // guesses a call (`guessedInput`, what the server records as the call's input bytes).
-      const reads = (request: RecordedLlmRequest) => {
-        const n = fake.requests.indexOf(request);
-        return [1, 2, 3].map((i) => ({ id: `r${n}-${i}`, args: { path: `f${i}.ts` } }));
-      };
-      for (const tokens of [null, [10, 1]]) {
-        fake.requests.length = 0;
-        const sent: LlmConversation[] = [];
+    it.each(ALL_WIRES)(
+      'guesses what the tools answered at three characters a token, not four (%s)',
+      async (wire) => {
+        // 3 100 tokens, and two reads of 11 000 characters: about 5 500 tokens at four characters,
+        // which would leave the call that sends them under the cap, and about 7 300 at three, which
+        // does not.
         fake.enqueue(
-          ...Array.from(
-            { length: 40 },
-            (): LlmResponder => (request) => toolTurn(kind, reads(request), tokens),
+          callsOn(
+            wire,
+            [
+              { id: 'c1', args: { path: 'a.ts' } },
+              { id: 'c2', args: { path: 'b.ts' } },
+            ],
+            [3_000, 100],
           ),
+          answerOn(wire, '{"findings":[]}', [10, 1]),
         );
-        const cap = 6_000;
-        const { result } = await run(kind, {
-          limits: { ...LIMITS, maxOutputTokens: 400, maxCallInputTokens: cap },
-          runTool: answering('y'.repeat(2_500)).runTool,
-          send: (conversation) => {
-            sent.push(conversation);
-            return converse(configs[kind], fake.apiKey, conversation, http);
-          },
+        const { result, sent } = await recorded(wire, {
+          limits: WINDOW_LIMITS,
+          runTool: answering('x'.repeat(11_000)).runTool,
         });
-        const name = JSON.stringify(tokens);
-        // It wrapped up, and its wrap-up answer only called tools: a bad answer.
-        expect(result, name).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
-        expect(WIRES[kind].lastUser(fake.requests.at(-1)!), name).toBe(WRAP_UP);
-        expect(sent, name).toHaveLength(fake.requests.length);
-        expect(sent.length, name).toBeGreaterThan(2);
-        for (const [n, conversation] of sent.entries()) {
-          expect(guessedInput(conversation), `${name} call ${n + 1}`).toBeLessThanOrEqual(cap);
+        expect(result).toMatchObject({ kind: 'answer', wrappedUp: 'window' });
+        expect(VIEWS[wire].results(fake.requests[1]!).map((r) => unwrap(r.text).result)).toEqual([
+          CONTEXT_FULL,
+          CONTEXT_FULL,
+        ]);
+        for (const conversation of sent) {
+          expect(windowGuessedInput(conversation)).toBeLessThan(WINDOW_LIMITS.maxCallInputTokens);
         }
-      }
-    });
+      },
+    );
 
-    it.each(KINDS)(
-      'asks for nothing again past it: an answer it has no room to ask for again is a bad answer (%s)',
-      async (kind) => {
-        // An answer cut off at its limit, after 900 tokens sent and 200 written: asking for a
-        // shorter one would send them again, and pass a cap of 1 000.
-        const cutOff = () => textTurn(kind, '{"findings":[', [900, 200], 'length');
-        fake.enqueue(cutOff());
-        expect(
-          (await run(kind, { limits: { ...LIMITS, maxCallInputTokens: 1_000 } })).result,
-        ).toMatchObject({ kind: 'failed', reason: 'bad_answer', turns: 1 });
+    it.each(ALL_WIRES)(
+      'counts the turn at what the next request carries for it: what it wrote where its reasoning goes back, its text and calls on Chat Completions (%s)',
+      async (wire) => {
+        // 3 000 sent, and 8 000 written, nearly all of it thinking. Anthropic's signed thinking and
+        // the Responses API's reasoning go back with the turn, so the next call holds them; Chat
+        // Completions sends back only the text and the call.
+        fake.enqueue(
+          callsOn(wire, [{ id: 'c1', args: { path: 'a.ts' } }], [3_000, 8_000]),
+          answerOn(wire, '{"findings":[]}', [10, 1]),
+        );
+        const { result } = await run(wire, {
+          limits: WINDOW_LIMITS,
+          runTool: answering('a small file').runTool,
+        });
+        expect(result).toMatchObject({
+          kind: 'answer',
+          wrappedUp: wire === 'openai' ? null : 'window',
+        });
+      },
+    );
+
+    it.each(ALL_WIRES)(
+      'never sends a call whose guess reaches maxCallInputTokens, whatever the provider counts (%s)',
+      async (wire) => {
+        // A model that reads three files in every turn and never answers, on a provider that counts
+        // nothing, or far too little: no call is guessed (`windowGuessedInput`, three characters a
+        // token, at least the four of what the server records as its input bytes) at the cap.
+        const reads = (request: RecordedLlmRequest) => {
+          const n = fake.requests.indexOf(request);
+          return [1, 2, 3].map((i) => ({ id: `r${n}-${i}`, args: { path: `f${i}.ts` } }));
+        };
+        for (const tokens of [null, [10, 1]]) {
+          // A fake of its own for each: nothing one queued answers the other.
+          await freshFake();
+          fake.enqueue(
+            ...Array.from(
+              { length: 40 },
+              (): LlmResponder => (request) => callsOn(wire, reads(request), tokens),
+            ),
+          );
+          const cap = 8_000;
+          const { result, sent } = await recorded(wire, {
+            limits: { ...LIMITS, maxOutputTokens: 400, maxCallInputTokens: cap },
+            runTool: answering('y'.repeat(2_500)).runTool,
+          });
+          const name = JSON.stringify(tokens);
+          // It wrapped up, and its wrap-up answer only called tools: a bad answer.
+          expect(result, name).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
+          expect(VIEWS[wire].lastUser(fake.requests.at(-1)!), name).toBe(WRAP_UP);
+          expect(sent, name).toHaveLength(fake.requests.length);
+          expect(sent.length, name).toBeGreaterThan(2);
+          for (const [n, conversation] of sent.entries()) {
+            expect(windowGuessedInput(conversation), `${name} call ${n + 1}`).toBeLessThan(cap);
+            expect(guessedInput(conversation)).toBeLessThan(windowGuessedInput(conversation));
+          }
+        }
+      },
+    );
+
+    it.each(ALL_WIRES)(
+      'makes no first call whose guess reaches the cap, and makes one a token under it (%s)',
+      async (wire) => {
+        // The first call's guess, as an uncapped run sends it.
+        fake.enqueue(answerOn(wire, '{"findings":[]}'));
+        const { sent } = await recorded(wire, {});
+        const first = windowGuessedInput(sent[0]!);
+        // At the cap exactly: not made.
+        await freshFake();
+        const refused = await recorded(wire, { limits: { ...LIMITS, maxCallInputTokens: first } });
+        expect(refused.result).toEqual({
+          kind: 'failed',
+          reason: 'window_full',
+          inputTokens: 0,
+          outputTokens: 0,
+          turns: 0,
+          toolCalls: 0,
+        });
+        expect(fake.requests).toHaveLength(0);
+        // A token more: made.
+        fake.enqueue(answerOn(wire, '{"findings":[]}'));
+        const made = await recorded(wire, { limits: { ...LIMITS, maxCallInputTokens: first + 1 } });
+        expect(made.result).toMatchObject({ kind: 'answer', turns: 1 });
         expect(fake.requests).toHaveLength(1);
-        // With room, it is asked for again, shorter.
-        fake.requests.length = 0;
-        fake.enqueue(cutOff(), textTurn(kind, '{"findings":[]}', [10, 1]));
-        expect(
-          (await run(kind, { limits: { ...LIMITS, maxCallInputTokens: 10_000 } })).result,
-        ).toMatchObject({ kind: 'answer', turns: 2 });
-        expect(fake.requests).toHaveLength(2);
+      },
+    );
+
+    it.each(ALL_WIRES)(
+      'drops a turn whose own words leave no room even for the fixed lines, and wraps up on the history the last call sent (%s)',
+      async (wire) => {
+        // The model writes 36 000 characters beside its call: about 12 000 tokens, past the cap
+        // whatever its call is answered. That turn was never sent.
+        const wordy = 'z'.repeat(36_000);
+        const play = async (cap: number) => {
+          await freshFake();
+          fake.enqueue(
+            callsOn(wire, [{ id: 'c1', args: { path: 'a.ts' } }], [500, 100], wordy),
+            answerOn(wire, '{"findings":[]}', [10, 1]),
+          );
+          const tool = answering('a small file');
+          const done = await recorded(wire, {
+            limits: { ...LIMITS, maxCallInputTokens: cap },
+            runTool: tool.runTool,
+          });
+          return { ...done, told: tool.told };
+        };
+        const dropped = await play(10_000);
+        expect(dropped.result).toMatchObject({
+          kind: 'answer',
+          turns: 2,
+          toolCalls: 1,
+          wrappedUp: 'window',
+        });
+        expect(dropped.told).toEqual(['withheld c1']);
+        const view = VIEWS[wire];
+        const wrapUp = fake.requests[1]!;
+        // The wrap-up is the first message and the loop's words: no turn, no call, no answer.
+        expect(view.echoes(wrapUp)).toEqual([]);
+        expect(view.results(wrapUp)).toEqual([]);
+        expect(wrapUp.body).not.toContain('z'.repeat(100));
+        expect(view.lastUser(wrapUp).endsWith(WRAP_UP)).toBe(true);
+        expect(windowGuessedInput(dropped.sent[1]!)).toBeLessThan(10_000);
+
+        // A cap the first call fits and the wrap-up beside it does not: no call is made after it.
+        const first = windowGuessedInput(dropped.sent[0]!);
+        const full = await play(first + 1);
+        expect(full.result).toMatchObject({ kind: 'failed', reason: 'window_full', turns: 1 });
+        expect(fake.requests).toHaveLength(1);
+        expect(full.told).toEqual(['withheld c1']);
+      },
+    );
+
+    it.each(ALL_WIRES)(
+      'asks again on the history the last call sent when the answer leaves no room, and ends window_full when even that does not fit (%s)',
+      async (wire) => {
+        // An answer of 30 000 characters, about 10 000 tokens: asked for again beside it, the call
+        // would pass the cap; without it, it fits.
+        const long = `{"findings":[${'w'.repeat(30_000)}`;
+        const play = async (
+          cap: number,
+          answer: 'cut off' | 'refused',
+        ): Promise<Awaited<ReturnType<typeof recorded>>> => {
+          await freshFake();
+          fake.enqueue(
+            answerOn(wire, long, [500, 100], answer === 'cut off' ? 'length' : 'stop'),
+            answerOn(wire, '{"findings":[]}', [10, 1]),
+          );
+          return recorded(wire, {
+            limits: { ...LIMITS, maxCallInputTokens: cap },
+            accept: (text) => (text === long ? 'That is not the JSON asked for.' : true),
+          });
+        };
+        for (const answer of ['cut off', 'refused'] as const) {
+          const again = await play(10_000, answer);
+          expect(again.result, answer).toMatchObject({ kind: 'answer', turns: 2 });
+          const asked = fake.requests[1]!;
+          expect(asked.body, answer).not.toContain('w'.repeat(100));
+          expect(VIEWS[wire].assistantTexts(asked), answer).toEqual([]);
+          expect(VIEWS[wire].lastUser(asked), answer).toContain(
+            answer === 'cut off' ? SHORTER : 'That is not the JSON asked for.',
+          );
+          // The ask does not fit beside the first call either: it is not made.
+          const first = windowGuessedInput(again.sent[0]!);
+          const full = await play(first + 1, answer);
+          expect(full.result, answer).toMatchObject({
+            kind: 'failed',
+            reason: 'window_full',
+            turns: 1,
+          });
+          expect(fake.requests, answer).toHaveLength(1);
+        }
       },
     );
   });

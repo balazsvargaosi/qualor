@@ -378,7 +378,7 @@ export async function loadReviewSummary(
     case 'skipped':
       return { kind: 'skipped', reason: run.reason as ReviewSkipReason, detail: run.detail };
     case 'failed':
-      return { kind: 'failed', reason: run.reason as ReviewFailureReason };
+      return { kind: 'failed', reason: run.reason as ReviewFailureReason, detail: run.detail };
     case 'done': {
       const stored = reviewSummarySchema.safeParse(run.summary);
       const summary = stored.success ? stored.data : { verdict: '', walkthrough: [], notes: [] };

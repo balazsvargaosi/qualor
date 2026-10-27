@@ -84,6 +84,25 @@ describe('ending a run for the job that started it (R15)', () => {
       });
     });
 
+    it('keeps the detail of a failure, as of a skip: the window that had no room for the judge', async () => {
+      const run = await runningRun();
+      const end = {
+        status: 'failed',
+        reason: 'provider_error',
+        detail: 'window_full',
+      } as const;
+      expect(await endRun(t.db, run, ['running'], end)).toBe(true);
+      expect(await runRow(run.id)).toMatchObject({
+        status: 'failed',
+        reason: 'provider_error',
+        detail: 'window_full',
+      });
+      // A failure without one has none.
+      const plain = await runningRun();
+      expect(await endRun(t.db, plain, ['running'], FAILED)).toBe(true);
+      expect(await runRow(plain.id)).toMatchObject({ status: 'failed', detail: null });
+    });
+
     it('ends the run the named start made, with what it spent', async () => {
       const run = await runningRun();
       const ended = await endRun(t.db, run, ['running'], FAILED, {
