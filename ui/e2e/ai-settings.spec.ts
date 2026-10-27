@@ -9,8 +9,8 @@ import { PAYMENTS } from './seed-data';
  * (768px) nothing scrolls sideways and no control leaves its card, in the states that open the
  * most; the dark scheme keeps its contrast; and the keyboard paths reach and leave each dialog and
  * editor. The seed (`seedAi`) points the provider at the fake LLM on loopback and allows Default.
- * Nothing stays changed: one limit is saved and put back, and Default's AI review stays off, as
- * `ai.spec.ts` expects.
+ * Nothing stays changed: one limit is saved and put back, the provider's dialogs are opened and
+ * cancelled, and Default's AI review stays off, as `ai.spec.ts` expects.
  */
 
 // Colours fade in (0.15s): axe must never measure one halfway (styles.css shortens every
@@ -218,6 +218,72 @@ test.describe('by keyboard', () => {
     await explain.fill(stored);
     await saveByKeyboard();
     expect(await budgets()).toEqual(before);
+  });
+});
+
+test.describe("the provider's dialogs", () => {
+  /** The settings the server holds, read past this browser's routes. */
+  async function stored(page: Page): Promise<object> {
+    return (await (await page.request.get('/api/v0/system/llm')).json()) as object;
+  }
+
+  /** Records each save of the settings this browser sends. */
+  function watchSaves(page: Page): string[] {
+    const saves: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'PUT' && request.url().endsWith('/api/v0/system/llm')) {
+        saves.push(request.url());
+      }
+    });
+    return saves;
+  }
+
+  test('a model change where AI review runs asks first, and Cancel changes nothing', async ({
+    page,
+  }) => {
+    const before = await stored(page);
+    // In this browser only: AI review on and confirmed in each organisation the settings hold,
+    // which the shared server must never have.
+    await page.route(/\/api\/v0\/system\/llm$/, async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      const response = await route.fetch();
+      const body = (await response.json()) as { organizations: Record<string, object> };
+      const reviewing = Object.fromEntries(
+        Object.entries(body.organizations).map(([id, entry]) => [
+          id,
+          { ...entry, reviewStatus: { enabled: true, consentCurrent: true } },
+        ]),
+      );
+      return route.fulfill({ response, json: { ...body, organizations: reviewing } });
+    });
+    const saves = watchSaves(page);
+    await page.goto('/settings/ai');
+    const provider = page.locator('#provider');
+    const model = provider.locator('#ai-model');
+    await model.fill(`${await model.inputValue()}-next`);
+    await provider.getByRole('button', { name: 'Save and test' }).click();
+    const dialog = page.getByRole('dialog', { name: /^Pause AI review in / });
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await expectAccessible(page);
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toBeHidden();
+    expect(saves).toEqual([]);
+    expect(await stored(page)).toEqual(before);
+  });
+
+  test('Remove the provider asks first, and Cancel changes nothing', async ({ page }) => {
+    const before = await stored(page);
+    const saves = watchSaves(page);
+    await page.goto('/settings/ai');
+    const remove = page.locator('#provider').getByRole('button', { name: 'Remove the provider…' });
+    await remove.click();
+    const dialog = page.getByRole('dialog', { name: 'Remove the AI provider?' });
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await expectAccessible(page);
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toBeHidden();
+    expect(saves).toEqual([]);
+    expect(await stored(page)).toEqual(before);
   });
 });
 
