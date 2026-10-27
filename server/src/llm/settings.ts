@@ -333,12 +333,13 @@ export const CACHE_WRITE_PRICE_FACTOR = 1.25;
  * a million tokens, which is micro-USD for a token): the highest, over every tier's pair
  * (`pricingFor`), of the input price times CACHE_WRITE_PRICE_FACTOR (a token written to the cache),
  * the cached input price (a token read from it; none counts as nothing) and the output price. A
- * token of input at the plain input price is below the first. A cost that is left to spend is turned into tokens at this price, since the cost of a call is not
- * known before it is made and any tier's may be the next. Every tier counts, though two may name
- * the same model: a call is costed at the pair of its tier. A tier with no pair is left out, and
- * with no pair at all, or no prices, there is none. When every output price is at least
- * CACHE_WRITE_PRICE_FACTOR times its input price and no cached price is above the output price,
- * as it is for the mainstream prices, this is the dearest output price.
+ * token of input at the plain input price is below the first. A cost that is left to spend is
+ * turned into tokens at this price, since the cost of a call is not known before it is made and any
+ * tier's may be the next. Every tier counts, though two may name the same model: a call is costed
+ * at the pair of its tier. A tier with no pair is left out, and with no pair at all, or no prices,
+ * there is none. When every output price is at least CACHE_WRITE_PRICE_FACTOR times its input price
+ * and no cached price is above the output price, as it is for the mainstream prices, this is the
+ * dearest output price.
  */
 export function dearestTokenPrice(
   pricing: StoredPricing,

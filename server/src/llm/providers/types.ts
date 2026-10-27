@@ -192,19 +192,19 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
  * What an LlmError carries besides its failure and its message, each of it optional. `status` is
  * the provider's HTTP status when it answered, and `retryAfterSeconds` what it asked to wait.
  * `refusedTools`, `refusedOutputLimit`, `refusedContext` and `needsResponses` are each a yes or no
- * read from the provider's error body: the request carried tools and was refused in words that
- * name tools or functions (the model or its server cannot call tools); the request was refused (a
- * 400 or a 422) in words that say its output limit is more than the model takes; and, always with
- * that, the limit that was passed is the context window that the prompt shares with the output, so
- * that what the model takes depends on how long the prompt is, and is no cap of the model's own;
- * and, always with the first, a request to the Chat Completions API was refused in words that name
- * the Responses API, which is where the model takes its tools. `refusedStream` is a request that
- * asked for a streamed answer and was refused (a 400) in words that name the stream: the server
- * does not stream, and the request is asked again without it. `refusedCacheControl` is a request
- * that carried prompt-cache markers and was refused (a 400 or a 422) in words or a `param` that name
- * `cache_control`: the request is asked again without them. `cacheControlUnsupported` is that refusal
- * saying also that the field itself is not taken (not only where a marker was put): the server takes
- * no markers, and later calls to it go without them.
+ * read from the provider's error body: the request carried tools and was refused in words that name
+ * tools or functions (the model or its server cannot call tools); the request was refused (a 400 or
+ * a 422) in words that say its output limit is more than the model takes; and, always with that,
+ * the limit that was passed is the context window that the prompt shares with the output, so that
+ * what the model takes depends on how long the prompt is, and is no cap of the model's own; and,
+ * always with the first, a request to the Chat Completions API was refused in words that name the
+ * Responses API, which is where the model takes its tools. `refusedStream` is a request that asked
+ * for a streamed answer and was refused (a 400) in words that name the stream: the server does not
+ * stream, and the request is asked again without it. `refusedCacheControl` is a request that
+ * carried prompt-cache markers and was refused (a 400 or a 422) in words or a `param` that name
+ * `cache_control`: the request is asked again without them. `cacheControlUnsupported` is that
+ * refusal saying also that the field itself is not taken (not only where a marker was put): the
+ * server takes no markers, and later calls to it go without them.
  */
 export interface LlmErrorOptions {
   status?: number | null;

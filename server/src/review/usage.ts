@@ -272,14 +272,14 @@ export async function reservedReviewTokens(
  * organisation has left of its day, what its project has left of the day when the project has a
  * budget, and, when the review has a cost budget (`costPerDayUsd`) and there are prices, what the
  * cost left buys at the `dearestTokenPrice` of the provider's models: the cost of a call is not
- * known before it is made and any model's may be the next, so the price that cannot overspend is the
- * dearest a token may cost, of input written to the cache, input read from it and output. Without
- * a provider, as without prices, nothing is priced. A cost budget at or past its limit leaves
- * nothing. `usage` is the day so far, as `reviewUsageToday` counts it for the organisation and for the project. `reserved` is
- * what the other running reviews may still spend (`reservedReviewTokens`): the organisation's
- * tokens left, the project's and the tokens the cost buys each lose their part of it, and Tokens
- * per review never does. The answer to a
- * reply asks it with its own ceiling in the place of `maxTokensPerReview`.
+ * known before it is made and any model's may be the next, so the price that cannot overspend is
+ * the dearest a token may cost, of input written to the cache, input read from it and output.
+ * Without a provider, as without prices, nothing is priced. A cost budget at or past its limit
+ * leaves nothing. `usage` is the day so far, as `reviewUsageToday` counts it for the organisation
+ * and for the project. `reserved` is what the other running reviews may still spend
+ * (`reservedReviewTokens`): the organisation's tokens left, the project's and the tokens the cost
+ * buys each lose their part of it, and Tokens per review never does. The answer to a reply asks it
+ * with its own ceiling in the place of `maxTokensPerReview`.
  */
 export function remainingReviewTokens(
   budgets: ReviewBudgets,
