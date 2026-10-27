@@ -24,6 +24,7 @@ import { LicenseFileError } from './license/source';
 import { autoFixHandlers } from './llm/auto-fix';
 import {
   createModelRuntimes,
+  reviewCircuitDeps,
   LLM_LEASE_MS,
   LLM_WORKER_CONCURRENCY,
   llmHandlers,
@@ -313,7 +314,8 @@ async function main(): Promise<void> {
   // Two circuits (6I R40): the AI requests (explain, triage, fix) have the `llm` runtime, AI reviews
   // and replies one of their own, so failing background reviews never pause the assistant. Only the
   // `llm` worker takes an organisation's slots.
-  const { llm: llmRuntime, reviewCircuit } = createModelRuntimes();
+  const modelRuntimes = createModelRuntimes();
+  const llmRuntime = modelRuntimes.llm;
   // llm.md §12.3: AI requests have their own worker, so a slow or absent model never delays
   // analyses, deliveries or decorations. It also runs the automatic fix suggestions of an analysed
   // merge request (4E-3a §3), which queue requests and never call the model themselves. Its calls
@@ -353,7 +355,7 @@ async function main(): Promise<void> {
     db: database.db,
     config,
     logger,
-    llmCircuit: reviewCircuit,
+    ...reviewCircuitDeps(modelRuntimes),
     scm: { secretKey: config.secretKey, internalHosts: config.scmInternalHosts },
     scmRuntime,
     shutdown: reviewShutdown.signal,

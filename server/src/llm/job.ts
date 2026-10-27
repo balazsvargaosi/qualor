@@ -109,6 +109,16 @@ export function createModelRuntimes(now: () => number = Date.now): {
   return { llm: createLlmRuntime(now), reviewCircuit: new CircuitBreaker(now) };
 }
 
+/**
+ * The circuit field of the review deps (`ReviewJobDeps.llmCircuit`): the reviews' own circuit,
+ * never the `llm` runtime's (R40). main.ts spreads it into the review deps.
+ */
+export function reviewCircuitDeps(runtimes: { reviewCircuit: CircuitBreaker }): {
+  llmCircuit: CircuitBreaker;
+} {
+  return { llmCircuit: runtimes.reviewCircuit };
+}
+
 export interface LlmJobDeps {
   db: Db;
   secretKey: string;
