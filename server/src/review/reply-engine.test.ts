@@ -22,7 +22,7 @@ import {
   type ReplyInput,
   type ReplyIssue,
 } from './reply-engine';
-import type { SnapshotFile, SnapshotReader } from './snapshot-reader';
+import { filesOneByOne, type SnapshotFile, type SnapshotReader } from './snapshot-reader';
 import { REVIEW_TOOLS } from './tools';
 import { RedactionTally } from './usage';
 
@@ -767,13 +767,11 @@ describe('the answer to a reply', () => {
     function counting(files: Record<string, string | SnapshotFile>, headSha = OTHER_HEAD) {
       const inner = memorySnapshot({ files, meta: { headSha } });
       const asked: string[] = [];
-      const reader: SnapshotReader = {
-        ...inner,
-        file: (path) => {
-          asked.push(path);
-          return inner.file(path);
-        },
+      const file: SnapshotReader['file'] = (path) => {
+        asked.push(path);
+        return inner.file(path);
       };
+      const reader: SnapshotReader = { ...inner, file, files: filesOneByOne(file) };
       return { reader, asked };
     }
     /** The thread of a finding on the third line of `CART`, as the review hashed it, replied to at another head. */

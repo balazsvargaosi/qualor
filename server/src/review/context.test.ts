@@ -4,6 +4,7 @@ import { HOSTILE_TEXT, memorySnapshot, type MemorySnapshotInput } from '../../te
 import { excludedPathMatcher } from '../llm/settings';
 import {
   buildReviewContext,
+  CLASSIFY_BATCH,
   CONTEXT_MAXIMA,
   SCOPE_MARGIN,
   scopeRanges,
@@ -20,7 +21,7 @@ import { envelope } from './envelope';
 import { MaskedFiles, type MaskBudget, type MaskedFilesOptions } from './masked-files';
 import { Masker, type MaskerOptions } from './masker';
 import { LIST_CAP_STEPS, specialistData } from './prompts';
-import type { SnapshotReader } from './snapshot-reader';
+import { filesOneByOne, type SnapshotReader } from './snapshot-reader';
 import { TOOL_LIMITS } from './tools';
 
 const j = (...parts: string[]) => parts.join('');
@@ -61,13 +62,15 @@ const freshBudget = (): MaskBudget => ({ maskedBytes: TOOL_LIMITS.maskedBytesPer
 /** The paths the reader was asked for the text of. */
 function counting(inner: SnapshotReader): { reader: SnapshotReader; asked: string[] } {
   const asked: string[] = [];
+  const file: SnapshotReader['file'] = (path) => {
+    asked.push(path);
+    return inner.file(path);
+  };
   return {
     reader: {
       ...inner,
-      file: (path) => {
-        asked.push(path);
-        return inner.file(path);
-      },
+      file,
+      files: filesOneByOne(file),
     },
     asked,
   };
@@ -1255,6 +1258,39 @@ describe('the slice budget', () => {
     expect(timing.texts).toEqual([`${calm}\n${HOSTILE_TEXT}`]);
   });
 
+  it('classify reads the files of 60 changes in 3 reads', async () => {
+    const paths = Array.from({ length: 60 }, (_, i) => `src/f${String(i).padStart(2, '0')}.ts`);
+    const inner = memorySnapshot({
+      changes: paths.map((path) => ({
+        path,
+        status: 'modified',
+        patch: '@@ -1 +1 @@\n-a\n+b\n',
+      })),
+      files: Object.fromEntries(paths.map((path) => [path, 'b\n'])),
+    });
+    const batches: string[][] = [];
+    const events: string[] = [];
+    const reader: SnapshotReader = {
+      ...inner,
+      file: (path) => {
+        events.push('file');
+        return inner.file(path);
+      },
+      files: (batch) => {
+        events.push('files');
+        batches.push([...batch]);
+        return inner.files(batch);
+      },
+    };
+    const { context } = await contextOf(reader);
+    expect(batches.map((batch) => batch.length)).toEqual([CLASSIFY_BATCH, CLASSIFY_BATCH, 10]);
+    expect(batches.flat()).toEqual(paths);
+    // The three batches come first: classify reads no file alone. The slices read the files after.
+    expect(events.slice(0, 3)).toEqual(['files', 'files', 'files']);
+    expect(events.filter((event) => event === 'files')).toHaveLength(3);
+    expect(context.reviewed.map((c) => c.path)).toEqual(paths);
+  });
+
   it('lists a file whose text is gone from the snapshot by the time it has its turn', async () => {
     // The snapshot is deleted, or replaced, between the reading that tells what a file is and the
     // one that masks it.
@@ -1263,13 +1299,11 @@ describe('the slice budget', () => {
       files: { 'a.ts': 'b\n' },
     });
     let reads = 0;
-    const reader: SnapshotReader = {
-      ...inner,
-      file: (path) => {
-        reads += 1;
-        return reads === 1 ? inner.file(path) : Promise.resolve({ kind: 'absent' });
-      },
+    const file: SnapshotReader['file'] = (path) => {
+      reads += 1;
+      return reads === 1 ? inner.file(path) : Promise.resolve({ kind: 'absent' });
     };
+    const reader: SnapshotReader = { ...inner, file, files: filesOneByOne(file) };
     const { context } = await contextOf(reader);
     expect(context.slices).toBe('');
     expect(context.omittedFromSlices).toEqual(['a.ts (1 line): changed, read it with read_file']);

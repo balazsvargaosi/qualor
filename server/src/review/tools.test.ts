@@ -5,7 +5,7 @@ import type { LlmToolCall } from '../llm/providers/types';
 import { MaskedFiles } from './masked-files';
 import { Masker } from './masker';
 import { compilePathGlob, likePrefix, MAX_GLOB_WILDCARDS } from './path-glob';
-import type { SnapshotReader } from './snapshot-reader';
+import { filesOneByOne, type SnapshotReader } from './snapshot-reader';
 import {
   REVIEW_TOOLS,
   runReviewTool,
@@ -74,13 +74,15 @@ const numberedFile = (n: number): string =>
 /** The reader, and the paths `file()` was asked for. */
 function counting(inner: SnapshotReader): { reader: SnapshotReader; asked: string[] } {
   const asked: string[] = [];
+  const file: SnapshotReader['file'] = (path) => {
+    asked.push(path);
+    return inner.file(path);
+  };
   return {
     reader: {
       ...inner,
-      file: (path) => {
-        asked.push(path);
-        return inner.file(path);
-      },
+      file,
+      files: filesOneByOne(file),
     },
     asked,
   };
@@ -91,6 +93,7 @@ const tripwire: SnapshotReader = {
   meta: memorySnapshot().meta,
   changes: () => Promise.reject(new Error('changes() was called')),
   file: () => Promise.reject(new Error('file() was called')),
+  files: () => Promise.reject(new Error('files() was called')),
   grep: () => Promise.reject(new Error('grep() was called')),
   list: () => Promise.reject(new Error('list() was called')),
 };

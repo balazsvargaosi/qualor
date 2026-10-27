@@ -288,6 +288,31 @@ describe('the snapshot reader (6I-3)', () => {
       expect(await db.file('nope.ts')).toEqual({ kind: 'absent' });
     });
 
+    it('files(paths) answers each path as file(path) does: text, omitted, absent, and a deleted file', async () => {
+      const paths = [
+        ...Object.keys(TEXTS),
+        ...Object.keys(OMITTED),
+        'old/gone.ts',
+        'src/old-name.ts',
+        'nope.ts',
+        'constructor',
+        '__proto__',
+        'src/main.ts',
+      ];
+      const batch = await db.files(paths);
+      expect([...batch.keys()].sort()).toEqual([...new Set(paths)].sort());
+      for (const path of paths) {
+        expect(batch.get(path), path).toEqual(await db.file(path));
+      }
+      expect(batch.get('src/main.ts')).toEqual({ kind: 'text', text: TEXTS['src/main.ts'] });
+      expect(batch.get('empty.txt')).toEqual({ kind: 'text', text: '' });
+      expect(batch.get('bin/logo.png')).toEqual({ kind: 'omitted', reason: 'binary' });
+      expect(batch.get('old/gone.ts')).toEqual({ kind: 'absent' });
+      expect(batch.get('nope.ts')).toEqual({ kind: 'absent' });
+      expect(await db.files([])).toEqual(new Map());
+      expect(await memory.files(paths)).toEqual(batch);
+    });
+
     it('on grep, across needles, globs and limits', async () => {
       const searches: [string, string | null, number][] = [
         ['needle', null, 1],

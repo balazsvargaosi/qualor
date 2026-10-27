@@ -65,6 +65,11 @@ export interface SnapshotReader {
   /** The file as the snapshot stores it: its text is the scanner's, not masked again here. */
   file(path: string): Promise<SnapshotFile>;
   /**
+   * Several files at once: every path asked for is in the answer, as {@link SnapshotReader.file}
+   * would answer it (a path with no file, and one the merge request deleted, are `absent`).
+   */
+  files(paths: readonly string[]): Promise<Map<string, SnapshotFile>>;
+  /**
    * The lines that hold `needle` (fixed text, case-sensitive, within one line) in the files with
    * text whose path matches `glob` (see {@link compilePathGlob}) and that `exclude` does not name,
    * in path order and line order: at most `limit` hits, and `truncated` when there are more. A
@@ -90,6 +95,17 @@ export interface SnapshotReader {
     dir: string,
     limit: number,
   ): Promise<{ entries: { name: string; kind: 'file' | 'dir' }[]; truncated: boolean }>;
+}
+
+/** `files` over a `file`: one read a path, for a stub or a reader that has no better way. */
+export function filesOneByOne(file: SnapshotReader['file']): SnapshotReader['files'] {
+  return async (paths) => {
+    const answers = new Map<string, SnapshotFile>();
+    for (const path of paths) {
+      if (!answers.has(path)) answers.set(path, await file(path));
+    }
+    return answers;
+  };
 }
 
 type Hits = Awaited<ReturnType<SnapshotReader['grep']>>;
@@ -241,6 +257,10 @@ export function memorySnapshotReader(input: {
           .sort((a, b) => compareCodePoints(a.path, b.path)),
       ),
     file: (path) => Promise.resolve(held.get(path) ?? { kind: 'absent' }),
+    files: (paths) =>
+      Promise.resolve(
+        new Map(paths.map((path) => [path, held.get(path) ?? ({ kind: 'absent' } as const)])),
+      ),
     grep: (needle, glob, limit, exclude) => {
       const texts = new Map<string, string>();
       for (const [path, file] of held) {
@@ -258,6 +278,16 @@ export function memorySnapshotReader(input: {
 
 const isOmissionReason = (value: string): value is OmissionReason =>
   OMISSION_REASONS.some((reason) => reason === value);
+
+/** What a stored row of a path is: no row, a path with a change and nothing else (a deleted file) is absent. */
+function fileOf(stored: { text: string | null; omitted: string | null } | undefined): SnapshotFile {
+  if (stored === undefined) return { kind: 'absent' };
+  if (stored.text !== null) return { kind: 'text', text: stored.text };
+  if (stored.omitted !== null && isOmissionReason(stored.omitted)) {
+    return { kind: 'omitted', reason: stored.omitted };
+  }
+  return { kind: 'absent' };
+}
 
 /** Paths in code point order, whatever the collation of the database. */
 const byPath = sql`${files.path} COLLATE "C"`;
@@ -328,13 +358,22 @@ export async function openSnapshotReader(
         .select({ text: files.text, omitted: files.omitted })
         .from(files)
         .where(and(inSnapshot, eq(files.path, path)));
-      if (stored === undefined) return { kind: 'absent' };
-      if (stored.text !== null) return { kind: 'text', text: stored.text };
-      if (stored.omitted !== null && isOmissionReason(stored.omitted)) {
-        return { kind: 'omitted', reason: stored.omitted };
+      return fileOf(stored);
+    },
+
+    async files(paths) {
+      const wanted = [...new Set(paths)];
+      const answers = new Map<string, SnapshotFile>();
+      if (wanted.length > 0) {
+        const rows = await db
+          .select({ path: files.path, text: files.text, omitted: files.omitted })
+          .from(files)
+          .where(and(inSnapshot, inArray(files.path, wanted)));
+        for (const row of rows) answers.set(row.path, fileOf(row));
       }
-      // A path with a change and nothing else: a file the merge request deleted.
-      return { kind: 'absent' };
+      // A path with no row is no file; the answer holds every path asked for.
+      for (const path of wanted) if (!answers.has(path)) answers.set(path, { kind: 'absent' });
+      return answers;
     },
 
     async grep(needle, glob, limit, exclude) {

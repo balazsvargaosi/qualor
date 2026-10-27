@@ -10,7 +10,7 @@ import {
   type MaskedFilesOptions,
 } from './masked-files';
 import { Masker, type MaskerOptions } from './masker';
-import { linesOf, type SnapshotReader } from './snapshot-reader';
+import { filesOneByOne, linesOf, type SnapshotReader } from './snapshot-reader';
 
 const j = (...parts: string[]) => parts.join('');
 const KEY_BEGIN = j('-----BEGIN ', 'RSA PRIVATE KEY-----');
@@ -46,13 +46,15 @@ function linesOfFile(file: MaskedFile): string[] {
 /** The reader, and the paths `file()` was asked for. */
 function counting(inner: SnapshotReader): { reader: SnapshotReader; asked: string[] } {
   const asked: string[] = [];
+  const file: SnapshotReader['file'] = (path) => {
+    asked.push(path);
+    return inner.file(path);
+  };
   return {
     reader: {
       ...inner,
-      file: (path) => {
-        asked.push(path);
-        return inner.file(path);
-      },
+      file,
+      files: filesOneByOne(file),
     },
     asked,
   };

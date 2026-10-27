@@ -57,6 +57,8 @@ export {
 
 /** Lines of context kept on each side of a change. */
 const CONTEXT_LINES = 40;
+/** The files `classify` reads in one query. */
+export const CLASSIFY_BATCH = 25;
 /**
  * The most a context shows, whatever the review's budget: characters of slices in all, and of each
  * instructions file. The review's limits (`ContextOptions.limits`) are at most these.
@@ -395,6 +397,32 @@ async function classify(
 ): Promise<{ candidates: Candidate[]; skipped: SkippedChange[] }> {
   const candidates: Candidate[] = [];
   const skipped: SkippedChange[] = [];
+  // The files to read, in the order of the changes and each once, read CLASSIFY_BATCH at a time.
+  const toRead = [
+    ...new Set(
+      changes.flatMap((given) => {
+        const change = readChange(given);
+        return isExcluded(change, options) ||
+          skippedByName(change.path) !== null ||
+          change.status === 'deleted'
+          ? []
+          : [change.path];
+      }),
+    ),
+  ];
+  let read = new Map<string, SnapshotFile>();
+  let fetched = 0;
+  const fileOf = async (path: string): Promise<SnapshotFile> => {
+    const held = read.get(path);
+    if (held !== undefined) return held;
+    // A path asked for twice (a snapshot holds a path once) whose batch has gone is read alone.
+    if (toRead.indexOf(path) < fetched) return files.reader.file(path);
+    // Reached in order, so this path opens the next batch.
+    const batch = toRead.slice(fetched, fetched + CLASSIFY_BATCH);
+    fetched += batch.length;
+    read = await files.reader.files(batch);
+    return read.get(path) ?? { kind: 'absent' };
+  };
   for (const given of changes) {
     const change = readChange(given);
     if (isExcluded(change, options)) continue;
@@ -404,7 +432,7 @@ async function classify(
       continue;
     }
     const file: SnapshotFile =
-      change.status === 'deleted' ? { kind: 'absent' } : await files.reader.file(change.path);
+      change.status === 'deleted' ? { kind: 'absent' } : await fileOf(change.path);
 
     let stored: MaskedText | null = null;
     let unshown: Unshown | null = null;
