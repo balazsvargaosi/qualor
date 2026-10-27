@@ -430,6 +430,81 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       });
     });
 
+    it('counts the projects ticked and not added as unsaved, and Save AI review adds them first', async () => {
+      const { server } = setup();
+      const { fixture, root, page } = await render();
+      expect(page.canLeave()).toBe(true);
+      await click(fixture, button(section(root), 'Add projects'));
+      const boxes = () => [
+        ...section(root).querySelectorAll<HTMLInputElement>('q-project-picker li input'),
+      ];
+      await click(fixture, boxes()[1]);
+      await click(fixture, boxes()[0]);
+      expect(foot(root)).toBe('2 unsaved changes');
+      // Unticked, a project is no change.
+      await click(fixture, boxes()[1]);
+      expect(foot(root)).toBe('1 unsaved change');
+      const unload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(unload);
+      expect(unload.defaultPrevented).toBe(true);
+      const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
+      const answer = page.canLeave() as Promise<boolean>;
+      await settle(fixture);
+      expect(text(leave.querySelector('#leave-text'))).toBe(
+        'Your changes to AI review are not saved yet.',
+      );
+      await click(fixture, button(leave, 'Stay'));
+      await expect(answer).resolves.toBe(false);
+
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+        { enabled: false, scope: 'selected', projectIds: [PAYMENTS], budgets: DEFAULT_BUDGETS },
+      ]);
+      expect(rows(root).map((r) => text(r.querySelector('th .cell-stack > span')))).toEqual([
+        'Payments',
+      ]);
+      expect(foot(root)).toMatch(/^Saved at /);
+      expect(page.canLeave()).toBe(true);
+    });
+
+    it('takes the projects ticked into the switch-on dialog, whose confirm saves them', async () => {
+      const { server } = setup();
+      const { fixture, root } = await render();
+      await click(fixture, button(section(root), 'Add projects'));
+      await click(
+        fixture,
+        section(root).querySelectorAll<HTMLInputElement>('q-project-picker li input')[0],
+      );
+      await act(fixture, root, 'Switch on AI review…');
+      // The dialog says what its confirm sends: the ticked project is selected, and saved with it.
+      expect(text(field(root, 'ai-review-scope-line'))).toBe(
+        '1 selected project will be reviewed.',
+      );
+      expect(text(field(root, 'ai-review-unsaved'))).toBe(
+        'Switching on also saves your unsaved changes to projects and budgets.',
+      );
+      await click(fixture, button(consentDialog(root), CONFIRM_A));
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        enabled: true,
+        scope: 'selected',
+        projectIds: [PAYMENTS],
+      });
+    });
+
+    it('forgets the projects ticked once the picker is cancelled', async () => {
+      setup();
+      const { fixture, root, page } = await render();
+      await click(fixture, button(section(root), 'Add projects'));
+      await click(
+        fixture,
+        section(root).querySelectorAll<HTMLInputElement>('q-project-picker li input')[0],
+      );
+      expect(foot(root)).toBe('1 unsaved change');
+      await click(fixture, button(section(root).querySelector('q-project-picker')!, 'Cancel'));
+      expect(foot(root)).toBe('No unsaved changes');
+      expect(page.canLeave()).toBe(true);
+    });
+
     it('says what review does with a project created after the page listed them, and counts it', async () => {
       const { server } = setup();
       const { fixture, root } = await render();

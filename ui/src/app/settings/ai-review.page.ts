@@ -114,6 +114,8 @@ const FEATURES: readonly Feature[] = ['explain', 'triage', 'fix'];
  *   longer covers the provider), its one action, today's use and the assistant.
  * - **AI review**: the projects to review (all, or a chosen list that says which of them can be
  *   reviewed), the budgets in a fold, and one Save for both, whether review is on or off.
+ *   Projects ticked in the picker and not added count as edits: Save, and the switch-on dialog
+ *   before it opens, add them first.
  *   Switching it on sends repository code to the provider, so it is a button of the status that
  *   opens a dialog with the server's notice, word for word; Confirm saves the section's edits
  *   with `acknowledgeDataSharing: { host, model, models }`, the provider the dialog showed. A
@@ -366,7 +368,12 @@ export class AiReviewPage implements LeaveGuarded {
     return lines;
   });
 
-  /** The edits not saved yet: the scope, each project added or removed, each budget changed. */
+  /** The picker of the projects to review, while the chosen projects show. */
+  private readonly picker = viewChild(ProjectPicker);
+  /**
+   * The edits not saved yet: the scope, each project added or removed, each budget changed, and
+   * each project ticked in the picker and not added yet, which a save adds first.
+   */
   protected readonly changeCount = computed(() => {
     const settings = this.current();
     if (settings === null || !settings.available) return 0;
@@ -375,9 +382,11 @@ export class AiReviewPage implements LeaveGuarded {
     const projects =
       [...chosen].filter((id) => !stored.has(id)).length +
       [...stored].filter((id) => !chosen.has(id)).length;
+    const ticked = (this.picker()?.pending() ?? []).filter((p) => !chosen.has(p.id)).length;
     return (
       (this.scope() === settings.scope ? 0 : 1) +
       projects +
+      ticked +
       changedBudgets(this.budgets(), settings.budgets, this.locale)
     );
   });
@@ -788,6 +797,9 @@ export class AiReviewPage implements LeaveGuarded {
     }
     const paused = settings.enabled && !settings.consentCurrent;
     if (!paused && this.sendableBudgets() === null) return;
+    // Projects ticked and not added yet join the selection first: the dialog names what its
+    // confirm saves.
+    this.picker()?.addPending();
     this.consent.set({
       host: settings.provider.host,
       model: settings.provider.model,
@@ -810,6 +822,8 @@ export class AiReviewPage implements LeaveGuarded {
   ): Promise<void> {
     const id = this.org.currentId();
     if (!id) return;
+    // Projects ticked and not added yet are part of the edits: they join the selection first.
+    this.picker()?.addPending();
     const budgets = this.sendableBudgets();
     if (budgets === null) return;
     const sent: SentEdits = {
