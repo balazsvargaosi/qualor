@@ -1339,6 +1339,7 @@
     "aiProvider.status.tested": "Tested {$date}: all {$n} models connect and can call tools.",
     "aiProvider.status.organizations": "Organizations",
     "aiProvider.status.manage": "Manage",
+    "aiProvider.status.manageLabel": "Manage organizations",
     "aiProvider.status.noneAllowed": "None may use AI",
     "aiProvider.status.allowed": "{$allowed} of {$total} may use AI",
     "aiProvider.status.review": "AI review",

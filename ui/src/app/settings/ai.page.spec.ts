@@ -393,7 +393,7 @@ describe('instanceStatusLines', () => {
       tone: 'ok',
       state: '5 of 5 may use AI',
       sub: 'Org 1, Org 2, Org 3, and 2 more',
-      action: { id: 'manage', label: 'Manage' },
+      action: { id: 'manage', label: 'Manage', ariaLabel: 'Manage organizations' },
     });
     expect(lineOf(allowed(3), 'organizations', orgs).sub).toBe('Org 1, Org 2, and Org 3');
     expect(lineOf(allowed(0), 'organizations', orgs)).toMatchObject({
@@ -505,7 +505,10 @@ describe('AiSettingsPage: its actions', () => {
     catchScrolls();
     setup(configured());
     const { fixture, root } = await render();
-    await click(fixture, button(statusLine(root, 'organizations'), 'Manage'));
+    const manage = button(statusLine(root, 'organizations'), 'Manage');
+    // The button names its object.
+    expect(manage?.getAttribute('aria-label')).toBe('Manage organizations');
+    await click(fixture, manage);
     expect(document.activeElement).toBe(root.querySelector('#ai-orgs-heading'));
     await click(fixture, button(statusLine(root, 'prices'), 'Enter prices'));
     expect(document.activeElement).toBe(field(root, 'ai-prices'));

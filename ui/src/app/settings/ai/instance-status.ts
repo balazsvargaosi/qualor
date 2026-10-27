@@ -106,7 +106,11 @@ function organizationsLine(
 ): StatusLine {
   const label = $localize`:@@aiProvider.status.organizations:Organizations`;
   const allowed = organizations.filter((o) => saved.organizations[o.id]?.enabled === true);
-  const action = { id: 'manage', label: $localize`:@@aiProvider.status.manage:Manage` };
+  const action = {
+    id: 'manage',
+    label: $localize`:@@aiProvider.status.manage:Manage`,
+    ariaLabel: $localize`:@@aiProvider.status.manageLabel:Manage organizations`,
+  };
   if (allowed.length === 0) {
     return {
       key: 'organizations',
