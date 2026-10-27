@@ -171,12 +171,13 @@ docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.ollama.yml 
   (`qualor_ollama` is the volume compose names for the project `qualor`; check with
   `docker volume ls`.)
 
-- **Settings.** Sign in as an instance admin, open **Settings → AI assistant**, choose the
-  OpenAI-compatible kind, base URL `http://ollama:11434/v1`, the model (`qwen2.5-coder:7b`) and no
-  API key, and press **Test**. Then enable the organisations and features you want.
-- **Speed.** On a CPU a fix suggestion can take a minute or more: raise the timeout in the same
-  settings (up to 600 s) if requests end with "The model did not answer in time". Give Ollama the
-  memory its model needs (several GiB for a 7B model).
+- **Settings.** Sign in as an instance admin, open **Settings → AI provider**, choose
+  **OpenAI-compatible**, base URL `http://ollama:11434/v1`, the model (`qwen2.5-coder:7b`) and no
+  API key, and press **Save and test**. Then allow the organisations you want under
+  **Organizations**, with the features they may use.
+- **Speed.** On a CPU a fix suggestion can take a minute or more: raise the **Timeout** in the
+  provider's **Connection options** (up to 600 seconds) if requests end with "The model did not
+  answer in time". Give Ollama the memory its model needs (several GiB for a 7B model).
 
 ## Reverse proxy and TLS
 

@@ -314,11 +314,11 @@ Qualor can ask a language model about one issue at a time, on a person's click i
   and the replaced lines are lines it added, unchanged. The model never pushes code.
 
 It is **off by default and bring-your-own-key**. An instance admin configures one provider for the
-instance under **Settings → AI assistant**: an OpenAI-compatible chat completions endpoint (OpenAI,
+instance under **Settings → AI provider**: an OpenAI-compatible chat completions endpoint (OpenAI,
 Azure OpenAI's v1 API, vLLM, Ollama, LM Studio), OpenAI's Responses API or the Anthropic Messages
 API, with its base URL, model (and optionally a stronger and a faster model for AI review) and API
-key (write-only, stored encrypted). Each organisation is then enabled with the
-features it wants, and projects and paths can be excluded. No request leaves the server without
+key (write-only, stored encrypted). Each organisation is then allowed to use AI, with the features
+it wants, and projects and paths can be excluded. No request leaves the server without
 that configuration and a person's click, with two exceptions that an organisation admin must switch
 on first (both are off by default):
 

@@ -27,6 +27,13 @@ const REMOVED = [
   'Quality profiles → copy',
   // Step 11: the UI calls them "Rules it does not set" (the list) and "Not set here" (a profile).
   'Unknown rules, meaning',
+];
+
+/**
+ * The names the AI settings redesign removed. The READMEs walk through these pages too, so they are
+ * held to them as well as the guide.
+ */
+const AI_SETTINGS_REMOVED = [
   // AI settings redesign (2026-10-26): the instance's page is Settings → AI provider.
   'Settings → AI assistant',
   // AI settings redesign (2026-10-26): AI review and automatic fix suggestions are sections of the
@@ -73,24 +80,40 @@ const REMOVED = [
   'Confirm again',
 ];
 
+/** A Markdown file as the checks read it: its emphasis dropped, its line breaks folded. */
+const read = (url: URL): string =>
+  readFileSync(url, 'utf8').replaceAll('**', '').replace(/\s+/g, ' ');
+
 const guide = new URL('../../docs/guide/', import.meta.url);
 const pages = readdirSync(guide)
   .filter((name) => name.endsWith('.md'))
-  .map((name) => ({
-    name,
-    text: readFileSync(new URL(name, guide), 'utf8').replaceAll('**', '').replace(/\s+/g, ' '),
-  }));
+  .map((name) => ({ name, text: read(new URL(name, guide)) }));
+const root = new URL('../../', import.meta.url);
+const readmes = ['README.md', 'deploy/README.md'].map((name) => ({
+  name,
+  text: read(new URL(name, root)),
+}));
 
 describe('the user guide', () => {
   it('has pages to read', () => {
     expect(pages.length).toBeGreaterThan(0);
   });
 
-  for (const removed of REMOVED) {
+  for (const removed of [...REMOVED, ...AI_SETTINGS_REMOVED]) {
     it(`never names "${removed}"`, () => {
       expect(pages.filter((page) => page.text.includes(removed)).map((page) => page.name)).toEqual(
         [],
       );
+    });
+  }
+});
+
+describe('the READMEs', () => {
+  for (const removed of AI_SETTINGS_REMOVED) {
+    it(`never name "${removed}"`, () => {
+      expect(
+        readmes.filter((file) => file.text.includes(removed)).map((file) => file.name),
+      ).toEqual([]);
     });
   }
 });
