@@ -1,88 +1,33 @@
-import { createHash } from 'node:crypto';
-import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import { z } from 'zod';
 import type { AuditRecorder } from '../audit/recorder';
 import type { Config } from '../config';
-import type { Db, Executor } from '../db/client';
+import type { Db } from '../db/client';
 import { pgErrorCode } from '../db/errors';
-import {
-  branches,
-  projects,
-  reviewRuns,
-  reviewSnapshots,
-  type ReviewPhase,
-  type ReviewRunRow,
-  type ReviewRunStatus,
-} from '../db/schema';
-import { costOf, type LlmRuntime } from '../llm/job';
-import { LlmError, type LlmConversation, type LlmTurn } from '../llm/providers';
-import {
-  excludedPathMatcher,
-  pricingFor,
-  providerApiKey,
-  readLlmSettings,
-  type PricePair,
-  type StoredLlmSettings,
-  type StoredProvider,
-} from '../llm/settings';
+import { reviewRuns, type ReviewRunRow } from '../db/schema';
+import type { LlmRuntime } from '../llm/job';
+import { providerApiKey } from '../llm/settings';
 import type { JobHandlers, WorkerLogger } from '../queue/worker';
 import type { DecorationDeps } from '../scm/decorate';
 import { readMergeRequestState } from '../scm/mr-state';
-import { lockBranchQueue } from '../scm/queue';
 import type { ScmRuntime } from '../scm/runtime';
-import {
-  analyzerFindings,
-  buildReviewContext,
-  priorAiFindings,
-  type ContextLimits,
-  type ContextShape,
-  type ReviewableChange,
-  type ReviewContext,
-} from './context';
-import type { ConversationResult } from './conversation';
 import { deleteBranchSnapshots } from './lifecycle';
+import { RunEnder } from './job-end';
+import { changesReadOnce, reviewTokensLeft, runContext, type ContextOutcome } from './job-context';
+import { RunLedger } from './job-spend';
+import { decideStart, type Running } from './job-start';
+import { stopCheck, type StopState } from './job-stop';
 import { MaskedFiles } from './masked-files';
 import { Masker } from './masker';
-import { modelFor, sameModels, type ModelTier } from './model-tiers';
-import { reviewFits, reviewLimits, runReviewPipeline, type PipelineOutcome } from './pipeline';
-import { REVIEW_PROMPT_VERSION } from './prompts';
-import { ensureAiRules } from './rules';
-import {
-  decorateRun,
-  endAndDecorate,
-  endRun,
-  errorClass,
-  logRunEnd,
-  startedAtIs,
-  writeRunSpend,
-  type RunEnd,
-  type RunSpend,
-} from './run-ends';
-import { AI_REVIEW_QUEUE, lastReviewedDigest, queueAfterStop, queueAtDeadline } from './runs';
-import {
-  effectiveReviewBudgets,
-  reviewActive,
-  reviewProvider,
-  type ReviewProvider,
-} from './settings';
-import { openSnapshotReader, type SnapshotChange, type SnapshotReader } from './snapshot-reader';
-import {
-  prepareReviewOutcome,
-  ReviewNotStoringError,
-  startStoring,
-  storeReviewOutcome,
-} from './store';
-import { converseOverTools, newToolPolicy, type RoleCall } from './tool-conversation';
-import type { ToolPolicy } from './tools';
-import {
-  RedactionTally,
-  remainingReviewTokens,
-  REVIEW_FEATURE,
-  reviewCallSettings,
-  reviewSender,
-  reviewUsageToday,
-} from './usage';
+import { runReviewPipeline } from './pipeline';
+import { endAndDecorate, errorClass, logRunEnd } from './run-ends';
+import { AI_REVIEW_QUEUE } from './runs';
+import { effectiveReviewBudgets } from './settings';
+import { openSnapshotReader } from './snapshot-reader';
+import { newToolPolicy } from './tool-conversation';
+
+export { sameProvider } from './job-stop';
 
 /*
  * The `ai-review` job (6I-3, R15, R21): one review run, from waiting for its snapshot to the
@@ -166,111 +111,13 @@ export interface ReviewJobDeps {
 
 const payloadSchema = z.object({ runId: z.uuid() });
 
-/** Why the pipeline was told to stop. */
-type StopReason =
-  | { kind: 'superseded' }
-  | { kind: 'inactive'; detail: string }
-  | { kind: 'snapshot_deleted' }
-  | { kind: 'shutdown' };
-
-/**
- * What the context's limits throw, before anything is masked: the review is skipped. A budget that
- * is spent for the day has no detail; one the merge request is too large for is `too_large`.
- */
-class SkipReview extends Error {
-  constructor(
-    readonly reason: 'empty_diff' | 'unchanged' | 'budget_spent',
-    readonly detail: 'too_large' | null = null,
-  ) {
-    super(reason);
-    this.name = 'SkipReview';
-  }
-}
-
-/** The review's context, or why there is none to review (with the digest, when it was made). */
-type ContextOutcome =
-  | { kind: 'built'; context: ReviewContext }
-  | {
-      kind: 'skipped';
-      reason: SkipReview['reason'];
-      detail: SkipReview['detail'];
-      digest: string | null;
-    };
-
-/** The run's own state while the job works on it, once it is running. */
-interface Running {
-  run: ReviewRunRow;
-  /** The merge request's id: its branch's name. */
-  mergeRequestId: string;
-  settings: StoredLlmSettings;
-  provider: ReviewProvider;
-  organizationId: string;
-}
-
-/** What steps 1 to 5 decided, in the transaction that holds the run's row. */
-type Decision =
-  { kind: 'started'; running: Running } | { kind: 'ended'; end: RunEnd } | { kind: 'none' };
-
-/**
- * Whether two providers are the same address, host, standard model and set of models: a tier given
- * a model the consent does not name would send the review's data to it, while tiers that only trade
- * the models of the set send it to no model it has not named.
- */
-export const sameProvider = (a: ReviewProvider | null, b: ReviewProvider): boolean =>
-  a !== null &&
-  a.url === b.url &&
-  a.host === b.host &&
-  a.model === b.model &&
-  sameModels(a.models, b.models);
-
-/**
- * The reader with its changes read once: buildReviewContext and the digest both need them, and a
- * merge request's patches can be large. `release` lets them go once both have them.
- */
-function changesReadOnce(reader: SnapshotReader): { reader: SnapshotReader; release(): void } {
-  let held: Promise<SnapshotChange[]> | null = null;
-  return {
-    reader: { ...reader, changes: () => (held ??= reader.changes()) },
-    release: () => {
-      held = null;
-    },
-  };
-}
-
-/**
- * The digest of what the review reads of the diff: sha256 over the reviewed changes, by path, each
- * its path, status and patch as the snapshot has them (the raw patch: it never leaves the digest).
- */
-function diffDigest(
-  changes: readonly SnapshotChange[],
-  reviewed: readonly Pick<ReviewableChange, 'path'>[],
-): string {
-  const paths = new Set(reviewed.map((change) => change.path));
-  const hash = createHash('sha256');
-  const byPath = (a: SnapshotChange, b: SnapshotChange) =>
-    a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-  for (const change of changes.filter((c) => paths.has(c.path)).sort(byPath)) {
-    hash.update(`${JSON.stringify([change.path, change.status, change.patch])}\n`);
-  }
-  return hash.digest('hex');
-}
-
 class ReviewJob {
-  /** Provider calls made, the ones that failed included; the tokens and tool calls of the conversations. */
-  private calls = 0;
-  private toolCalls = 0;
-  private inputTokens = 0;
-  private outputTokens = 0;
-  private cost = 0;
-  /**
-   * What the run names of its provider, set once the review reaches it: the host, and the standard
-   * model, which is all the run records of its models (each call's row names the model it went to).
-   * `pricing` only tells a run that has a cost from one that has none; each call is costed at the
-   * prices of its own model (`converse`).
-   */
-  private provider: { host: string; model: string; pricing: StoredLlmSettings['pricing'] } | null =
-    null;
-  private stop: StopReason | null = null;
+  /** What the run spent, counted over its conversations. */
+  private readonly ledger: RunLedger;
+  /** Why the pipeline was told to stop, once the stop check says so. */
+  private readonly state: StopState = { stop: null };
+  /** How the run ends. */
+  private readonly ender: RunEnder;
   /** The run, once this job has made it `running`: from then on an exception ends it. */
   private started: ReviewRunRow | null = null;
 
@@ -279,7 +126,10 @@ class ReviewJob {
     private readonly runId: string,
     /** Whether this is the job's last try (its attempts are spent with it). */
     private readonly lastTry: boolean,
-  ) {}
+  ) {
+    this.ledger = new RunLedger(deps);
+    this.ender = new RunEnder(deps, this.ledger, this.state);
+  }
 
   async run(): Promise<void> {
     try {
@@ -299,12 +149,12 @@ class ReviewJob {
       }
       if (running !== null && this.deps.shutdown.aborted) {
         // The stop gave up what the review was waiting on (its masking, say): no error of its own.
-        await this.givenUp(running);
+        await this.ender.givenUp(running);
         return;
       }
       this.deps.logger.error(fields, 'AI review run failed');
       if (running !== null) {
-        await this.endRunning(running, { status: 'failed', reason: 'internal' });
+        await this.ender.endRunning(running, { status: 'failed', reason: 'internal' });
         return;
       }
       // The last try: nothing will try again, so the run ends here rather than be left to the
@@ -336,7 +186,7 @@ class ReviewJob {
    * is decorated in the same transaction. A run that starts is reviewed.
    */
   private async review(): Promise<void> {
-    const decided = await this.deps.db.transaction((tx) => this.decide(tx));
+    const decided = await this.deps.db.transaction((tx) => decideStart(this.deps, this.runId, tx));
     if (decided.kind === 'ended') {
       logRunEnd(this.deps.logger, this.runId, decided.end);
       return;
@@ -345,114 +195,6 @@ class ReviewJob {
       this.started = decided.running.run;
       await this.reviewRunning(decided.running);
     }
-  }
-
-  private async decide(tx: Executor): Promise<Decision> {
-    // A run's branch never changes. Its decoration lock is taken before the run's row, as
-    // ingestion takes them: an end here and its decoration are one step (run-ends.ts).
-    const [ref] = await tx
-      .select({ branchId: reviewRuns.branchId })
-      .from(reviewRuns)
-      .where(eq(reviewRuns.id, this.runId));
-    if (ref === undefined) return { kind: 'none' };
-    await lockBranchQueue(tx, ref.branchId);
-    const clock: SQL =
-      this.deps.now === undefined ? sql`now()` : sql`${this.deps.now().toISOString()}::timestamptz`;
-    const [found] = await tx
-      .select({ run: reviewRuns, due: sql<boolean>`${reviewRuns.deadlineAt} <= ${clock}` })
-      .from(reviewRuns)
-      .where(eq(reviewRuns.id, this.runId))
-      .for('update');
-    if (found === undefined) return { kind: 'none' };
-    const { run, due } = found;
-    const from: ReviewRunStatus[] = [run.status];
-    // Nothing is spent yet: an end here leaves the spend columns as they are.
-    const ended = async (end: RunEnd): Promise<Decision> => {
-      if (!(await endRun(tx, run, from, end))) return { kind: 'none' };
-      if (end.status !== 'superseded') await decorateRun(tx, run, this.deps.logger);
-      return { kind: 'ended', end };
-    };
-    // A job that died left its run running (its lease expired, or it could not end the run): this
-    // is its second try. What that job spent is on the run as far as it wrote it, and stays so.
-    if (run.status === 'running') return ended({ status: 'failed', reason: 'internal' });
-    if (run.status !== 'waiting') return { kind: 'none' };
-
-    const [branch] = await tx
-      .select({ name: branches.name, lastAnalysisId: branches.lastAnalysisId })
-      .from(branches)
-      .where(eq(branches.id, run.branchId));
-    if (branch === undefined || branch.lastAnalysisId !== run.analysisId) {
-      return ended({ status: 'superseded' });
-    }
-    const settings = await readLlmSettings(tx);
-    const [project] = await tx
-      .select({
-        id: projects.id,
-        organizationId: projects.organizationId,
-        scmConnectionId: projects.scmConnectionId,
-      })
-      .from(projects)
-      .where(eq(projects.id, run.projectId));
-    if (project === undefined) return { kind: 'none' };
-    const active = reviewActive(settings, project);
-    const provider = reviewProvider(settings);
-    if (!active.active || provider === null) {
-      const detail = active.active ? 'no_provider' : active.reason;
-      return ended({ status: 'skipped', reason: 'inactive', detail });
-    }
-
-    const [snapshot] = await tx
-      .select({
-        id: reviewSnapshots.id,
-        status: reviewSnapshots.status,
-        error: reviewSnapshots.error,
-        headSha: reviewSnapshots.headSha,
-        sinceSha: reviewSnapshots.sinceSha,
-        partial: reviewSnapshots.partial,
-      })
-      .from(reviewSnapshots)
-      .where(eq(reviewSnapshots.analysisId, run.analysisId));
-    if (snapshot?.status === 'rejected') {
-      // The code of the reason (`SNAPSHOT_INVALID`), never what follows it.
-      const detail = (snapshot.error ?? '').split(':', 1)[0] || null;
-      return ended({ status: 'skipped', reason: 'snapshot_rejected', detail });
-    }
-    if (snapshot?.status !== 'ready') {
-      if (!due) {
-        await queueAtDeadline(tx, run);
-        return { kind: 'none' };
-      }
-      return ended({ status: 'skipped', reason: 'no_snapshot' });
-    }
-    if (this.deps.shutdown.aborted) {
-      // A stopping server starts no review: the run waits for the server that takes its job next.
-      await queueAfterStop(tx, run);
-      return { kind: 'none' };
-    }
-
-    const [started] = await tx
-      .update(reviewRuns)
-      .set({
-        status: 'running',
-        startedAt: sql`now()`,
-        snapshotId: snapshot.id,
-        headSha: snapshot.headSha,
-        sinceSha: snapshot.sinceSha,
-        snapshotPartial: snapshot.partial,
-      })
-      .where(and(eq(reviewRuns.id, run.id), eq(reviewRuns.status, 'waiting')))
-      .returning();
-    if (started === undefined) return { kind: 'none' };
-    return {
-      kind: 'started',
-      running: {
-        run: started,
-        mergeRequestId: branch.name,
-        settings,
-        provider,
-        organizationId: project.organizationId,
-      },
-    };
   }
 
   // ─── Steps 6 to 10: the review ──────────────────────────────────────────────
@@ -468,18 +210,18 @@ class ReviewJob {
     if (state !== null && state.state !== 'open') {
       // R16: a merge request that is merged or closed keeps no copy of its repository.
       await deleteBranchSnapshots(db, run.branchId);
-      return this.endRunning(run, { status: 'skipped', reason: 'closed' });
+      return this.ender.endRunning(run, { status: 'skipped', reason: 'closed' });
     }
     // A draft is reviewed when a person asked for this run. A push after it makes a run of its own,
     // which nobody asked for.
     if (state?.draft === true && run.requestedBy === null) {
-      return this.endRunning(run, { status: 'skipped', reason: 'draft' });
+      return this.ender.endRunning(run, { status: 'skipped', reason: 'draft' });
     }
 
     const opened = run.snapshotId === null ? null : await openSnapshotReader(db, run.snapshotId);
     if (opened === null) {
       // Deleted since it was found ready: a newer push, or the snapshot's retention.
-      return this.endRunning(run, { status: 'skipped', reason: 'no_snapshot' });
+      return this.ender.endRunning(run, { status: 'skipped', reason: 'no_snapshot' });
     }
     const { reader, release } = changesReadOnce(opened);
     const controller = new AbortController();
@@ -488,17 +230,17 @@ class ReviewJob {
     try {
       const files = new MaskedFiles(reader, { masker });
       const policy = newToolPolicy({ excludePaths: settings.excludePaths, masked: files, masker });
-      const budget = await this.tokensLeft(running);
+      const budget = await reviewTokensLeft(db, running);
       const perReview = effectiveReviewBudgets(settings, running.organizationId).maxTokensPerReview;
       let built: ContextOutcome;
       try {
-        built = await this.contextOf(running, { files, masker, policy, budget, perReview });
+        built = await runContext(this.deps, running, { files, masker, policy, budget, perReview });
       } finally {
         // The patches were read for the context and the digest: nothing else reads them.
         release();
       }
       if (built.kind === 'skipped') {
-        return await this.endRunning(
+        return await this.ender.endRunning(
           run,
           { status: 'skipped', reason: built.reason, detail: built.detail },
           { diffDigest: built.digest },
@@ -510,415 +252,32 @@ class ReviewJob {
       const { provider: storedProvider } = settings;
       if (!key.ok || storedProvider === null) {
         // The key no longer decrypts (QUALOR_SECRET_KEY changed): no call could be made.
-        return await this.endRunning(run, { status: 'failed', reason: 'provider_error' });
+        return await this.ender.endRunning(run, { status: 'failed', reason: 'provider_error' });
       }
-      this.provider = {
+      this.ledger.provider = {
         host: new URL(storedProvider.baseUrl).host,
         model: storedProvider.model,
         pricing: settings.pricing,
       };
-      const shouldStop = this.stopCheck(running, controller);
+      const shouldStop = stopCheck(this.deps, running, controller, this.state);
       const outcome = await runReviewPipeline(
         context,
         budget,
         {
           converse: (role, user, nonce, tokenBudget, accept, modelTier) =>
-            this.converse(
+            this.ledger.converse(
               { running, storedProvider, reader, policy, context, shouldStop },
               { role, user, nonce, tokenBudget, accept },
               modelTier,
             ),
           providerKey: key.key,
         },
-        (phase) => this.phase(run, phase),
+        (phase) => this.ledger.phase(run, phase),
       );
-      await this.finish(running, outcome, { context, files, masker, policy, shouldStop });
+      await this.ender.finish(running, outcome, { context, files, masker, policy, shouldStop });
     } finally {
       await masker.close();
     }
-  }
-
-  /**
-   * Steps 7 to 9 and the review's context. They are decided when the context asks for its limits,
-   * once it knows the reviewed changes and before it masks anything: none (`empty_diff`), the same
-   * diff as the branch's last review that was done (`unchanged`), or a budget too small for the
-   * smallest share of the review (`budget_spent`). A merge request too large for what one review may
-   * use (`perReview`, Tokens per review) has the detail `too_large`, and the summary names that
-   * budget; one that only what is left of the day is too little for has none, as the day is what
-   * stops it. The digest is written on the run either way.
-   */
-  private async contextOf(
-    running: Running,
-    o: {
-      files: MaskedFiles;
-      masker: Masker;
-      policy: ToolPolicy;
-      budget: number;
-      perReview: number;
-    },
-  ): Promise<ContextOutcome> {
-    const { db } = this.deps;
-    const { run, settings } = running;
-    const { budget } = o;
-    const previous = await lastReviewedDigest(db, run.branchId, run.id);
-    const changes = await o.files.reader.changes();
-    const seen: { digest: string | null } = { digest: null };
-    const limits = (shape: ContextShape): ContextLimits => {
-      if (shape.reviewed.length === 0) throw new SkipReview('empty_diff');
-      seen.digest = diffDigest(changes, shape.reviewed);
-      if (seen.digest === previous) throw new SkipReview('unchanged');
-      if (budget <= 0) throw new SkipReview('budget_spent');
-      if (!reviewFits(shape, budget)) {
-        throw new SkipReview('budget_spent', reviewFits(shape, o.perReview) ? null : 'too_large');
-      }
-      return reviewLimits(shape, budget);
-    };
-    let context: ReviewContext;
-    try {
-      context = await buildReviewContext(
-        o.files,
-        o.masker,
-        {
-          analyzer: (paths) => analyzerFindings(db, run.analysisId, paths),
-          prior: await priorAiFindings(db, run.branchId),
-        },
-        { excluded: excludedPathMatcher(settings.excludePaths), budget: o.policy.budget, limits },
-      );
-    } catch (err) {
-      if (!(err instanceof SkipReview)) throw err;
-      return { kind: 'skipped', reason: err.reason, detail: err.detail, digest: seen.digest };
-    }
-    // Only into the run this job started: one started again meanwhile has its own digest to make.
-    await db
-      .update(reviewRuns)
-      .set({ diffDigest: seen.digest })
-      .where(and(eq(reviewRuns.id, run.id), startedAtIs(run.startedAt)));
-    return { kind: 'built', context };
-  }
-
-  /** What the review may spend: the smallest of its own ceiling and what the day has left (C2). */
-  private async tokensLeft(running: Running): Promise<number> {
-    const { db } = this.deps;
-    const { organizationId, run, settings } = running;
-    const [organization, project] = await Promise.all([
-      reviewUsageToday(db, organizationId),
-      reviewUsageToday(db, organizationId, run.projectId),
-    ]);
-    return remainingReviewTokens(
-      effectiveReviewBudgets(settings, organizationId),
-      { organization, project },
-      settings.pricing,
-      settings.provider,
-    );
-  }
-
-  /**
-   * Asked before every call to the provider, and once more after the last: the server is stopping,
-   * or the run was superseded (or its analysis is no longer the newest, or it was ended and started
-   * again, and is another job's now), or review is no longer on for the project, or the provider
-   * is no longer the one the run started with (R10), or the run's snapshot is gone (the merge
-   * request was merged or closed, which deletes its snapshots, R16; the run's reference to it is
-   * then null). What the run reads of a snapshot that is gone is nothing, and an outcome built on
-   * that is not stored. The masker's signal is aborted with the stop.
-   */
-  private stopCheck(running: Running, controller: AbortController): () => Promise<boolean> {
-    const { db } = this.deps;
-    const { run, provider } = running;
-    return async () => {
-      if (this.stop !== null) return true;
-      if (this.deps.shutdown.aborted) {
-        this.stop = { kind: 'shutdown' };
-        controller.abort();
-        return true;
-      }
-      const [now] = await db
-        .select({
-          status: reviewRuns.status,
-          snapshotId: reviewRuns.snapshotId,
-          newest: branches.lastAnalysisId,
-        })
-        .from(reviewRuns)
-        .innerJoin(branches, eq(branches.id, reviewRuns.branchId))
-        .where(and(eq(reviewRuns.id, run.id), startedAtIs(run.startedAt)));
-      if (now?.status !== 'running' || now.newest !== run.analysisId) {
-        this.stop = { kind: 'superseded' };
-      } else {
-        const settings = await readLlmSettings(db);
-        const [project] = await db
-          .select({
-            id: projects.id,
-            organizationId: projects.organizationId,
-            scmConnectionId: projects.scmConnectionId,
-          })
-          .from(projects)
-          .where(eq(projects.id, run.projectId));
-        const active = project === undefined ? null : reviewActive(settings, project);
-        if (active === null || !active.active) {
-          this.stop = { kind: 'inactive', detail: active?.reason ?? 'project_deleted' };
-        } else if (!sameProvider(reviewProvider(settings), provider)) {
-          this.stop = { kind: 'inactive', detail: 'provider_changed' };
-        } else if (now.snapshotId === null) {
-          this.stop = { kind: 'snapshot_deleted' };
-        }
-      }
-      if (this.stop !== null) controller.abort();
-      return this.stop !== null;
-    };
-  }
-
-  /**
-   * One conversation of the pipeline: its own redaction tally (the context's replacements go with
-   * the first message of a reviewer or the judge, each tool answer's with the call after it), the
-   * role's output limit, and every call through the sender that records it, which a stop of the
-   * server cuts short. Every call goes to the model of the conversation's tier, and its row and its
-   * cost are that model's.
-   */
-  private async converse(
-    ctx: {
-      running: Running;
-      /** The provider as the settings store it, with its tier models: not `running.provider`. */
-      storedProvider: StoredProvider;
-      reader: SnapshotReader;
-      policy: ToolPolicy;
-      context: ReviewContext;
-      shouldStop: () => Promise<boolean>;
-    },
-    call: RoleCall,
-    modelTier: ModelTier,
-  ): Promise<ConversationResult> {
-    const { running, storedProvider, reader, policy, context, shouldStop } = ctx;
-    const pricing = pricingFor(running.settings.pricing, storedProvider, modelTier);
-    const tally = new RedactionTally();
-    if (call.role !== 'verify') tally.add(context.redactions);
-    const sender = reviewSender({
-      db: this.deps.db,
-      runtime: { circuit: this.deps.llmCircuit },
-      config: this.deps.config,
-      settings: reviewCallSettings(running.settings),
-      model: modelFor(storedProvider, modelTier),
-      pricing,
-      feature: REVIEW_FEATURE,
-      source: { projectId: running.run.projectId, promptKey: running.run.id },
-      promptVersion: REVIEW_PROMPT_VERSION,
-      redactions: tally,
-      logger: this.deps.logger,
-      signal: this.deps.shutdown,
-    });
-    const result = await converseOverTools(call, {
-      reader,
-      policy,
-      send: (conversation) => this.counted(sender, pricing, conversation),
-      shouldStop,
-      signal: this.deps.shutdown,
-      onToolRedactions: (count) => tally.add(count),
-    });
-    // Whichever way it ended, what it spent is the run's.
-    this.inputTokens += result.inputTokens;
-    this.outputTokens += result.outputTokens;
-    this.toolCalls += result.toolCalls;
-    return result;
-  }
-
-  /**
-   * One call through the sender, counted: a call the provider answered, with its estimated cost at
-   * the `pricing` of the model it went to, and one that failed (the sender recorded it; the key was
-   * read before the review began, so every failure it throws as the provider's is a call that was
-   * made). A call the stopping server gave up is not counted: the provider answered nothing, and the
-   * sender recorded nothing.
-   */
-  private async counted(
-    sender: (conversation: LlmConversation) => Promise<LlmTurn>,
-    pricing: PricePair | null,
-    conversation: LlmConversation,
-  ): Promise<LlmTurn> {
-    try {
-      const turn = await sender(conversation);
-      this.calls += 1;
-      this.cost += costOf(pricing, turn.usage) ?? 0;
-      return turn;
-    } catch (err) {
-      if (err instanceof LlmError) this.calls += 1;
-      throw err;
-    }
-  }
-
-  /** The pipeline starts a phase: written on the run while it reviews, if it is still this job's. */
-  private async phase(run: ReviewRunRow, phase: ReviewPhase): Promise<void> {
-    await this.deps.db
-      .update(reviewRuns)
-      .set({ phase })
-      .where(
-        and(
-          eq(reviewRuns.id, run.id),
-          eq(reviewRuns.status, 'running'),
-          startedAtIs(run.startedAt),
-          sql`${reviewRuns.phase} IS DISTINCT FROM 'storing'`,
-        ),
-      );
-  }
-
-  /**
-   * The pipeline's outcome. A review is stored once the run is `storing`, which a guarded update
-   * makes it (`startStoring`), and only this job's run, still running and not storing, passes: from
-   * then on no newer analysis supersedes it. The values are made before the transaction (masking
-   * takes time), which only writes; the store refuses a run no longer storing, under its lock, and
-   * one whose snapshot was deleted since the last stop check, which then ends with nothing stored:
-   * `superseded` when a newer push replaced the snapshot, `skipped: closed` when the merge request
-   * was merged or closed (`snapshotGone`).
-   */
-  private async finish(
-    running: Running,
-    outcome: PipelineOutcome,
-    o: {
-      context: ReviewContext;
-      files: MaskedFiles;
-      masker: Masker;
-      policy: ToolPolicy;
-      shouldStop: () => Promise<boolean>;
-    },
-  ): Promise<void> {
-    const { db } = this.deps;
-    const { run } = running;
-    if (outcome.kind === 'failed') {
-      return this.endRunning(run, { status: 'failed', reason: outcome.reason });
-    }
-    // Asked once more after the last call: nothing is stored for a run that should have stopped.
-    if (outcome.kind === 'stopped' || (await o.shouldStop())) return this.stopped(run);
-    const storing = await startStoring(db, run);
-    if (storing === undefined) return this.stopped(run);
-    const ruleIds = await ensureAiRules(db);
-    const prepared = await prepareReviewOutcome(o.context, outcome, {
-      files: o.files,
-      masker: o.masker,
-      budget: o.policy.budget,
-    });
-    try {
-      // One step with its decoration, the branch's decoration lock first (run-ends.ts).
-      await db.transaction(async (tx) => {
-        await lockBranchQueue(tx, run.branchId);
-        await storeReviewOutcome(tx, storing, prepared, ruleIds);
-        await tx.update(reviewRuns).set(this.spend()).where(eq(reviewRuns.id, run.id));
-        await decorateRun(tx, run, this.deps.logger);
-      });
-    } catch (err) {
-      if (!(err instanceof ReviewNotStoringError)) throw err;
-      const [now] = await db
-        .select({
-          status: reviewRuns.status,
-          phase: reviewRuns.phase,
-          snapshotId: reviewRuns.snapshotId,
-        })
-        .from(reviewRuns)
-        .where(eq(reviewRuns.id, run.id));
-      if (now?.status === 'running' && now.phase === 'storing' && now.snapshotId === null) {
-        // Its snapshot was deleted after the last stop check: what the review read is gone, and the
-        // run ends as the stop check ends it.
-        return this.snapshotGone(run);
-      }
-      // Ended meanwhile by a job tried again after this one's lease expired: that one decorated.
-      await this.writeSpend(run);
-      return;
-    }
-    this.deps.logger.info(
-      { runId: run.id, status: 'done', findings: prepared.created.length },
-      'AI review run ended',
-    );
-  }
-
-  /**
-   * The pipeline stopped: the run was superseded, review was switched off meanwhile, its snapshot
-   * was deleted, or the server is stopping. A call the stopping server gave up stops a conversation
-   * without the stop check, so the signal itself is asked when the check gave no reason.
-   */
-  private async stopped(run: ReviewRunRow): Promise<void> {
-    const stop: StopReason | null =
-      this.stop ?? (this.deps.shutdown.aborted ? { kind: 'shutdown' } : null);
-    if (stop?.kind === 'shutdown') return this.givenUp(run);
-    if (stop?.kind === 'inactive') {
-      return this.endRunning(run, {
-        status: 'skipped',
-        reason: 'inactive',
-        detail: stop.detail,
-      });
-    }
-    if (stop?.kind === 'snapshot_deleted') return this.snapshotGone(run);
-    // Superseded by a newer analysis (already ended), or its analysis is no longer the newest.
-    return this.endRunning(run, { status: 'superseded' });
-  }
-
-  /**
-   * The run's snapshot is gone, and nothing is stored of what the review read of it. Either a newer
-   * push replaced it, which deletes the snapshots of the branch's older analyses but lets a run that
-   * stores finish: the run's analysis is no longer the branch's newest, and the run ends superseded,
-   * as every run a newer push replaces. Or the merge request was merged or closed, which deletes
-   * them as well: its analysis is still the newest, and the run is skipped, closed.
-   */
-  private async snapshotGone(run: ReviewRunRow): Promise<void> {
-    const [branch] = await this.deps.db
-      .select({ newest: branches.lastAnalysisId })
-      .from(branches)
-      .where(eq(branches.id, run.branchId));
-    if (branch?.newest !== run.analysisId) return this.endRunning(run, { status: 'superseded' });
-    return this.endRunning(run, {
-      status: 'skipped',
-      reason: 'closed',
-      detail: 'snapshot_deleted',
-    });
-  }
-
-  /**
-   * The server is stopping: the run ends now, `failed: internal`, with its decoration, rather than
-   * keep the stop waiting for a review that takes minutes. The next push reviews again.
-   */
-  private async givenUp(run: ReviewRunRow): Promise<void> {
-    this.deps.logger.warn({ runId: run.id }, 'AI review run given up: the server is stopping');
-    await this.endRunning(run, { status: 'failed', reason: 'internal' });
-  }
-
-  // ─── Ends (run-ends.ts) ─────────────────────────────────────────────────────
-
-  /** What the run spent: where its calls went, how many, their tokens and their estimated cost. */
-  private spend(): RunSpend {
-    return {
-      providerHost: this.provider?.host ?? null,
-      model: this.provider?.model ?? null,
-      modelCalls: this.calls,
-      toolCalls: this.toolCalls,
-      inputTokens: this.inputTokens,
-      outputTokens: this.outputTokens,
-      costMicroUsd: this.provider === null || this.provider.pricing === null ? null : this.cost,
-    };
-  }
-
-  /**
-   * The spend of a run another job or a newer analysis ended: it was spent all the same. Not that
-   * of a run that was started again since: it is another job's now.
-   */
-  private async writeSpend(run: ReviewRunRow): Promise<void> {
-    if (this.calls === 0) return;
-    await writeRunSpend(this.deps.db, run.id, this.spend(), run.startedAt);
-  }
-
-  /**
-   * Ends the running run with what it spent, and queues its decoration unless it was superseded,
-   * in one transaction. A run that something else ended meanwhile keeps that end, with this
-   * job's spend written on it; one that was ended and started again since is another job's, and
-   * is left as it is.
-   */
-  private async endRunning(
-    run: ReviewRunRow,
-    end: RunEnd,
-    extra: { diffDigest?: string | null } = {},
-  ): Promise<void> {
-    const ended = await endAndDecorate(
-      this.deps.db,
-      run,
-      ['running'],
-      end,
-      { ...extra, spend: this.spend(), startedAt: run.startedAt },
-      this.deps.logger,
-    );
-    if (!ended) await this.writeSpend(run);
   }
 }
 
