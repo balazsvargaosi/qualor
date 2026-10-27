@@ -1,7 +1,11 @@
 # Qualor
 
-Open-source, self-hosted code quality platform: a SonarQube alternative without lines-of-code
-licensing, for GitLab, GitHub and any other CI. Qualor runs existing open-source analyzers (ESLint,
+**Static analysis and AI code review in one self-hosted server:** quality gates on new code, and an
+AI reviewer for GitLab and GitHub merge requests on your own model. Free, with no lines-of-code
+licence.
+
+Qualor is an open-source SonarQube alternative for GitLab, GitHub and any other CI. It runs
+existing open-source analyzers (ESLint,
 PMD, SpotBugs with FindSecBugs, Roslyn and Roslynator for C#, detekt for Kotlin, SwiftLint for
 Swift, RuboCop for
 Ruby, staticcheck, go vet and gosec for Go, cppcheck and clang-tidy for C and C++, Ruff for Python,
@@ -10,7 +14,7 @@ SonarQube-compatible rules for C#, JavaScript and TypeScript, or any SARIF), tra
 across commits, measures coverage, duplication and complexity, and applies a quality gate to new
 code. MIT, except `enterprise/`: source-available under the Qualor Enterprise Licence, and inert
 without a licence key
-([licence keys](https://qualor.dev/enterprise)). Qualor also brings its own source-available
+([licence keys](https://qualor.dev/enterprise)). It also brings its own source-available
 security rules for JS/TS, Python, Java, Go and C#: they follow HTTP request data into SQL, shell
 commands, file paths, templates, redirects and outgoing requests, and report unsafe settings such
 as disabled TLS verification.
@@ -24,7 +28,7 @@ demo** on the sign-in page: no account needed, read-only.
 
 **Documentation:** [docs/guide/](docs/guide/README.md), also published at
 <https://qualor.dev/docs>. It covers installation, GitLab, GitHub and other CI systems, languages,
-configuration, quality gates, migration from SonarQube, the API and troubleshooting, and it has
+configuration, quality gates, AI review, migration from SonarQube, the API and troubleshooting, and it has
 [ready-made prompts](docs/guide/ai-prompts.md) that let an AI agent roll Qualor out for you.
 
 <p align="center">
@@ -299,9 +303,41 @@ against a Qualor on your machine through Docker Desktop's `host.docker.internal`
 `--allow-insecure-http`. See
 [docs/guide/migrate-from-sonarqube.md](docs/guide/migrate-from-sonarqube.md).
 
-## AI assistant (optional)
+## AI review and the AI assistant (optional)
 
-Qualor can ask a language model about one issue at a time, on a person's click in the issue view:
+Qualor can put a language model to work in two ways. Both are **off by default** and use the model
+you choose: any OpenAI-compatible endpoint (OpenAI, Azure OpenAI's v1 API, vLLM, Ollama, LM
+Studio), OpenAI's Responses API or the Anthropic Messages API, hosted with your key or local.
+
+### AI review
+
+A model reviews merge requests and pull requests on GitLab and GitHub, in every edition, on the
+projects an organisation admin chooses. It reads the change and any file of the repository it
+needs, not only the diff, and is shown what the analyzers found, so that it does not repeat them.
+It follows the repository's own rules files (`AGENTS.md`, `REVIEW.md`).
+
+- **Threads on the changed lines**, with suggested changes that a person applies in one click.
+- **It answers replies** in its threads, and a member's reply can mark a finding won't fix or false
+  positive. A `qualor review` note asks for a review, drafts included.
+- **After a push**, only new changes raise new findings; fixed findings close and their threads
+  resolve.
+- **A strong, a standard and a fast model**, each for the part of the review it suits.
+- **Findings are Qualor issues.** AI findings never count in the quality gate, the model never
+  approves a merge request and never commits, and agents read the findings through the
+  [MCP server](docs/guide/mcp.md).
+
+To switch it on, an instance admin connects the provider under **Settings → AI provider** and runs
+its Test, which checks that the model can call tools. An organisation admin then chooses the
+projects under **Settings → AI** and confirms the warning that code goes to the provider. Your CI
+scans merge requests with the full history, and the scanner uploads the copy of the repository
+that the review reads (GitLab CI and GitHub Actions). Daily budgets per organisation and project
+are set there too. AI review sends the merge request, the files the model reads and the findings
+on them to the model you chose, with secrets masked; with a local model, nothing leaves your
+network. See [docs/guide/ai-review.md](docs/guide/ai-review.md).
+
+### AI assistant
+
+On a person's click in the issue view, the model can look at one issue at a time:
 
 - **Explain**: what the rule checks, why this code triggers it, and how to fix it.
 - **Suggest triage**: whether the finding looks like a false positive, with reasons. It is only a
@@ -313,21 +349,16 @@ Qualor can ask a language model about one issue at a time, on a person's click i
   **Post to merge request**, and only when the merge request's head is still the analysed commit
   and the replaced lines are lines it added, unchanged. The model never pushes code.
 
-It is **off by default and bring-your-own-key**. An instance admin configures one provider for the
-instance under **Settings → AI provider**: an OpenAI-compatible chat completions endpoint (OpenAI,
-Azure OpenAI's v1 API, vLLM, Ollama, LM Studio), OpenAI's Responses API or the Anthropic Messages
-API, with its base URL, model (and optionally a stronger and a faster model for AI review) and API
-key (write-only, stored encrypted). Each organisation is then allowed to use AI, with the features
-it wants, and projects and paths can be excluded. No request leaves the server without
-that configuration and a person's click, with two exceptions that an organisation admin must switch
-on first (both are off by default):
+An instance admin configures one provider for the instance under **Settings → AI provider**: its
+base URL, model (and optionally a stronger and a faster model for AI review) and API key
+(write-only, stored encrypted). Each organisation is then allowed to use AI, with the features it
+wants, under **Settings → AI**, and a project's **AI** panel shows what applies to it. Projects and
+paths can be excluded. No request leaves the server without that configuration and a person's
+click, with two exceptions that an organisation admin must switch on first (both are off by
+default):
 
-- **AI review** of merge requests, in every edition, reviews each merge request of the projects the
-  admin chose without a click, and **sends repository files** for it: the diff and any file the
-  model chooses to read, from a copy of the repository that the scanner uploads to your server,
-  with secrets masked. It also answers people's replies in its threads and their `qualor review`
-  comments, and a member's reply can mark an AI finding won't fix or false positive
-  ([docs/guide/ai-review.md](docs/guide/ai-review.md));
+- **AI review**, above, reviews merge requests of the projects the admin chose without a
+  click;
 - the Enterprise feature **Automatic fix suggestions** suggests fixes for the new findings of each
   merge request, at or above a severity the admin chooses, and posts them as suggestions without a
   click. A project can opt out.

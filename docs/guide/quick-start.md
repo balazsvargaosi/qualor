@@ -96,4 +96,5 @@ comments on the changed lines.
 
 - Tune what "good" means: [Quality gates, profiles and issues](./quality-gates.md).
 - Coming from SonarQube: [Migrating from SonarQube](./migrate-from-sonarqube.md).
+- Let a model review your merge requests: [AI review](./ai-review.md).
 - Let an AI agent do the rollout: [AI prompts](./ai-prompts.md).

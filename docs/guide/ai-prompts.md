@@ -531,6 +531,69 @@ notes on Docker Hub / GitHub.
    Tell me before you do it.
 ```
 
+## Switch on AI review
+
+Use it when Qualor already runs and scans merge requests, and you want a model to review them. It
+checks what is in place, has the agent show you the warning, and switches AI review on only after
+you say so, because the code of the reviewed projects goes to the model provider.
+
+```prompt
+Switch on AI review in Qualor for our organisation. Read
+https://qualor.dev/docs/ai-review.md and
+https://qualor.dev/docs/ai-assistant.md first, then gitlab.md or
+github.md for the project's CI and webhook. Prefer them over your
+memory, because Qualor changes quickly.
+
+Inputs:
+- Qualor server: <https://qualor.example.com>, and an organisation
+  admin API token in QUALOR_ADMIN_TOKEN (never print it)
+- model provider: <already configured under Settings > AI provider |
+  not yet: an OpenAI-compatible endpoint, Anthropic or a local model
+  at ...>, with its key in <secret store or environment variable>
+- projects to review: <group/app-a, group/app-b | all projects>
+
+Do this:
+1. Check the provider. If none is configured, tell me what an
+   instance admin has to set under Settings > AI provider (base URL,
+   models, key) and stop. If one is, run its Test through
+   POST /api/v0/system/llm/test (or read lastTest from
+   GET /api/v0/system/llm) and check that every model reports
+   toolCalling supported. AI review needs a model that can call
+   tools: if the Test says it cannot, or the result is unknown, tell
+   me what the Test and its hint say, and stop.
+2. Read GET /api/v0/organizations/{id}/ai/review. Show me the
+   provider host and models, the warning text (notice), and which
+   projects would be reviewed (a project not linked to its GitLab or
+   GitHub repository is not reviewed until it is linked).
+3. Check the CI of each project: the job runs in merge request
+   pipelines (merge_request_event on GitLab, pull_request on
+   GitHub), with the full history (GIT_DEPTH: 0, or fetch-depth: 0
+   with the pull request's head checked out on GitHub), and the
+   scanner image or component is of the server's release. Only
+   GitLab CI and GitHub Actions send the snapshot the review reads.
+   Propose the CI changes as a merge request and do not merge it.
+4. Stop and ask me before you switch on. Quote the warning text and
+   the provider host, and say that the diff and the files the model
+   reads go to that provider with secrets masked. Switch on only
+   after I answer yes in this session.
+5. Then call PUT /api/v0/organizations/{id}/ai/review with
+   enabled: true, the scope and projectIds I approved, and
+   acknowledgeDataSharing { host, model, models } copied from the
+   provider of the GET answer. Leave the budgets at their defaults
+   unless I give numbers.
+6. Optional, if I say yes: set up the webhook of the connection so
+   that Qualor answers replies and qualor review notes at once
+   (gitlab.md: Comments events; github.md: Issue comment and Pull
+   request review comment events).
+7. Open a test merge request that changes some code, wait for the
+   pipeline, and show me whether the review and its summary came.
+   If not, use the troubleshooting section of ai-review.md.
+
+Never print a token, an API key or a webhook secret, and do not
+commit one. Stop and ask before switching on, since code goes to
+the provider, and before anything else that is hard to undo.
+```
+
 ## Explain Qualor to developers
 
 ```prompt

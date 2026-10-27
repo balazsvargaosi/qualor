@@ -1,7 +1,9 @@
 # Qualor documentation
 
-Qualor is an open-source, self-hosted code quality platform. It is an alternative to SonarQube with
-no lines-of-code licence. It runs open-source analyzers you already know: ESLint, PMD, SpotBugs with
+Qualor is static analysis and AI code review in one self-hosted server. It is an open-source
+alternative to SonarQube with no lines-of-code licence, and a model of your choice, hosted or local,
+reviews your GitLab merge requests and GitHub pull requests (off by default, in every edition). The
+static analysis runs open-source analyzers you already know: ESLint, PMD, SpotBugs with
 FindSecBugs, Roslyn and Roslynator for C#, detekt for Kotlin, SwiftLint for Swift, Ruff for Python,
 PHPStan for PHP, RuboCop for Ruby, staticcheck, go vet and gosec for Go, cppcheck and clang-tidy for C and C++,
 stylelint and HTMLHint for CSS and HTML, OpenGrep, Gitleaks and Trivy, plus SonarQube-compatible
@@ -11,7 +13,8 @@ TypeScript, Python, Java, Go and C# (source-available), which follow HTTP reques
 commands, file paths, templates and outgoing requests and report unsafe settings such as disabled
 TLS verification. It tracks the issues of all of them across commits and measures coverage,
 duplication and complexity. It applies a quality gate to **new code**, and it comments on GitLab
-merge requests and GitHub pull requests.
+merge requests and GitHub pull requests. The AI reviewer comments on the same merge requests, in
+threads with suggested changes, and its findings never count in the quality gate.
 
 These pages cover installation, setup and day-to-day use. They are the same Markdown files that live in
 [`docs/guide/`](https://github.com/qualor-dev/qualor/tree/main/docs/guide) of the repository and on
