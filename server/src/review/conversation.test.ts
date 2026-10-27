@@ -1009,6 +1009,37 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     );
 
     it.each(ALL_WIRES)(
+      'keeps an answer beside the ask for another only when the call stays under the cap: one whose estimate is the cap exactly is not made as it was (%s)',
+      async (wire) => {
+        // The provider counts next to nothing, so the estimate of the second call is the window's
+        // guess for all it sends: what an uncapped run's second call measures.
+        const said = 'v'.repeat(3_000);
+        const play = async (cap: number | undefined) => {
+          await freshFake();
+          fake.enqueue(answerOn(wire, said, [1, 1]), answerOn(wire, '{"findings":[]}', [1, 1]));
+          return recorded(wire, {
+            limits: { ...LIMITS, ...(cap === undefined ? {} : { maxCallInputTokens: cap }) },
+            accept: (text) => (text === said ? 'That is not the JSON asked for.' : true),
+          });
+        };
+        const open = await play(undefined);
+        expect(open.sent).toHaveLength(2);
+        const estimate = windowGuessedInput(open.sent[1]!);
+        const view = VIEWS[wire];
+        expect(view.assistantTexts(fake.requests[1]!)).toEqual([said]);
+        // A token more: the answer stays in the second call.
+        const under = await play(estimate + 1);
+        expect(under.result).toMatchObject({ kind: 'answer', turns: 2 });
+        expect(view.assistantTexts(fake.requests[1]!)).toEqual([said]);
+        // At the estimate exactly: that call is not made. The ask is made without the answer.
+        const at = await play(estimate);
+        expect(at.result).toMatchObject({ kind: 'answer', turns: 2 });
+        expect(view.assistantTexts(fake.requests[1]!)).toEqual([]);
+        expect(windowGuessedInput(at.sent[1]!)).toBeLessThan(estimate);
+      },
+    );
+
+    it.each(ALL_WIRES)(
       'drops a turn whose own words leave no room even for the fixed lines, and wraps up on the history the last call sent (%s)',
       async (wire) => {
         // The model writes 36 000 characters beside its call: about 12 000 tokens, past the cap
