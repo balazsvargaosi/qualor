@@ -228,15 +228,26 @@ export class Masker {
   }
 
   /**
-   * Masks one text on a worker, within the time it has: `left` of the budget, and the timeout. A
+   * Masks one text on a worker, within the time it has: `left` of the budget, and the timeout. The
+   * start of a worker after the first is charged to the budget. A
    * worker that failed after it loaded its code and before it was sent the text did nothing with
    * the text: the text is given to another, once, before it is blamed.
    */
   private async maskOne(text: string, left: number): Promise<MaskResult> {
+    let timeLeft = left;
     for (let attempt = 0; ; attempt += 1) {
+      // A worker started after the first (one given up on, or one that stood idle) loads its code
+      // before it masks: that wall time is the review's, as the masking is.
+      const restart = this.started > 0 && (this.live === null || this.live.ended);
+      const began = performance.now();
       const live = await this.liveWorker();
       if (this.closed) throw this.closedReason();
-      if (!live.ended) return this.maskOn(live, text, left);
+      if (restart) {
+        this.spent += performance.now() - began;
+        timeLeft = this.budgetMs - this.spent;
+        if (timeLeft <= 0) return { kind: 'budget' };
+      }
+      if (!live.ended) return this.maskOn(live, text, timeLeft);
       if (attempt > 0) return { kind: 'timeout' };
     }
   }

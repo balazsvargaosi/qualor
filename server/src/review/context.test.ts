@@ -913,7 +913,7 @@ describe('the slice budget', () => {
       'src/small.ts',
     ]);
     expect(context.omittedFromSlices).toEqual([
-      'src/huge.ts (380 changed lines): read it with read_file',
+      'src/huge.ts (380 lines): changed, read it with read_file',
     ]);
     expect(context.slices.length).toBeLessThanOrEqual(BUDGET);
     // The file that has no room is not masked, nor is its patch.
@@ -1006,10 +1006,10 @@ describe('the slice budget', () => {
       expect(spy.texts, path(i)).not.toContain(textOf(i));
       expect(spy.texts, path(i)).not.toContain(patchOf(i));
     }
-    // The rest are listed by path and changed lines, as they are.
+    // The rest are listed by path and the length of the file, as they are.
     expect(context.omittedFromSlices).toHaveLength(count - sliced);
     expect(context.omittedFromSlices[0]).toBe(
-      `${path(sliced)} (2 changed lines): read it with read_file`,
+      `${path(sliced)} (60 lines): changed, read it with read_file`,
     );
     expect(context.reviewed.map((c) => c.text !== null)).toEqual(
       Array.from({ length: count }, (_, i) => i < sliced),
@@ -1150,7 +1150,7 @@ describe('the slice budget', () => {
     const spy = maskerOf();
     const over = await withSecond('y'.repeat(length + 1), spy);
     expect(over.slices.length).toBe(first);
-    expect(over.omittedFromSlices).toEqual(['y.ts (1 changed line): read it with read_file']);
+    expect(over.omittedFromSlices).toEqual(['y.ts (1 line): changed, read it with read_file']);
     // It was known not to fit before anything of it was masked.
     expect(spy.texts).toEqual([x.text]);
   });
@@ -1182,7 +1182,7 @@ describe('the slice budget', () => {
     expect(exact.omittedFromSlices).toEqual([]);
     const over = await build(['', 'y'.repeat(length + 1)]);
     expect(over.slices.length).toBe(first + each);
-    expect(over.omittedFromSlices).toEqual(['y1.ts (1 changed line): read it with read_file']);
+    expect(over.omittedFromSlices).toEqual(['y1.ts (1 line): changed, read it with read_file']);
   });
 
   it('leaves out a change whose slices the masking made longer than the room it was counted for', async () => {
@@ -1220,15 +1220,98 @@ describe('the slice budget', () => {
     const last = 'y'.repeat(length);
     const over = await build(last, spy);
     expect(over.slices.length).toBe(first);
-    expect(over.omittedFromSlices).toEqual(['y.ts (2 changed lines): read it with read_file']);
-    // It was masked, the file and the patch, and the secret is counted; nothing of it is shown.
+    expect(over.omittedFromSlices).toEqual(['y.ts (1 line): changed, read it with read_file']);
+    // It was masked, the file and the patch; nothing of it is shown, so its secret is not counted.
     expect(spy.texts).toEqual([x.text, `${last}\n`, `@@ -1 +1 @@\n-${secret}\n+${last}\n`]);
-    expect(over.redactions).toBe(1);
+    expect(over.redactions).toBe(0);
     expect(over.reviewed.map((c) => [c.path, c.text !== null, c.unshown])).toEqual([
       ['x.ts', true, null],
       ['y.ts', false, null],
     ]);
     expect(JSON.stringify(over)).not.toContain('abcd1234');
+  });
+
+  describe('what a change left out says (6I-3 Task 4, N2 to N6)', () => {
+    const tenLines = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`);
+    const oneEdit = {
+      changes: [
+        { path: 'src/x.ts', status: 'modified' as const, patch: '@@ -2 +2 @@\n-line 2\n+LINE 2\n' },
+      ],
+      files: { 'src/x.ts': `${tenLines.join('\n').replace('line 2', 'LINE 2')}\n` },
+    };
+    const tiny = { limits: () => ({ ...CONTEXT_MAXIMA, sliceChars: 5, lists: LIST_CAP_STEPS[0] }) };
+
+    it('after the masking time is spent, a change that does not fit says it could not be masked in time, not "read it with read_file"', async () => {
+      const spent = maskerOf({ budgetMs: 0 });
+      const { context } = await contextOf(memorySnapshot(oneEdit), spent, NO_FINDINGS, tiny);
+      expect(context.omittedFromSlices).toEqual([
+        'src/x.ts: not shown: the review has used up its budget for masking',
+      ]);
+      expect(context.reviewed.map((c) => [c.path, c.unshown])).toEqual([['src/x.ts', 'budget']]);
+      expect(spent.texts).toEqual([]);
+    });
+
+    it("the no-room line names the file's length in lines", async () => {
+      const spy = maskerOf();
+      const { context } = await contextOf(memorySnapshot(oneEdit), spy, NO_FINDINGS, tiny);
+      // The change is 2 lines; the file the model can read is 10.
+      expect(context.omittedFromSlices).toEqual([
+        'src/x.ts (10 lines): changed, read it with read_file',
+      ]);
+      expect(spy.texts).toEqual([]);
+    });
+
+    it('a change whose text vanished before masking says its text is not in the snapshot', async () => {
+      const inner = memorySnapshot(oneEdit);
+      let reads = 0;
+      const file: SnapshotReader['file'] = (path) => {
+        reads += 1;
+        return reads === 1 ? inner.file(path) : Promise.resolve({ kind: 'absent' });
+      };
+      const { context } = await contextOf({ ...inner, file, files: filesOneByOne(file) });
+      expect(context.omittedFromSlices).toEqual([
+        'src/x.ts: changed, its text is not in the snapshot',
+      ]);
+      expect(context.reviewed.map((c) => [c.unshown, c.text])).toEqual([['no_text', null]]);
+    });
+
+    it('a change left out for room after masking keeps no removed rows and adds no redactions', async () => {
+      // A password of 8 characters is replaced with a marker of 10: the slices of the second file
+      // come out 2 characters longer than the stored text and patch said (the room is measured).
+      const x = addedFile(Array.from({ length: 299 }, () => 'x'.repeat(395)));
+      const secret = j('const password = "', 'abcd1234', '";');
+      const build = async (last: string | null, using: Masker = masker) => {
+        const changes: { path: string; status: 'added' | 'modified'; patch: string }[] = [
+          { path: 'x.ts', status: 'added', patch: x.patch },
+        ];
+        const files: Record<string, string> = { 'x.ts': x.text };
+        if (last !== null) {
+          changes.push({
+            path: 'y.ts',
+            status: 'modified',
+            patch: `@@ -1 +1 @@\n-${secret}\n+${last}\n`,
+          });
+          files['y.ts'] = `${last}\n`;
+        }
+        return contextOf({ changes, files }, using);
+      };
+      const first = (await build(null)).context.slices.length;
+      const overhead = (await build('')).context.slices.length - first - 1;
+      const length = BUDGET - first - 1 - (overhead - 2);
+      const spy = maskerOf();
+      const over = await build('y'.repeat(length), spy);
+      // The masking made it too long: it was masked, and nothing of that is kept or counted.
+      expect(spy.texts).toHaveLength(3);
+      expect(over.context.slices.length).toBe(first);
+      const y = over.context.reviewed.find((c) => c.path === 'y.ts');
+      expect(y).toMatchObject({ text: null, unshown: null });
+      expect(y?.removed).toEqual([]);
+      expect(over.context.redactions).toBe(0);
+      expect(JSON.stringify(over.context)).not.toContain('abcd1234');
+      // The replacements of its file are the first tool call's to report, not lost: none here, as
+      // the file holds no secret; the patch's one is not counted for a text that is not shown.
+      expect(await over.files.file('y.ts')).toMatchObject({ kind: 'text', redactions: 0 });
+    });
   });
 
   it('gives no file to the masker once the review has spent its time on a file, and lists the rest as not shown', async () => {
@@ -1306,7 +1389,7 @@ describe('the slice budget', () => {
     const reader: SnapshotReader = { ...inner, file, files: filesOneByOne(file) };
     const { context } = await contextOf(reader);
     expect(context.slices).toBe('');
-    expect(context.omittedFromSlices).toEqual(['a.ts (1 line): changed, read it with read_file']);
+    expect(context.omittedFromSlices).toEqual(['a.ts: changed, its text is not in the snapshot']);
     expect(context.reviewed.map((c) => [c.path, c.unshown, c.text])).toEqual([
       ['a.ts', 'no_text', null],
     ]);
@@ -2216,7 +2299,7 @@ describe('how much of the merge request a review shows, and where its findings b
     // The slices hold what fits in the review's limit: the first of the two files.
     expect(headersOf(context.slices)).toEqual(['@@ src/a.ts lines 1–30 of 30 @@']);
     expect(context.omittedFromSlices).toEqual([
-      'src/b.ts (30 changed lines): read it with read_file',
+      'src/b.ts (30 lines): changed, read it with read_file',
     ]);
   });
 
@@ -2245,7 +2328,7 @@ describe('how much of the merge request a review shows, and where its findings b
       });
       expect(under.context.slices).toBe('');
       expect(under.context.omittedFromSlices).toEqual([
-        'src/x.ts (1 changed line): read it with read_file',
+        'src/x.ts (1 line): changed, read it with read_file',
       ]);
       expect(under.context.meta.instructions[0]?.text).toMatch(/^\n\[cut: .*40000.* 0 .*\]$/);
     }

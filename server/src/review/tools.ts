@@ -197,6 +197,9 @@ const NO_SUCH_DIRECTORY = "no such directory in this merge request's snapshot";
 const EXCLUDED = 'not available: excluded by the administrator';
 const NOT_MASKED_IN_TIME = 'not available: it could not be masked in time';
 const NO_MATCHES = 'no matches';
+/** The first line of a search that finds the review's time for masking already spent. */
+const MASKING_SPENT =
+  "note: the review's masking budget is used up; only files masked already can match";
 const MORE_MATCHES = '… more matches; narrow path_glob';
 const MORE_ENTRIES = '… more entries; list a subdirectory to see them';
 
@@ -513,6 +516,9 @@ async function grep(
   }
   if (budget.greps <= 0) return fixed(BUDGET_USED_UP);
   budget.greps -= 1;
+  // Known before anything is searched, so that it is the same for every needle: once the time is
+  // spent no file is masked, and a search finds nothing in any file.
+  const maskingSpent = masked.maskingSpent;
 
   let counted = 0;
   /** The files whose replacements `counted` holds. */
@@ -561,6 +567,7 @@ async function grep(
   // Only the lines the model can see are counted: a search the reader cut short says nothing.
   if (lines.length === 0) lines.push(NO_MATCHES);
   else if (found.over) lines.push(MORE_MATCHES);
+  if (maskingSpent) lines.unshift(MASKING_SPENT);
   // The lines shown, one range each, in the order of the hits.
   const read = found.items.map((hit) => ({ path: hit.path, from: hit.line, to: hit.line }));
   return {

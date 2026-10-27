@@ -203,8 +203,8 @@ describe('MaskedFiles', () => {
       const file = await files.file(path);
       return file.kind === 'text' ? file.redactions : -1;
     };
-    // 401 bytes and a line for a, the same for b, 434 and two lines for c (the marker takes 12
-    // bytes), 801 and a line for é (2 bytes each).
+    // 400 bytes and a line for a (the last line end is not kept), the same for b, 433 and two lines
+    // for c (the marker takes 12 bytes), 800 and a line for é (2 bytes each).
     expect(await redactions('a.txt')).toBe(0);
     expect(await redactions('b.txt')).toBe(0);
     expect(files.bytes).toBe(2 * (400 + 4));

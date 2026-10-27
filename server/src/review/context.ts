@@ -434,7 +434,7 @@ async function classify(
     const file: SnapshotFile =
       change.status === 'deleted' ? { kind: 'absent' } : await fileOf(change.path);
 
-    let stored: MaskedText | null = null;
+    let stored: TextLines | null = null;
     let unshown: Unshown | null = null;
     switch (file.kind) {
       case 'text': {
@@ -655,14 +655,19 @@ function bySlicePriority(a: ReviewableChange, b: ReviewableChange): number {
 
 /** Where to read a change whose slices the model does not get: its file, when the snapshot has one. */
 function toRead(change: ReviewableChange): string {
-  return change.lines === null
-    ? `${change.path}: changed, its text is not in the snapshot`
-    : `${change.path} (${plural(change.lines, 'line')}): changed, read it with read_file`;
+  return change.lines === null ? notInSnapshot(change) : fileToRead(change, change.lines);
 }
 
-/** A change whose slices would not fit in the room that is left of them: nothing of it is masked. */
-const noRoom = (change: ReviewableChange): string =>
-  `${change.path} (${plural(change.changedLines, 'changed line')}): read it with read_file`;
+const notInSnapshot = (change: ReviewableChange): string =>
+  `${change.path}: changed, its text is not in the snapshot`;
+const fileToRead = (change: ReviewableChange, lines: number): string =>
+  `${change.path} (${plural(lines, 'line')}): changed, read it with read_file`;
+
+/**
+ * A change whose slices would not fit in the room that is left of them: nothing of it is shown.
+ * The line names the file's length, which is what the model reads (not the lines that changed).
+ */
+const noRoom = (change: ReviewableChange): string => toRead(change);
 
 /** The secrets replaced so far in the texts the prompt shows. */
 interface Tally {
@@ -708,13 +713,15 @@ async function cutSlices(
       if (!change.hasPatch) omitted.push(toRead(change));
       continue;
     }
+    // Before the room: once the time for masking is spent, what the model is told is that the
+    // change could not be masked, whether or not it would have fitted.
+    if (masker.exhausted) {
+      leaveOut(change, 'budget');
+      continue;
+    }
     const joiner = parts.length === 0 ? 0 : 1;
     if (used + joiner + size > sliceChars) {
       omitted.push(noRoom(change));
-      continue;
-    }
-    if (masker.exhausted) {
-      leaveOut(change, 'budget');
       continue;
     }
 
@@ -726,22 +733,27 @@ async function cutSlices(
     if (file.kind !== 'text') {
       // The snapshot no longer has the text it had when it was read to tell what the file is.
       change.unshown = 'no_text';
-      omitted.push(toRead(change));
+      omitted.push(notInSnapshot(change));
       continue;
     }
-    tally.redactions += file.redactions;
+    let redactions = file.redactions;
     if (patch !== null) {
       const facts = patchFacts({ status: change.status, patch }, change.lines);
       const shown = await removedLines(patch, facts, mask);
       change.removed = shown.removed;
-      tally.redactions += shown.redactions;
+      redactions += shown.redactions;
     }
     const slice = [...sliceRows(change, file.text, CONTEXT_LINES)].join('\n');
     if (used + joiner + slice.length > sliceChars) {
-      // What the masking put in the place of a secret is longer than the secret was.
+      // What the masking put in the place of a secret is longer than the secret was. Nothing of
+      // the change is shown, so it keeps none of its removed rows and counts none of its
+      // replacements; those of its file are the next request's to report.
+      change.removed = [];
+      files.giveBack(change.path);
       omitted.push(noRoom(change));
       continue;
     }
+    tally.redactions += redactions;
     parts.push(slice);
     used += joiner + slice.length;
     change.text = files.keptText(change.path);

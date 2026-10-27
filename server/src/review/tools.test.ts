@@ -15,6 +15,8 @@ import {
 } from './tools';
 
 const BUDGET_USED_UP = 'tool budget used up; answer now with what you have';
+const MASKING_SPENT =
+  "note: the review's masking budget is used up; only files masked already can match";
 const ABSENT = "no such file in this merge request's snapshot";
 const EXCLUDED = 'not available: excluded by the administrator';
 const MORE_MATCHES = '… more matches; narrow path_glob';
@@ -1409,9 +1411,35 @@ describe('masking that takes too long', () => {
     // The bytes of a text that was not masked are not spent.
     const left = policy.budget.maskedBytes;
     expect(await answer(reader, 'read_file', { path: 'b/ok.ts' }, policy)).toBe(BUDGET_USED_UP);
-    // A grep leaves out what it can no longer mask, and says nothing of it.
-    expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe('no matches');
+    // A grep leaves out what it can no longer mask, and says that the budget is used up.
+    expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe(
+      [MASKING_SPENT, 'no matches'].join('\n'),
+    );
     expect(policy.budget.maskedBytes).toBe(left);
+  });
+
+  it('grep says so when the masking budget was used up before it searched', async () => {
+    const spent = slowPolicy(900);
+    expect(await answer(reader, 'read_file', { path: 'a/hostile.txt' }, spent)).toBe(NOT_IN_TIME);
+    expect(await answer(reader, 'read_file', { path: 'c/hostile2.txt' }, spent)).toBe(
+      BUDGET_USED_UP,
+    );
+    expect(spent.masker?.exhausted).toBe(true);
+    // The line comes first, whatever the needle: one that is in a file, and one that is nowhere.
+    for (const pattern of ['needle', 'a needle that is nowhere']) {
+      const text = await answer(reader, 'grep', { pattern }, spent);
+      expect(text.split('\n')[0], pattern).toBe(MASKING_SPENT);
+    }
+    expect(await answer(reader, 'grep', { pattern: 'needle' }, spent)).toBe(
+      [MASKING_SPENT, 'no matches'].join('\n'),
+    );
+    // A search with budget left has no such line, whatever it finds.
+    const fresh = slowPolicy();
+    for (const pattern of ['needle', 'a needle that is nowhere']) {
+      expect(await answer(reader, 'grep', { pattern }, fresh), pattern).not.toContain(
+        MASKING_SPENT,
+      );
+    }
   });
 
   it('once the review has spent its time, read_file answers alike for a file an earlier grep tried and one it never did', async () => {

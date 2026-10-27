@@ -187,6 +187,32 @@ describe('the time a review may spend masking', () => {
     expect(MASK_BUDGET_MS).toBe(90_000);
   });
 
+  it("a restart of the worker after a timeout is charged to the review's time", async () => {
+    const masker = maskerOf({ timeoutMs: 300, budgetMs: 60_000 });
+    // The first worker is started for the warm-up text, which is a text like any other.
+    await masker.mask('const a = 1;\n');
+    expect(await masker.mask(HOSTILE)).toEqual({ kind: 'timeout' });
+    expect(masker.workersStarted).toBe(1);
+    const spentBefore = masker.spentMs;
+    // The next text finds no worker: a new one loads its code first, and that time is the review's.
+    const began = performance.now();
+    expect(await masker.mask('const b = 2;\n')).toMatchObject({ kind: 'masked' });
+    const wall = performance.now() - began;
+    expect(masker.workersStarted).toBe(2);
+    expect(masker.spentMs - spentBefore).toBeGreaterThanOrEqual(wall - 20);
+  });
+
+  it('a restart that takes the time the review had left leaves nothing to mask with', async () => {
+    // 300 ms for the text that is given up; the 60 or so that are left do not pay for a new worker.
+    const masker = maskerOf({ timeoutMs: 300, budgetMs: 360 });
+    await masker.mask('const a = 1;\n');
+    expect(await masker.mask(HOSTILE)).toEqual({ kind: 'timeout' });
+    expect(masker.exhausted).toBe(false);
+    expect(await masker.mask('const b = 2;\n')).toEqual({ kind: 'budget' });
+    expect(masker.workersStarted).toBe(2);
+    expect(masker.exhausted).toBe(true);
+  });
+
   it('is spent by the texts, the ones given up included, and nothing is masked once it is', async () => {
     // The text that warms the worker up is a text like any other, with the time of one: the budget
     // is for several.

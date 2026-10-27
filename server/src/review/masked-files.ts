@@ -167,6 +167,11 @@ export class MaskedFiles {
     this.masker = options.masker ?? new Masker();
   }
 
+  /** The review has spent the time it may spend masking: no file is masked now (see `file`). */
+  get maskingSpent(): boolean {
+    return this.masker.exhausted;
+  }
+
   /** Bytes of the masked text kept (see `MaskedText`). */
   get bytes(): number {
     return this.keptBytes;
