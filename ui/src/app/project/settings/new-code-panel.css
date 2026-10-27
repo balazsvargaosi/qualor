@@ -8,51 +8,7 @@
   margin: var(--space-4) 0;
 }
 
-.choice-card {
-  display: flex;
-  gap: var(--space-3);
-  align-items: flex-start;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  cursor: pointer;
-}
-
-.choice-card:hover {
-  border-color: var(--border-strong);
-}
-
-.choice-card.checked {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.choice-card:has(input:focus-visible) {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.choice-card input {
-  margin-top: 3px;
-}
-
-.choice-text {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.choice-title {
-  font-size: 15px;
-  font-weight: 650;
-}
-
-.choice-hint {
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
+/* The cards are the shared .choice-card of styles.css; a field under its choice lines up with it. */
 .choice-extra {
   margin: 0 0 var(--space-2) 36px;
 }

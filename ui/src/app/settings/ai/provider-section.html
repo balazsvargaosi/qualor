@@ -1,0 +1,847 @@
+<section id="provider" class="card panel" aria-labelledby="ai-provider-heading">
+  <div class="panel-head">
+    <div class="sec-title">
+      <h3 id="ai-provider-heading" tabindex="-1">{{ texts.title }}</h3>
+      <p class="sec-purpose" i18n="@@aiProvider.provider.purpose">
+        Where the AI features send their requests. Only this server talks to it.
+      </p>
+    </div>
+  </div>
+
+  <!-- The kind: two choice cards. Nothing else shows until one is chosen. -->
+  <div class="setting-row">
+    <div class="setting-text">
+      <span id="ai-kind-name" class="setting-name" [class.changed]="changed().has('kind')">{{
+        texts.kind
+      }}</span>
+      <p i18n="@@aiProvider.kindHelp">The kind of API the model speaks.</p>
+    </div>
+    <div class="setting-field">
+      <div
+        class="choices"
+        role="radiogroup"
+        aria-labelledby="ai-kind-name"
+        [attr.aria-describedby]="errorOf('kind') ? 'ai-kind-error' : null"
+      >
+        <label class="choice-card" [class.checked]="draft().kind === 'openai'">
+          <input
+            id="ai-kind-openai"
+            type="radio"
+            name="ai-kind"
+            value="openai"
+            [checked]="draft().kind === 'openai'"
+            (change)="setKind('openai')"
+          />
+          <span class="choice-text"
+            ><span class="choice-title" i18n="@@aiProvider.kind.openai">OpenAI-compatible</span
+            >&ngsp;<span class="choice-hint" i18n="@@aiProvider.kind.openaiHint"
+              >OpenAI, Azure OpenAI, vLLM, Ollama, LM Studio, LiteLLM</span
+            ></span
+          >
+        </label>
+        <label class="choice-card" [class.checked]="draft().kind === 'anthropic'">
+          <input
+            id="ai-kind-anthropic"
+            type="radio"
+            name="ai-kind"
+            value="anthropic"
+            [checked]="draft().kind === 'anthropic'"
+            (change)="setKind('anthropic')"
+          />
+          <span class="choice-text"
+            ><span class="choice-title" i18n="@@aiProvider.kind.anthropic">Anthropic</span
+            >&ngsp;<span class="choice-hint" i18n="@@aiProvider.kind.anthropicHint"
+              >Claude models at api.anthropic.com</span
+            ></span
+          >
+        </label>
+      </div>
+      @if (errorOf('kind'); as message) {
+        <p id="ai-kind-error" class="field-error"><q-icon name="alert" />{{ message }}</p>
+      }
+      @if (!provider()) {
+        <p id="ai-local" class="hint" i18n="@@aiProvider.local">
+          To keep code on your own network, run a local model:
+          <a routerLink="/docs/ai-assistant" fragment="a-local-model-with-ollama"
+            >A local model with Ollama</a
+          >
+          (guide).
+        </p>
+      }
+    </div>
+  </div>
+
+  @if (draft().kind !== '') {
+    <!-- The address. -->
+    <div class="setting-row">
+      <div class="setting-text">
+        <label for="ai-url" [class.changed]="changed().has('url')">{{ texts.url }}</label>
+        <p id="ai-url-hint" i18n="@@aiProvider.url.hint">
+          With the version path, such as https://&lt;resource&gt;.openai.azure.com/openai/v1 or
+          http://ollama:11434/v1. A host on your network must be listed by the operator in
+          QUALOR_LLM_INTERNAL_HOSTS.
+        </p>
+      </div>
+      <div class="setting-field">
+        <input
+          id="ai-url"
+          class="mono url"
+          type="url"
+          maxlength="2048"
+          autocomplete="off"
+          spellcheck="false"
+          [value]="draft().url"
+          [attr.aria-invalid]="errorOf('url') ? true : null"
+          [attr.aria-describedby]="urlDescribedBy()"
+          (input)="setUrl($event)"
+        />
+        @if (errorOf('url'); as message) {
+          <p id="ai-url-error" class="field-error"><q-icon name="alert" />{{ message }}</p>
+        }
+        @if (urlNote(); as note) {
+          <p id="ai-url-note" class="note">
+            <q-icon name="info" /><span>{{ note }}</span>
+          </p>
+        }
+      </div>
+    </div>
+
+    <!-- The API key: write-only. A stored one is a line with Replace and Remove. -->
+    <div class="setting-row">
+      <div class="setting-text">
+        @if (showKeyField()) {
+          <label for="ai-key" [class.changed]="changed().has('key')">{{ texts.key }}</label>
+        } @else {
+          <span class="setting-name" [class.changed]="changed().has('key')">{{ texts.key }}</span>
+        }
+      </div>
+      <div class="setting-field">
+        @if (keySet()) {
+          @if (draft().removeKey) {
+            <p id="ai-key-removing" class="state-line">
+              <span>{{ texts.removing }}</span
+              >&ngsp;<button
+                id="ai-key-undo"
+                type="button"
+                class="btn-quiet"
+                (click)="undoRemoveKey()"
+              >
+                {{ texts.undo }}
+              </button>
+            </p>
+          } @else {
+            <div id="ai-key-state" class="state-line">
+              <span class="badge badge-passed"><q-icon name="key" />{{ texts.keyBadge }}</span
+              >&ngsp;<span>{{ texts.keySet }}</span>
+              @if (!showKeyField()) {
+                &ngsp;<button
+                  id="ai-key-replace"
+                  type="button"
+                  class="btn-quiet"
+                  (click)="replaceKey()"
+                >
+                  {{ texts.replace }}
+                </button>
+              }
+              &ngsp;<button
+                id="ai-key-remove"
+                type="button"
+                class="btn-quiet danger"
+                (click)="removeKey()"
+              >
+                {{ texts.remove }}
+              </button>
+            </div>
+          }
+        }
+        @if (showKeyField()) {
+          <input
+            #keyField
+            id="ai-key"
+            class="mono key"
+            type="password"
+            maxlength="4096"
+            autocomplete="new-password"
+            data-1p-ignore
+            data-lpignore="true"
+            spellcheck="false"
+            [attr.aria-invalid]="errorOf('key') ? true : null"
+            [attr.aria-describedby]="errorOf('key') ? 'ai-key-error ai-key-hint' : 'ai-key-hint'"
+            (input)="onKeyInput($event)"
+          />
+          @if (errorOf('key'); as message) {
+            <p id="ai-key-error" class="field-error"><q-icon name="alert" />{{ message }}</p>
+          }
+          <p id="ai-key-hint" class="hint">
+            @if (!keySet()) {
+              <span i18n="@@aiProvider.key.none">No API key. A local model may need none.</span
+              >&ngsp;<span i18n="@@aiProvider.key.stored"
+                >Stored encrypted; never shown again.</span
+              >
+            } @else if (addressChanged()) {
+              <span i18n="@@aiProvider.key.again"
+                >You changed the address: enter the key again. Qualor sends a key only to the
+                address it was entered for.</span
+              >
+            } @else {
+              <span i18n="@@aiProvider.key.stored">Stored encrypted; never shown again.</span>
+            }
+          </p>
+        }
+        @if (keySet() && provider()?.apiKeyReadable === false) {
+          <p class="alert alert-error" i18n="@@ai.settings.keyUnreadable">
+            The stored API key can no longer be read; set it again.
+          </p>
+        }
+      </div>
+    </div>
+
+    @if (draft().kind === 'anthropic') {
+      <!-- The workspace of an organization-wide Anthropic key. -->
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="ai-workspace-id" [class.changed]="changed().has('workspaceId')">{{
+            texts.workspace
+          }}</label>
+          <p id="ai-workspace-id-hint" i18n="@@ai.settings.workspaceIdHint">
+            For an organisation-wide key that is not scoped to a workspace (wrkspc_…).
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="ai-workspace-id"
+            class="mono name"
+            type="text"
+            maxlength="71"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="draft().workspaceId"
+            [attr.aria-invalid]="errorOf('workspace-id') ? true : null"
+            [attr.aria-describedby]="
+              errorOf('workspace-id')
+                ? 'ai-workspace-id-error ai-workspace-id-hint'
+                : 'ai-workspace-id-hint'
+            "
+            (input)="setText('workspaceId', 'workspace-id', $event)"
+          />
+          @if (errorOf('workspace-id'); as message) {
+            <p id="ai-workspace-id-error" class="field-error">
+              <q-icon name="alert" />{{ message }}
+            </p>
+          }
+        </div>
+      </div>
+    }
+
+    <!-- The model, and the tiers' models under their switch. -->
+    <div class="setting-row">
+      <div class="setting-text">
+        <label for="ai-model" [class.changed]="changed().has('model')">{{ texts.model }}</label>
+        <p id="ai-model-hint" i18n="@@aiProvider.model.hint">
+          Used for every AI feature unless you choose other models for parts of AI review.
+        </p>
+      </div>
+      <div class="setting-field">
+        <input
+          id="ai-model"
+          class="mono name"
+          type="text"
+          maxlength="200"
+          autocomplete="off"
+          spellcheck="false"
+          [value]="draft().model"
+          [attr.aria-invalid]="errorOf('model') ? true : null"
+          [attr.aria-describedby]="
+            errorOf('model') ? 'ai-model-error ai-model-hint' : 'ai-model-hint'
+          "
+          (input)="setText('model', 'model', $event)"
+        />
+        @if (errorOf('model'); as message) {
+          <p id="ai-model-error" class="field-error"><q-icon name="alert" />{{ message }}</p>
+        }
+        <!-- A switch is named by its name alone; its help, and the note under it, describe it. -->
+        <div class="switch-row">
+          <input
+            id="ai-tiers"
+            class="switch"
+            type="checkbox"
+            role="switch"
+            aria-labelledby="ai-tiers-name"
+            [attr.aria-describedby]="showTiers() ? 'ai-tiers-help ai-tiers-note' : 'ai-tiers-help'"
+            [checked]="draft().tiers"
+            (change)="setTiers($event)"
+          />
+          <label for="ai-tiers"
+            ><span
+              id="ai-tiers-name"
+              class="sw-name"
+              [class.changed]="tiersChanged()"
+              i18n="@@aiProvider.tiers"
+              >Use a stronger and a faster model for parts of AI review</span
+            >&ngsp;<span id="ai-tiers-help" class="sw-help" i18n="@@aiProvider.tiersOff"
+              >Off: AI review runs on the model above.</span
+            ></label
+          >
+        </div>
+        @if (showTiers()) {
+          <div id="ai-tiers-models" class="dep">
+            <div class="fold-field">
+              <label
+                class="lbl"
+                for="ai-strong-model"
+                [class.changed]="changed().has('strongModel')"
+                >{{ texts.strongModel }}</label
+              >
+              <input
+                id="ai-strong-model"
+                class="mono name"
+                type="text"
+                maxlength="200"
+                autocomplete="off"
+                spellcheck="false"
+                [value]="draft().strongModel"
+                [attr.aria-invalid]="errorOf('strong-model') ? true : null"
+                [attr.aria-describedby]="
+                  errorOf('strong-model')
+                    ? 'ai-strong-model-error ai-strong-model-hint'
+                    : 'ai-strong-model-hint'
+                "
+                (input)="setText('strongModel', 'strong-model', $event)"
+              />
+              @if (errorOf('strong-model'); as message) {
+                <p id="ai-strong-model-error" class="field-error">
+                  <q-icon name="alert" />{{ message }}
+                </p>
+              }
+              <p id="ai-strong-model-hint" class="hint" i18n="@@ai.settings.strongModelHint">
+                AI review's final check of the findings, and its second look at serious security
+                findings. Empty: the model above.
+              </p>
+            </div>
+            <div class="fold-field">
+              <label class="lbl" for="ai-fast-model" [class.changed]="changed().has('fastModel')">{{
+                texts.fastModel
+              }}</label>
+              <input
+                id="ai-fast-model"
+                class="mono name"
+                type="text"
+                maxlength="200"
+                autocomplete="off"
+                spellcheck="false"
+                [value]="draft().fastModel"
+                [attr.aria-invalid]="errorOf('fast-model') ? true : null"
+                [attr.aria-describedby]="
+                  errorOf('fast-model')
+                    ? 'ai-fast-model-error ai-fast-model-hint'
+                    : 'ai-fast-model-hint'
+                "
+                (input)="setText('fastModel', 'fast-model', $event)"
+              />
+              @if (errorOf('fast-model'); as message) {
+                <p id="ai-fast-model-error" class="field-error">
+                  <q-icon name="alert" />{{ message }}
+                </p>
+              }
+              <p id="ai-fast-model-hint" class="hint" i18n="@@ai.settings.fastModelHint">
+                AI review of small changes (10 changed lines or fewer). Empty: the model above.
+              </p>
+            </div>
+            <p id="ai-tiers-note" class="note">
+              <q-icon name="info" /><span i18n="@@aiProvider.tiers.note"
+                >Each organization's AI review confirmation names these models and the address.
+                Changing, adding or removing one pauses AI review until its admins confirm
+                again.</span
+              >
+            </p>
+          </div>
+        }
+      </div>
+    </div>
+
+    <!-- The prices under their switch: a row beside each model of its own. -->
+    <div class="setting-row">
+      <div class="setting-text">
+        <span class="setting-name">{{ texts.prices }}</span>
+        <p i18n="@@aiProvider.prices.help">
+          Needed to count costs and for cost limits, here and in each organization's AI review.
+        </p>
+      </div>
+      <div class="setting-field">
+        <div class="switch-row">
+          <input
+            id="ai-prices"
+            class="switch"
+            type="checkbox"
+            role="switch"
+            aria-labelledby="ai-prices-name"
+            aria-describedby="ai-prices-help"
+            [checked]="draft().prices"
+            (change)="setPrices($event)"
+          />
+          <label for="ai-prices"
+            ><span
+              id="ai-prices-name"
+              class="sw-name"
+              [class.changed]="pricesChanged()"
+              i18n="@@aiProvider.prices.switch"
+              >Count costs with these models' prices</span
+            >&ngsp;<span id="ai-prices-help" class="sw-help">{{
+              draft().prices ? texts.pricesOn : texts.pricesOff
+            }}</span></label
+          >
+        </div>
+        @if (showPrices()) {
+          <div class="dep">
+            <div class="mini">
+              <table class="stack-table prices">
+                <thead>
+                  <tr>
+                    <th scope="col">{{ texts.colModel }}</th>
+                    <th scope="col">{{ texts.colInput }}</th>
+                    <th scope="col">{{ texts.colOutput }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (row of priceRows(); track row.tier) {
+                    <tr [attr.data-tier]="row.tier">
+                      <th scope="row" [attr.data-label]="texts.colModel">
+                        <span class="model-cell"
+                          ><code>{{ row.model }}</code
+                          >&ngsp;<span class="tier">{{ row.tierName }}</span></span
+                        >
+                      </th>
+                      @for (cell of row.cells; track cell.id) {
+                        <td [attr.data-label]="cell.column">
+                          <label class="visually-hidden" [for]="cell.id">{{ cell.label }}</label>
+                          <q-number-field
+                            kind="money"
+                            [prefix]="texts.usd"
+                            [inputId]="cell.id"
+                            [value]="cell.value"
+                            [invalid]="cell.error !== null"
+                            [describedBy]="cell.error === null ? null : cell.id + '-error'"
+                            (valueChange)="setPrice(cell.field, $event)"
+                          />
+                          @if (cell.error; as message) {
+                            <p class="field-error" [id]="cell.id + '-error'">
+                              <q-icon name="alert" />{{ message }}
+                            </p>
+                          }
+                        </td>
+                      }
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </div>
+        }
+      </div>
+    </div>
+
+    <!-- The connection options: a fold that lists them while closed. -->
+    <div class="setting-row">
+      <div class="setting-text">
+        <span class="setting-name">{{ texts.options }}</span>
+        <p i18n="@@aiProvider.optionsHelp">Most providers need none of these changed.</p>
+      </div>
+      <div class="setting-field">
+        <details
+          id="ai-options"
+          class="fold"
+          [open]="optionsOpen()"
+          (toggle)="onOptionsToggle($event)"
+        >
+          <summary>
+            <span [class.changed]="optionsChanged()">{{ texts.options }}</span
+            >&ngsp;<span class="fold-values">
+              @for (chip of chips(); track $index) {
+                <span class="chip" [class.set]="chip.set">{{ chip.text }}</span
+                >&ngsp;
+              }
+            </span>
+          </summary>
+          <div class="fold-body">
+            @if (draft().kind === 'openai') {
+              <div class="fold-field">
+                <span id="ai-api-label" class="lbl" [class.changed]="changed().has('api')">{{
+                  texts.apiLabel
+                }}</span>
+                <div
+                  class="segmented"
+                  role="radiogroup"
+                  aria-labelledby="ai-api-label"
+                  aria-describedby="ai-api-hint"
+                >
+                  <label
+                    ><input
+                      id="ai-api-chat-completions"
+                      type="radio"
+                      name="ai-api"
+                      value="chat_completions"
+                      [checked]="draft().api === 'chat_completions'"
+                      (change)="setApi('chat_completions')"
+                    />{{ texts.chat }}</label
+                  >
+                  <label
+                    ><input
+                      id="ai-api-responses"
+                      type="radio"
+                      name="ai-api"
+                      value="responses"
+                      [checked]="draft().api === 'responses'"
+                      (change)="setApi('responses')"
+                    />{{ texts.responses }}</label
+                  >
+                </div>
+                <p id="ai-api-hint" class="hint" i18n="@@ai.settings.apiHint">
+                  OpenAI's newest models call tools, which AI review needs, only through Responses.
+                  vLLM, Ollama, LM Studio and Azure use Chat Completions. Set from the address until
+                  you choose.
+                </p>
+              </div>
+              <div class="fold-field">
+                <span id="ai-auth-label" class="lbl" [class.changed]="changed().has('auth')">{{
+                  texts.auth
+                }}</span>
+                <div class="segmented mono" role="radiogroup" aria-labelledby="ai-auth-label">
+                  <label
+                    ><input
+                      id="ai-auth-bearer"
+                      type="radio"
+                      name="ai-auth"
+                      value="bearer"
+                      [checked]="draft().auth === 'bearer'"
+                      (change)="setAuth('bearer')"
+                    />{{ texts.bearer }}</label
+                  >
+                  <label
+                    ><input
+                      id="ai-auth-api-key"
+                      type="radio"
+                      name="ai-auth"
+                      value="api-key"
+                      [checked]="draft().auth === 'api-key'"
+                      (change)="setAuth('api-key')"
+                    />{{ texts.apiKeyHeader }}</label
+                  >
+                </div>
+              </div>
+              @if (draft().api === 'chat_completions') {
+                <div class="fold-field">
+                  <span
+                    id="ai-max-tokens-field-label"
+                    class="lbl"
+                    [class.changed]="changed().has('maxTokensField')"
+                    >{{ texts.maxTokensField }}</span
+                  >
+                  <div
+                    class="segmented mono"
+                    role="radiogroup"
+                    aria-labelledby="ai-max-tokens-field-label"
+                    aria-describedby="ai-max-tokens-field-hint"
+                  >
+                    <label
+                      ><input
+                        id="ai-max-tokens-field-max-tokens"
+                        type="radio"
+                        name="ai-max-tokens-field"
+                        value="max_tokens"
+                        [checked]="draft().maxTokensField === 'max_tokens'"
+                        (change)="setMaxTokensField('max_tokens')"
+                      />{{ texts.maxTokens }}</label
+                    >
+                    <label
+                      ><input
+                        id="ai-max-tokens-field-max-completion-tokens"
+                        type="radio"
+                        name="ai-max-tokens-field"
+                        value="max_completion_tokens"
+                        [checked]="draft().maxTokensField === 'max_completion_tokens'"
+                        (change)="setMaxTokensField('max_completion_tokens')"
+                      />{{ texts.maxCompletionTokens }}</label
+                    >
+                  </div>
+                  <p
+                    id="ai-max-tokens-field-hint"
+                    class="hint"
+                    i18n="@@ai.settings.maxTokensFieldHint"
+                  >
+                    OpenAI and Azure OpenAI want max_completion_tokens; vLLM, Ollama and most others
+                    want max_tokens. Set from the address until you choose.
+                  </p>
+                </div>
+              }
+              <div class="switch-row">
+                <input
+                  id="ai-json"
+                  class="switch"
+                  type="checkbox"
+                  role="switch"
+                  aria-labelledby="ai-json-name"
+                  aria-describedby="ai-json-help"
+                  [checked]="draft().json"
+                  (change)="setJson($event)"
+                />
+                <label for="ai-json"
+                  ><span
+                    id="ai-json-name"
+                    class="sw-name"
+                    [class.changed]="changed().has('json')"
+                    i18n="@@aiProvider.json"
+                    >Ask for a JSON object</span
+                  >&ngsp;<span id="ai-json-help" class="sw-help" i18n="@@aiProvider.jsonHelp"
+                    >Turn it off for a server that refuses JSON mode.</span
+                  ></label
+                >
+              </div>
+            }
+            <div class="fold-field">
+              <label class="lbl" for="ai-timeout" [class.changed]="changed().has('timeout')">{{
+                texts.timeout
+              }}</label>
+              <div class="num-line">
+                <q-number-field
+                  inputId="ai-timeout"
+                  [digits]="3"
+                  [unit]="texts.seconds"
+                  [value]="draft().timeout"
+                  [invalid]="errorOf('timeout') !== null"
+                  [describedBy]="
+                    errorOf('timeout') ? 'ai-timeout-error ai-timeout-hint' : 'ai-timeout-hint'
+                  "
+                  (valueChange)="setTimeoutSeconds($event)"
+                />
+              </div>
+              @if (errorOf('timeout'); as message) {
+                <p id="ai-timeout-error" class="field-error">
+                  <q-icon name="alert" />{{ message }}
+                </p>
+              }
+              <p id="ai-timeout-hint" class="hint" i18n="@@aiProvider.timeoutHint">
+                5 to 600. AI review calls always wait at least 300 seconds.
+              </p>
+            </div>
+            @if (draft().kind === 'openai') {
+              <div class="switch-row">
+                <input
+                  id="ai-temperature-set"
+                  class="switch"
+                  type="checkbox"
+                  role="switch"
+                  aria-labelledby="ai-temperature-set-name"
+                  aria-describedby="ai-temperature-set-help"
+                  [checked]="draft().temperatureSet"
+                  (change)="setTemperatureSet($event)"
+                />
+                <label for="ai-temperature-set"
+                  ><span
+                    id="ai-temperature-set-name"
+                    class="sw-name"
+                    [class.changed]="changed().has('temperature')"
+                    i18n="@@aiProvider.temperature"
+                    >Set a temperature</span
+                  >&ngsp;<span
+                    id="ai-temperature-set-help"
+                    class="sw-help"
+                    i18n="@@aiProvider.temperatureOff"
+                    >Off: none is sent, and the model uses its own.</span
+                  ></label
+                >
+              </div>
+              @if (draft().temperatureSet || errorOf('temperature')) {
+                <div class="dep">
+                  <div class="fold-field">
+                    <label class="lbl" for="ai-temperature">{{ texts.temperature }}</label>
+                    <input
+                      id="ai-temperature"
+                      class="temperature"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
+                      [value]="draft().temperature"
+                      [attr.aria-invalid]="errorOf('temperature') ? true : null"
+                      [attr.aria-describedby]="
+                        errorOf('temperature') ? 'ai-temperature-error' : null
+                      "
+                      (input)="setTemperature($event)"
+                    />
+                    @if (errorOf('temperature'); as message) {
+                      <p id="ai-temperature-error" class="field-error">
+                        <q-icon name="alert" />{{ message }}
+                      </p>
+                    }
+                  </div>
+                </div>
+              }
+            } @else {
+              <p
+                id="ai-temperature-anthropic"
+                class="hint"
+                i18n="@@aiProvider.temperatureAnthropic"
+              >
+                Not used: Anthropic's current models take no temperature.
+              </p>
+            }
+          </div>
+        </details>
+      </div>
+    </div>
+
+    @if (testView() || testing() || testError()) {
+      <!-- The last Test: this visit's, or the one the server keeps. -->
+      <div class="setting-row">
+        <div class="setting-text">
+          <span class="setting-name">{{ texts.testTitle }}</span>
+          @if (testView(); as view) {
+            <p id="ai-test-when">{{ view.when }}</p>
+          }
+        </div>
+        <div class="setting-field">
+          <div id="ai-test-status" role="status">
+            @if (testing()) {
+              <p class="hint">{{ texts.testing }}</p>
+            } @else if (testView(); as view) {
+              <ul id="ai-test-models" class="test-lines">
+                @for (line of view.lines; track line.tier) {
+                  <li [attr.data-tone]="line.tone">
+                    <q-icon [name]="line.icon" /><span
+                      >{{ line.before }}<code>{{ line.model }}</code
+                      >{{ line.after }}</span
+                    >
+                  </li>
+                }
+              </ul>
+              @if (view.responsesHint) {
+                <p id="ai-test-use-responses" class="alert alert-warn">{{ texts.useResponses }}</p>
+              }
+            }
+          </div>
+          @if (!testing()) {
+            @if (testView()?.failedText; as failed) {
+              <p id="ai-test-failed" class="alert alert-error" role="alert">{{ failed }}</p>
+            }
+          }
+          @if (testError(); as message) {
+            <p id="ai-test-error" class="alert alert-error" role="alert">{{ message }}</p>
+          }
+        </div>
+      </div>
+    }
+
+    @if (provider()) {
+      <!-- Removal, set apart: every AI feature stops, and the key goes. -->
+      <div class="setting-row">
+        <div class="setting-text">
+          <span class="setting-name">{{ texts.removeRow }}</span>
+          <p id="ai-remove-help" i18n="@@aiProvider.remove.help">
+            Every AI feature stops in every organization, and the key is deleted.
+          </p>
+        </div>
+        <div class="setting-field">
+          <div>
+            <button
+              id="ai-remove"
+              type="button"
+              class="btn btn-danger"
+              aria-describedby="ai-remove-help"
+              (click)="askRemove()"
+            >
+              {{ texts.removeButton }}
+            </button>
+          </div>
+        </div>
+      </div>
+    }
+  }
+
+  @if (showFoot()) {
+    <q-section-foot [outcome]="footOutcome()" [saveLabel]="texts.saveAndTest" (save)="save()">
+      @if (showTestAgain()) {
+        <button
+          id="ai-test-again"
+          type="button"
+          class="btn"
+          [attr.aria-disabled]="testing() ? true : null"
+          (click)="test()"
+        >
+          {{ texts.testAgain }}
+        </button>
+      }
+    </q-section-foot>
+    @if (draft().kind !== '') {
+      <p id="ai-save-hint" class="hint foot-hint" i18n="@@aiProvider.saveAndTestHint">
+        Saves the provider, then sends each model a fixed prompt holding no repository data, and
+        checks it can call tools, which AI review needs.
+      </p>
+    }
+  }
+</section>
+
+<dialog
+  #pauseDialog
+  id="ai-pause-dialog"
+  class="dialog"
+  aria-labelledby="ai-pause-title"
+  aria-describedby="ai-pause-was ai-pause-now"
+  (close)="cancelPause()"
+>
+  <div class="dialog-head">
+    <h2 id="ai-pause-title">{{ pause()?.title }}</h2>
+  </div>
+  <div class="dialog-body">
+    <p id="ai-pause-was">{{ pause()?.was }}</p>
+    <p id="ai-pause-now">{{ pause()?.now }}</p>
+    <p id="ai-pause-assistant" class="muted" i18n="@@aiProvider.pause.assistant">
+      Explain, Suggest triage and Suggest a fix carry on as before.
+    </p>
+  </div>
+  <div class="dialog-actions">
+    <button type="button" class="btn" autofocus (click)="cancelPause()" i18n="@@dialog.cancel">
+      Cancel
+    </button>
+    <button
+      type="button"
+      class="btn btn-primary"
+      (click)="confirmPause()"
+      i18n="@@aiProvider.pause.confirm"
+    >
+      Save and pause AI review
+    </button>
+  </div>
+</dialog>
+
+<dialog
+  #removeDialog
+  id="ai-remove-dialog"
+  class="dialog"
+  aria-labelledby="ai-remove-title"
+  aria-describedby="ai-remove-text"
+  (close)="cancelRemove()"
+>
+  <div class="dialog-head">
+    <h2 id="ai-remove-title" i18n="@@aiProvider.remove.title">Remove the AI provider?</h2>
+  </div>
+  <div class="dialog-body">
+    <p id="ai-remove-text" i18n="@@aiProvider.remove.text">
+      Every AI feature stops in every organization: Explain, Suggest triage and Suggest a fix, AI
+      review and automatic fix suggestions. The API key is deleted. Organizations keep their
+      settings.
+    </p>
+  </div>
+  <div class="dialog-actions">
+    <button type="button" class="btn" autofocus (click)="cancelRemove()" i18n="@@dialog.cancel">
+      Cancel
+    </button>
+    <button
+      type="button"
+      class="btn btn-danger-solid"
+      (click)="confirmRemove()"
+      i18n="@@aiProvider.remove.confirm"
+    >
+      Remove the provider
+    </button>
+  </div>
+</dialog>

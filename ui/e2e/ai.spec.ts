@@ -125,9 +125,9 @@ test.describe('AI assistant (llm.md §18)', () => {
       // The fake model answers all three, and calls the echo tool of each tool-calling check.
       await expect(page.locator('#ai-test-models li')).toHaveText(
         [
-          /^fake-model: connected in \d+ ms · tool calling supported$/,
-          /^fake-strong: connected in \d+ ms · tool calling supported$/,
-          /^fake-fast: connected in \d+ ms · tool calling supported$/,
+          /^fake-model: connected in \d+ ms · can call tools$/,
+          /^fake-strong: connected in \d+ ms · can call tools$/,
+          /^fake-fast: connected in \d+ ms · can call tools$/,
         ],
         ANSWER,
       );

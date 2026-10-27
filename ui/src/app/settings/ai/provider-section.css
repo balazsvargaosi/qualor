@@ -1,0 +1,120 @@
+/*
+ * The instance's provider (spec §3.4, §7.3, §7.4): a section card built from the shared parts of
+ * styles.css (its head, the choice cards, switches, dependent groups, the fold, notes and the
+ * segmented controls); here only the widths of its fields and the lines of a Test.
+ */
+:host {
+  display: block;
+  min-width: 0;
+}
+section {
+  margin: 0;
+}
+.setting-field > p,
+.dep > p,
+.fold-field > p {
+  margin: 0;
+}
+/* The two kinds side by side from 40rem, each card as tall as the other. */
+.choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  max-width: 46rem;
+}
+@media (max-width: 40rem) {
+  .choices {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* What a machine reads (addresses, model names, keys, parameter names) is in the mono face. */
+.mono,
+.segmented.mono label {
+  font-family: var(--mono);
+}
+.segmented.mono label {
+  font-size: 12.5px;
+}
+/* Widths are caps (spec §7.4): each field takes its column's width up to its own. */
+input.url,
+input.key,
+input.name,
+input.temperature {
+  width: 100%;
+}
+input.url {
+  max-width: 30rem;
+}
+input.key {
+  max-width: 22rem;
+}
+input.name {
+  max-width: 18rem;
+}
+input.temperature {
+  max-width: 6rem;
+}
+/* The prices: a row per model, its name in code over the tier it serves. */
+.prices td {
+  /* Contains the visually-hidden label of its field, which would widen the table. */
+  position: relative;
+}
+.model-cell {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.model-cell .tier {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 450;
+}
+/* A Test's lines: one per model, its icon in the colour of what it found, then its words. */
+.test-lines {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.test-lines li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.test-lines q-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+.test-lines li[data-tone='ok'] q-icon {
+  color: var(--ok);
+}
+.test-lines li[data-tone='bad'] q-icon {
+  color: var(--bad);
+}
+.test-lines code {
+  font-weight: 600;
+}
+#ai-test-status > * {
+  margin: 0;
+}
+#ai-test-status {
+  display: grid;
+  gap: 8px;
+}
+/* What Save and test does, under the foot's buttons. */
+.foot-hint {
+  margin: -6px 0 0;
+  padding: 0 22px 14px;
+  text-align: right;
+}
+@media (max-width: 40rem) {
+  .foot-hint {
+    padding-right: 16px;
+    padding-left: 16px;
+    text-align: left;
+  }
+}

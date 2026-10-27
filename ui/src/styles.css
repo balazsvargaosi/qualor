@@ -2009,7 +2009,96 @@ input.switch[type='checkbox']:focus-visible {
 .state-line > span:not(.badge) {
   font-weight: 550;
 }
+/* One of two choices that each need a sentence (the new code panel, the AI provider's kind). */
+.choice-card {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.choice-card:hover {
+  border-color: var(--border-strong);
+}
+.choice-card.checked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.choice-card:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.choice-card input {
+  margin-top: 3px;
+}
+.choice-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.choice-title {
+  font-size: 15px;
+  font-weight: 650;
+}
+.choice-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+/* A segmented control of radios (spec §7.11, a named radiogroup): the chosen pill is drawn as the
+   button variant's; on one row a pill, wrapped by a long label a rounded box, not an oval. */
+.segmented:has(> label) {
+  flex-wrap: wrap;
+  justify-self: start;
+  max-width: 100%;
+  border-radius: 20px;
+}
+.segmented label {
+  position: relative;
+  padding: 6px 14px;
+  border-radius: 999px;
+  color: var(--text-2);
+  font: 600 13px var(--font);
+  cursor: pointer;
+}
+.segmented label:has(input:checked) {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow:
+    0 1px 2px rgb(10 27 51 / 0.1),
+    0 0 0 1px var(--border);
+}
+.segmented label:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.segmented input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+/* A compact table in a frame inside a setting (chosen projects, prices); one card per row on a
+   phone (.stack-table). */
+.mini {
+  max-width: 46rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.mini :is(th, td) {
+  padding: 8px 12px;
+}
+.mini thead th {
+  background: var(--surface-2);
+}
 @media (max-width: 40rem) {
+  .mini {
+    max-width: 100%;
+  }
   .panel-head:has(> .sec-title) {
     padding-right: 16px;
     padding-left: 16px;

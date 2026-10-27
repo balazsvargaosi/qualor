@@ -47,55 +47,8 @@
   color: inherit;
 }
 
-/* The projects to review: a segmented control of two radios (spec §7.11, a named radiogroup). */
-.segmented {
-  flex-wrap: wrap;
-  justify-self: start;
-  max-width: 100%;
-  /* A pill on one row; a long organisation name wraps it into a rounded box, not an oval. */
-  border-radius: 20px;
-}
-.segmented label {
-  position: relative;
-  padding: 6px 14px;
-  border-radius: 999px;
-  color: var(--text-2);
-  font: 600 13px var(--font);
-  cursor: pointer;
-}
-.segmented label:has(input:checked) {
-  background: var(--surface);
-  color: var(--text);
-  box-shadow:
-    0 1px 2px rgb(10 27 51 / 0.1),
-    0 0 0 1px var(--border);
-}
-.segmented label:has(input:focus-visible) {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
-}
-.segmented input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: 0;
-  opacity: 0;
-}
-
-/* The chosen projects: a compact table in a frame, one card per row on a phone (.stack-table). */
-.mini {
-  max-width: 46rem;
-  overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-.mini :is(th, td) {
-  padding: 8px 12px;
-}
-.mini thead th {
-  background: var(--surface-2);
-}
-/* The project keeps room for its key beside a long note in the next column. */
+/* The chosen projects (.mini in styles.css): the project keeps room for its key beside a long note
+   in the next column. */
 .chosen tbody th {
   width: 35%;
 }
@@ -149,9 +102,6 @@
   .empty {
     padding-right: 16px;
     padding-left: 16px;
-  }
-  .mini {
-    max-width: 100%;
   }
   /* One card per row: the cell takes the card's width. */
   .chosen tbody th {

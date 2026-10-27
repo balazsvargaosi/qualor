@@ -30,6 +30,7 @@ import {
   type TestLine,
   testLine,
 } from './ai-text';
+import { defaultOutputLimitField } from './ai/provider-section';
 import {
   AUTO_FIX_FEATURE,
   AUTO_FIX_SEVERITIES,
@@ -1017,22 +1018,6 @@ function pricePair(
 function keyChange(apiKey: string, remove: boolean): { apiKey?: string | null } {
   if (apiKey !== '') return { apiKey };
   return remove ? { apiKey: null } : {};
-}
-
-/**
- * The output limit field an OpenAI-compatible base URL needs by default (llm.md §2.2): OpenAI's and
- * Azure OpenAI's current models refuse `max_tokens`; vLLM, Ollama and the others want it.
- */
-export function defaultOutputLimitField(url: string): 'max_tokens' | 'max_completion_tokens' {
-  let host: string;
-  try {
-    host = new URL(url.trim()).hostname.toLowerCase();
-  } catch {
-    return 'max_tokens';
-  }
-  return host === 'api.openai.com' || host.endsWith('.openai.azure.com')
-    ? 'max_completion_tokens'
-    : 'max_tokens';
 }
 
 function keyWithoutKind(): string {

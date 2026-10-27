@@ -267,7 +267,8 @@
           <div class="setting-text">
             <label for="ai-strong-model" i18n="@@ai.settings.strongModel">Strong model</label>
             <p id="ai-strong-model-hint" i18n="@@ai.settings.strongModelHint">
-              Used for the judge and the verification of security findings. Empty: the model above.
+              AI review's final check of the findings, and its second look at serious security
+              findings. Empty: the model above.
             </p>
           </div>
           <div class="setting-field">
@@ -295,7 +296,7 @@
           <div class="setting-text">
             <label for="ai-fast-model" i18n="@@ai.settings.fastModel">Fast model</label>
             <p id="ai-fast-model-hint" i18n="@@ai.settings.fastModelHint">
-              Used for small reviews. Empty: the model above.
+              AI review of small changes (10 changed lines or fewer). Empty: the model above.
             </p>
           </div>
           <div class="setting-field">
@@ -414,7 +415,9 @@
             <div class="setting-text">
               <label for="ai-api" i18n="@@ai.settings.api">API</label>
               <p id="ai-api-hint" i18n="@@ai.settings.apiHint">
-                The newest OpenAI models take tools only through the Responses API.
+                OpenAI's newest models call tools, which AI review needs, only through Responses.
+                vLLM, Ollama, LM Studio and Azure use Chat Completions. Set from the address until
+                you choose.
               </p>
             </div>
             <div class="setting-field">
@@ -486,11 +489,11 @@
             <div class="setting-row">
               <div class="setting-text">
                 <label for="ai-max-tokens-field" i18n="@@ai.settings.maxTokensField"
-                  >Output limit field</label
+                  >Output limit parameter</label
                 >
                 <p id="ai-max-tokens-field-hint" i18n="@@ai.settings.maxTokensFieldHint">
-                  OpenAI's current models need max_completion_tokens and refuse max_tokens; vLLM,
-                  Ollama and most other servers want max_tokens.
+                  OpenAI and Azure OpenAI want max_completion_tokens; vLLM, Ollama and most others
+                  want max_tokens. Set from the address until you choose.
                 </p>
               </div>
               <div class="setting-field">

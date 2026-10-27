@@ -6,6 +6,10 @@ type TestAnswer =
 export type LlmErrorCode = NonNullable<TestAnswer['problem']>['code'];
 /** What a Test found out about one model of the provider. */
 type TestModel = TestAnswer['models'][number];
+/** What the stored last Test keeps of one model (A2): codes and names, no time it took. */
+type StoredTestModel = NonNullable<
+  paths['/api/v0/system/llm']['get']['responses'][200]['content']['application/json']['lastTest']
+>['models'][number];
 /** What a Test suggests changing, from the Test answer's schema. */
 export type TestHintCode = NonNullable<TestAnswer['hint']>['code'];
 
@@ -109,7 +113,7 @@ export function testLine(found: TestModel): TestLine {
       return {
         model,
         tone: 'success',
-        text: $localize`:@@ai.test.modelSupported:${model}:model:: connected in ${latencyMs}:latency: ms · tool calling supported`,
+        text: $localize`:@@ai.test.modelSupported:${model}:model:: connected in ${latencyMs}:latency: ms · can call tools`,
       };
     case 'not_supported':
       if (found.hint) {
@@ -123,13 +127,49 @@ export function testLine(found: TestModel): TestLine {
       return {
         model,
         tone: 'warn',
-        text: $localize`:@@ai.test.modelNotSupported:${model}:model:: connected in ${latencyMs}:latency: ms · tool calling not supported`,
+        text: $localize`:@@ai.test.modelNotSupported:${model}:model:: connected in ${latencyMs}:latency: ms · cannot call tools, so AI review would fail`,
       };
     case 'not_checked':
       return {
         model,
         tone: 'success',
         text: $localize`:@@ai.test.modelConnected:${model}:model:: connected in ${latencyMs}:latency: ms`,
+      };
+  }
+}
+
+/**
+ * The stored last Test's finding about one model as a line, as `testLine` says it, without the
+ * time the call took, which the record does not keep (nor the provider's status of a refusal).
+ */
+export function storedTestLine(found: StoredTestModel): TestLine {
+  const { model } = found;
+  if (found.problemCode !== null) {
+    const problem = settingsProblemText(found.problemCode);
+    return {
+      model,
+      tone: 'error',
+      text: $localize`:@@ai.test.modelProblem:${model}:model:: ${problem}:problem:`,
+    };
+  }
+  switch (found.toolCalling) {
+    case 'supported':
+      return {
+        model,
+        tone: 'success',
+        text: $localize`:@@aiProvider.test.storedSupported:${model}:model:: connected · can call tools`,
+      };
+    case 'not_supported':
+      return {
+        model,
+        tone: 'warn',
+        text: $localize`:@@aiProvider.test.storedNotSupported:${model}:model:: connected · cannot call tools, so AI review would fail`,
+      };
+    case 'not_checked':
+      return {
+        model,
+        tone: 'success',
+        text: $localize`:@@aiProvider.test.storedConnected:${model}:model:: connected`,
       };
   }
 }
