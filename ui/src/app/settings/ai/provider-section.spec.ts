@@ -2091,13 +2091,13 @@ describe('ProviderSection: before pausing AI review (Review Focus 3)', () => {
     };
     const { fixture, root } = await render({ settings, organizations: orgs });
     expect(textOf(root, '#ai-url-note')).toBe(
-      'Changing the address needs the API key again, and pauses AI review in Org 1, Org 2, Org 3 and 2 more until an organization admin confirms the new address.',
+      'Changing the address needs the API key again, and pauses AI review in Org 1, Org 2, Org 3, and 2 more until an organization admin confirms the new address.',
     );
     await fill(fixture, root, '#ai-url', 'http://ollama:11434/api/v1');
     await fill(fixture, root, '#ai-key', KEY);
     await saveAndTest(fixture, root);
     expect(textOf(root, '#ai-pause-dialog h2')).toBe(
-      'Pause AI review in Org 1, Org 2, Org 3 and 2 more?',
+      'Pause AI review in Org 1, Org 2, Org 3, and 2 more?',
     );
     // The key stays in its field while the question is open.
     expect(field(root, 'ai-key').value).toBe(KEY);

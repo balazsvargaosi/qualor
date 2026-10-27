@@ -392,7 +392,7 @@ describe('instanceStatusLines', () => {
     expect(lineOf(allowed(5), 'organizations', orgs)).toMatchObject({
       tone: 'ok',
       state: '5 of 5 may use AI',
-      sub: 'Org 1, Org 2, Org 3 and 2 more',
+      sub: 'Org 1, Org 2, Org 3, and 2 more',
       action: { id: 'manage', label: 'Manage' },
     });
     expect(lineOf(allowed(3), 'organizations', orgs).sub).toBe('Org 1, Org 2, and Org 3');

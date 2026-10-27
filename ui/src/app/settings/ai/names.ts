@@ -4,15 +4,13 @@ import { formatWhole } from '../../shared/numbers';
 const NAMED = 3;
 
 /**
- * Organisations' names in a sentence, as the locale lists them ("Acme, Payments, and Lab"); past
- * three, the first three and how many more ("Acme, Payments, Lab and 2 more").
+ * Organisations' names in a sentence, joined as the locale joins a list ("Acme, Payments, and
+ * Lab"); past three, the first three and how many more, joined the same way ("Acme, Payments,
+ * Lab, and 2 more").
  */
 export function namesOf(names: readonly string[], locale: string): string {
-  if (names.length <= NAMED) {
-    return new Intl.ListFormat(locale, { type: 'conjunction' }).format(names);
-  }
-  const shown = new Intl.ListFormat(locale, { type: 'unit' }).format(names.slice(0, NAMED));
+  const list = new Intl.ListFormat(locale, { type: 'conjunction' });
+  if (names.length <= NAMED) return list.format(names);
   const n = formatWhole(names.length - NAMED, locale);
-  const more = $localize`:@@aiProvider.pause.more:and ${n}:n: more`;
-  return `${shown} ${more}`;
+  return list.format([...names.slice(0, NAMED), $localize`:@@aiProvider.names.more:${n}:n: more`]);
 }
