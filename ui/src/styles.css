@@ -2941,11 +2941,14 @@ input.switch[type='checkbox']:focus-visible {
   color: var(--text-muted);
 }
 
+/* Reduced motion: no transition at all. A duration however short would give every element one of
+   its own, since a transition's property is `all` until a rule names others: a border or a height
+   would then pass through its old value after each change. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    transition-duration: 0.01ms !important;
+    transition-duration: 0s !important;
   }
 }
 
