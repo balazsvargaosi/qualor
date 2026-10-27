@@ -57,6 +57,10 @@ test('the settings navigation groups its entries and marks the current page', as
   await expect(
     nav.getByRole('group', { name: 'Organization' }).getByRole('link', { name: 'AI', exact: true }),
   ).toHaveAttribute('href', '/settings/ai-review');
+  // The instance's, named for what it sets up: the provider the AI features use.
+  await expect(
+    nav.getByRole('group', { name: 'Instance' }).getByRole('link', { name: 'AI provider' }),
+  ).toHaveAttribute('href', '/settings/ai');
   await nav.getByRole('group', { name: 'Instance' }).getByRole('link', { name: 'Users' }).click();
   await expect(page).toHaveTitle('Users · Qualor');
   await expect(nav.getByRole('link', { name: 'Users' })).toHaveAttribute('aria-current', 'page');
@@ -641,16 +645,4 @@ test('an organization admin adds a member by name, changes the role and removes 
   await remove.getByRole('button', { name: 'Remove' }).click();
   await expect(page.getByRole('status')).toHaveText('dora removed.');
   await expect(dora).toHaveCount(0);
-});
-
-test('the AI settings keep Save and Test in reach while the long form scrolls', async ({
-  page,
-}) => {
-  await page.goto('/settings/ai');
-  for (const name of ['Save', 'Test']) {
-    const button = page.getByRole('button', { name, exact: true });
-    await expect(button).toBeVisible();
-    const box = (await button.boundingBox())!;
-    expect(box.y + box.height, name).toBeLessThanOrEqual(page.viewportSize()!.height);
-  }
 });

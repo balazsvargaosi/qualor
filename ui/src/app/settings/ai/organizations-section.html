@@ -109,7 +109,7 @@
                   type="button"
                   class="btn-quiet"
                   [attr.aria-label]="row.openLabel"
-                  (click)="openPage(row.org)"
+                  (click)="openOrganization.emit(row.org.id)"
                 >
                   {{ texts.open }}
                 </button>

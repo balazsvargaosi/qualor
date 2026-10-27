@@ -79,8 +79,11 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./license-policy.page').then((m) => m.LicensePolicyPage),
   },
   {
+    // The instance's AI provider (spec §3.4): the provider, the organisations that may use it,
+    // the limits, and the data sent, for instance admins. Leaving it with unsaved edits asks first.
     path: 'ai',
-    title: $localize`:@@title.ai:AI assistant`,
+    title: $localize`:@@title.aiProvider:AI provider`,
+    canDeactivate: [unsavedChangesGuard],
     loadComponent: () => import('./ai.page').then((m) => m.AiSettingsPage),
   },
   {

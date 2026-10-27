@@ -97,7 +97,8 @@ export interface TestLine {
 /**
  * A Test's finding about one model as a line that starts with the model, so that it says whom it is
  * about: its connection and whether it calls tools (which AI review needs), or why the call failed.
- * A tool check that could not tell leaves the connection alone.
+ * A tool check that could not tell leaves the connection alone. What the Test suggests (its hint),
+ * the page says once, under the lines.
  */
 export function testLine(found: TestModel): TestLine {
   const { model, latencyMs } = found;
@@ -117,14 +118,6 @@ export function testLine(found: TestModel): TestLine {
         text: $localize`:@@ai.test.modelSupported:${model}:model:: connected in ${latencyMs}:latency: ms · can call tools`,
       };
     case 'not_supported':
-      if (found.hint) {
-        const hint = testHintText(found.hint.code);
-        return {
-          model,
-          tone: 'warn',
-          text: $localize`:@@ai.test.modelNotSupportedHint:${model}:model:: connected in ${latencyMs}:latency: ms · tool calling not supported · ${hint}:hint:`,
-        };
-      }
       return {
         model,
         tone: 'warn',

@@ -9,14 +9,13 @@ import {
   Injector,
   input,
   LOCALE_ID,
+  output,
   signal,
   untracked,
 } from '@angular/core';
-import { Router } from '@angular/router';
 import { Api, ok } from '../../api/api';
 import { problemMessage } from '../../api/errors';
 import type { ItemOf, Organization } from '../../api/types';
-import { OrgContext } from '../../org/org-context';
 import { keepFocus } from '../../shared/focus';
 import { inputValue, isChecked } from '../../shared/forms';
 import { Icon } from '../../shared/icon';
@@ -92,8 +91,8 @@ interface Row {
  *   edit made while the save is on its way stays, unsaved.
  * - The names of the projects never sent are read from the organisation's list when the editor
  *   opens (never every project of the instance); "Add a project" searches the server.
- * - **Open** switches the header's organisation, asking the pages with unsaved changes first, and
- *   goes to its AI page.
+ * - **Open** asks the page to open the organisation's AI page (`openOrganization`): the page
+ *   asks once before it leaves unsaved changes, switches the header's organisation, and goes there.
  *
  * The page reads `dirty` and `dirtyLabel` for its leave guard.
  */
@@ -105,8 +104,6 @@ interface Row {
 })
 export class OrganizationsSection {
   private readonly api = inject(Api);
-  private readonly router = inject(Router);
-  private readonly org = inject(OrgContext);
   private readonly injector = inject(Injector);
   private readonly document = inject(DOCUMENT);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -121,6 +118,8 @@ export class OrganizationsSection {
   /** The automatic fix suggestions are licensed (`llm.auto-fix`). */
   readonly autoFixAvailable = input.required<boolean>();
   readonly saveEntry = input.required<SaveEntry>();
+  /** Open: the organisation whose AI page the person wants, by its id. */
+  readonly openOrganization = output<string>();
   /** The section's name, for the question asked before leaving it with unsaved changes. */
   readonly dirtyLabel = $localize`:@@aiProvider.orgs.title:Organizations`;
 
@@ -471,11 +470,6 @@ export class OrganizationsSection {
     } finally {
       if (generation === this.generation) this.saving.set(false);
     }
-  }
-
-  /** Open: the organisation becomes the header's, once the pages with unsaved changes let it. */
-  protected async openPage(org: Organization): Promise<void> {
-    if (await this.org.switchTo(org.id)) await this.router.navigate(['/settings/ai-review']);
   }
 
   private rowOf(

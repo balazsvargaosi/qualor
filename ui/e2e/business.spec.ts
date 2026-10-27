@@ -131,8 +131,8 @@ test('the Business plan has no portfolio', async ({ page }) => {
 // 4E-3a §2, §4: automatic fix suggestions are Enterprise only (`llm.auto-fix`). The organisation's
 // switch-on and the project's opt-out that enterprise.spec.ts saved are kept but not offered: the
 // organisation's AI page has no section for them, and its status says they are Enterprise; the
-// instance page shows the Enterprise note in place of its controls, and the project's AI panel
-// has no Fixes line.
+// instance page names no fix suggestions among what the organisation's admins switched on, and
+// the project's AI panel has no Fixes line.
 test('the Business plan shows no fix suggestions section, and the status says they are Enterprise', async ({
   page,
 }) => {
@@ -151,12 +151,9 @@ test('the Business plan shows no fix suggestions section, and the status says th
   await expectAccessible(page);
 
   await page.goto('/settings/ai');
-  const block = page
-    .locator('.setting-row[data-key]')
-    .filter({ hasText: 'Default' })
-    .getByRole('group', { name: 'Automatic fix suggestions' });
-  await expect(block).toContainText('Automatic fix suggestions need the Enterprise plan.');
-  await expect(block.getByRole('checkbox')).toHaveCount(0);
+  const row = page.locator('section#organizations tbody tr').filter({ hasText: 'Default' });
+  await expect(row).toBeVisible();
+  await expect(row.locator('td[data-label="Switched on by its admins"]')).toHaveText('—');
 
   await page.goto('/projects');
   await page.getByRole('link', { name: PAYMENTS.name }).click();

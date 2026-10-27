@@ -21,6 +21,10 @@ const HOSTILE_ISSUE_MESSAGE = "Assignment to function parameter 'amount'.";
  * loaded machine that outlasts the default 5 s, so the first check after each ask waits longer.
  */
 const ANSWER = { timeout: 30_000 };
+/** A section's foot after its save: "Saved at 2:05 PM UTC." */
+const SAVED = /^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/;
+/** The Provider line of the AI provider page's Status card. */
+const providerLine = (page: Page) => page.locator('li[data-key="provider"]');
 
 async function openIssue(page: Page, message: string, mergeRequest = false): Promise<void> {
   await page.goto('/projects');
@@ -37,7 +41,7 @@ async function openIssue(page: Page, message: string, mergeRequest = false): Pro
 }
 
 test.describe('AI assistant (llm.md §18)', () => {
-  test('an instance admin sets the key, which never comes back, and Test reaches the provider', async ({
+  test('an instance admin replaces the key, which never comes back, and Save and test reaches the provider', async ({
     page,
   }) => {
     const answers: Promise<string>[] = [];
@@ -47,42 +51,60 @@ test.describe('AI assistant (llm.md §18)', () => {
       }
     });
     await page.goto('/settings/ai');
-    await expect(page).toHaveTitle(/AI assistant/);
-    await expect(page.getByRole('heading', { name: 'AI assistant', level: 2 })).toBeVisible();
-    await expect(page.getByText('On for 1 organisation', { exact: true })).toBeVisible();
-    // The seed pointed it at the fake LLM on loopback, never at a real host.
+    await expect(page).toHaveTitle(/AI provider/);
+    await expect(page.getByRole('heading', { name: 'AI provider', level: 2 })).toBeVisible();
+    // The status first: the seed pointed the provider at the fake LLM on loopback, never at a
+    // real host, and allowed the default organisation.
+    await expect(providerLine(page).locator('.badge')).toHaveText('Connected');
+    await expect(providerLine(page)).toContainText(
+      /OpenAI-compatible at 127\.0\.0\.1:\d+ · 1 model/,
+    );
+    await expect(page.locator('li[data-key="organizations"] .badge')).toHaveText(
+      /^1 of \d+ may use AI$/,
+    );
     await expect(page.getByLabel('Base URL')).toHaveValue(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
-    await expect(page.getByText('An API key is set')).toBeVisible();
-    await expect(page.locator('#ai-key')).toHaveValue('');
+    // A stored key is a state line: no field until Replace.
+    await expect(page.getByText('An API key is set.')).toBeVisible();
+    await expect(page.locator('#ai-key')).toHaveCount(0);
+    await expectAccessible(page);
+    // The connection options, open.
+    const options = page.locator('details#ai-options');
+    await options.locator('summary').click();
+    await expect(options).toHaveAttribute('open', '');
     await expectAccessible(page);
 
-    // The admin types the key again and saves: the field is emptied, the key never shown again.
+    // The admin types the key again and saves: the field is emptied as it is sent, and the key
+    // is never shown again.
+    await page.getByRole('button', { name: 'Replace the key' }).click();
     await page.locator('#ai-key').fill(FAKE_LLM_KEY);
-    await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
-    await expect(page.locator('#ai-key')).toHaveValue('');
+    await page.getByRole('button', { name: 'Save and test' }).click();
+    // The fake model calls the echo tool of the tool-calling check, which AI review needs.
+    await expect(page.locator('#ai-test-models li')).toHaveText(
+      [/^fake-model: connected in \d+ ms · can call tools$/],
+      ANSWER,
+    );
+    await expect(page.locator('#provider .foot-status')).toHaveText(SAVED);
+    await expect(page.locator('#ai-key')).toHaveCount(0);
+    // The server keeps the Test: the status says what it found.
+    await expect(providerLine(page).locator('.st-sub')).toHaveText(
+      /^Tested \w{3} \d{1,2}, \d{4}: the model connects and can call tools\.$/,
+    );
+    await expectAccessible(page);
+
     await page.reload();
-    await expect(page.getByText('An API key is set')).toBeVisible();
-    await expect(page.locator('#ai-key')).toHaveValue('');
+    await expect(page.getByText('An API key is set.')).toBeVisible();
+    await expect(page.locator('#ai-test-models li')).toHaveText([
+      /^fake-model: connected · can call tools$/,
+    ]);
     expect(await page.content()).not.toContain(FAKE_LLM_KEY);
     expect(page.url()).not.toContain(FAKE_LLM_KEY);
     const stored = await page.evaluate(() =>
       JSON.stringify([{ ...localStorage }, { ...sessionStorage }, document.cookie]),
     );
     expect(stored).not.toContain(FAKE_LLM_KEY);
-
-    await page.getByRole('button', { name: 'Test' }).click();
-    // The fake model calls the echo tool of the tool-calling check, which AI review needs.
-    await expect(page.getByRole('status')).toContainText(
-      /^Connected to fake-openai-model in \d+ ms\.\s*Tool calling \(needed by AI review\): supported\s*$/,
-    );
-    await expect(page.locator('#ai-test-tools')).toHaveText(
-      'Tool calling (needed by AI review): supported',
-    );
-    await expectAccessible(page);
     // No answer of the settings API (the save's included) carried the key.
     const bodies = await Promise.all(answers);
-    expect(bodies.length).toBeGreaterThanOrEqual(3);
+    expect(bodies.length).toBeGreaterThanOrEqual(4);
     for (const body of bodies) expect(body).not.toContain(FAKE_LLM_KEY);
   });
 
@@ -93,35 +115,35 @@ test.describe('AI assistant (llm.md §18)', () => {
       await setTierModels(page.request, { strongModel: null, fastModel: null });
     });
 
-    test('an admin sets three models and sees a line per model after Test', async ({ page }) => {
+    test('an admin sets three models under their switch and sees a line per model after Save and test', async ({
+      page,
+    }) => {
+      const tiers = page.getByRole('switch', {
+        name: 'Use a stronger and a faster model for parts of AI review',
+      });
+      const prices = page.getByRole('switch', { name: "Count costs with these models' prices" });
       const strong = page.getByLabel('Strong model', { exact: true });
       const fast = page.getByLabel('Fast model', { exact: true });
-      const strongPrice = page.getByLabel(
-        'Strong model: input price (US dollars per million tokens)',
-      );
-      const fastPrice = page.getByLabel('Fast model: output price (US dollars per million tokens)');
+      const save = page.getByRole('button', { name: 'Save and test' });
       await page.goto('/settings/ai');
-      await expect(page.getByRole('heading', { name: 'AI assistant', level: 2 })).toBeVisible();
-      // The seed's provider has the one model: the tiers are empty, and no price is asked for them.
+      await expect(page.getByRole('heading', { name: 'AI provider', level: 2 })).toBeVisible();
+      // The seed's provider has the one model: the tiers' switch is off, and their fields are not
+      // there.
       await expect(page.getByLabel('Model', { exact: true })).toHaveValue('fake-model');
-      await expect(strong).toHaveValue('');
-      await expect(fast).toHaveValue('');
-      await expect(strongPrice).toHaveCount(0);
-      await expect(fastPrice).toHaveCount(0);
+      await expect(tiers).not.toBeChecked();
+      await expect(strong).toHaveCount(0);
 
+      await tiers.check();
       await strong.fill('fake-strong');
       await fast.fill('fake-fast');
-      // A tier with a model of its own is priced of its own.
-      await expect(strongPrice).toBeVisible();
-      await expect(fastPrice).toBeVisible();
+      // With prices on, each model of its own has its row of prices, named by the model.
+      await prices.check();
+      await expect(page.locator('#provider table.prices tbody tr')).toHaveCount(3);
+      await expect(page.getByLabel('fake-strong: input, US$ per million tokens')).toBeVisible();
       await expectAccessible(page);
-      await page.getByRole('button', { name: 'Save' }).click();
-      await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
-      await page.reload();
-      await expect(strong).toHaveValue('fake-strong');
-      await expect(fast).toHaveValue('fake-fast');
-
-      await page.getByRole('button', { name: 'Test' }).click();
+      // No prices are saved: their switch goes off again.
+      await prices.uncheck();
+      await save.click();
       // The fake model answers all three, and calls the echo tool of each tool-calling check.
       await expect(page.locator('#ai-test-models li')).toHaveText(
         [
@@ -131,19 +153,24 @@ test.describe('AI assistant (llm.md §18)', () => {
         ],
         ANSWER,
       );
-      // A line for each model takes the place of the single connection and its tool calling line.
-      await expect(page.getByRole('status')).not.toContainText('Connected to');
-      await expect(page.locator('#ai-test-tools')).toHaveCount(0);
+      await expect(providerLine(page)).toContainText('· 3 models');
+      await expect(providerLine(page).locator('.st-sub')).toHaveText(
+        /^Tested \w{3} \d{1,2}, \d{4}: all 3 models connect and can call tools\.$/,
+      );
       await expectAccessible(page);
-
-      // Leave the shared e2e database as the seed made it: the one model.
-      await strong.fill('');
-      await fast.fill('');
-      await page.getByRole('button', { name: 'Save' }).click();
-      await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
       await page.reload();
-      await expect(strong).toHaveValue('');
-      await expect(fast).toHaveValue('');
+      await expect(tiers).toBeChecked();
+      await expect(strong).toHaveValue('fake-strong');
+      await expect(fast).toHaveValue('fake-fast');
+
+      // The switch off again leaves the one model, as the seed made it.
+      await tiers.uncheck();
+      await save.click();
+      await expect(page.locator('#ai-test-models li')).toHaveText(
+        [/^fake-model: connected in \d+ ms · can call tools$/],
+        ANSWER,
+      );
+      await expect(providerLine(page)).toContainText('· 1 model');
     });
   });
 

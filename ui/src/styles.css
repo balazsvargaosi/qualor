@@ -1973,6 +1973,16 @@ input.switch[type='checkbox']:focus-visible {
   align-items: center;
   gap: 8px;
 }
+/* An AI page's Status card, then one card per section, 24px apart (spec §7.2). */
+.ai-sections {
+  display: grid;
+  /* A definite column: a section's table or field never widens the page on a phone. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+}
+.ai-sections > * {
+  margin: 0;
+}
 /* The in-page index under a page's head: a row of quiet pill links to its sections. */
 .page-index {
   display: flex;

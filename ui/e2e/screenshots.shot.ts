@@ -149,9 +149,10 @@ test('22 members, 23 project access', async ({ page }) => {
   await shoot(page, '23-project-access');
 });
 
-test('18 AI assistant settings, 19 issue with the AI panel', async ({ page }) => {
+test('18 AI provider settings, 19 issue with the AI panel', async ({ page }) => {
   await page.goto('/settings/ai');
-  await expect(page.getByText('An API key is set')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'AI provider', level: 2 })).toBeVisible();
+  await expect(page.getByText('An API key is set.')).toBeVisible();
   await shoot(page, '18-settings-ai');
   // The eqeqeq issue of merge request !42: the fake LLM (serve.ts) explains, triages and fixes it.
   await page.goto('/projects');

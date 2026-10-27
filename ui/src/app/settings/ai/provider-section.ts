@@ -39,6 +39,7 @@ import {
   reviewingOrganizations,
 } from './consent-impact';
 import type { LlmBody, LlmSettings } from './llm-body';
+import { namesOf } from './names';
 
 type SavedProvider = NonNullable<LlmSettings['provider']>;
 type TestAnswer = ResponseBody<'/api/v0/system/llm/test', 'post'>;
@@ -178,8 +179,6 @@ const DEFAULT_TIMEOUT = 60;
 const ANTHROPIC_URL = 'https://api.anthropic.com';
 /** OpenAI's own host, whose newest models call tools only through the Responses API. */
 const OPENAI_HOST = 'api.openai.com';
-/** How many organisations a sentence names; the others are counted. */
-const NAMED = 3;
 /**
  * A price as people write it: digits grouped in threes by commas, and any decimals after a point;
  * a point with nothing after it ("5.") or before it (".5") reads as the number.
@@ -363,7 +362,10 @@ export class ProviderSection {
     if (reviewing.length === 0) {
       return $localize`:@@aiProvider.url.keyOnly:Changing the address needs the API key again.`;
     }
-    const names = this.namesOf(reviewing.map((o) => o.name));
+    const names = namesOf(
+      reviewing.map((o) => o.name),
+      this.locale,
+    );
     return $localize`:@@aiProvider.url.pauses:Changing the address needs the API key again, and pauses AI review in ${names}:names: until an organization admin confirms the new address.`;
   });
   protected readonly urlDescribedBy = computed(() =>
@@ -504,7 +506,7 @@ export class ProviderSection {
         true,
         visit.answer.models.map((m) => ({
           tier: m.tier,
-          line: testLine({ ...m, hint: null }),
+          line: testLine(m),
           toolCalling: m.toolCalling,
           failed: m.problem !== null,
         })),
@@ -936,7 +938,7 @@ export class ProviderSection {
   private askPause(saved: SavedProvider, next: ConsentInput, names: readonly string[]): void {
     const before = consentFields(saved);
     const after = consentFields(next);
-    const who = this.namesOf(names);
+    const who = namesOf(names, this.locale);
     const wasModels = before.models.join(', ');
     const nowModels = after.models.join(', ');
     this.pause.set({
@@ -949,17 +951,6 @@ export class ProviderSection {
       () => this.pauseDialog()?.nativeElement,
       () => this.pause() !== null,
     );
-  }
-
-  /** Names as the locale lists them; past three, the first three and how many more. */
-  private namesOf(names: readonly string[]): string {
-    if (names.length <= NAMED) {
-      return new Intl.ListFormat(this.locale, { type: 'conjunction' }).format(names);
-    }
-    const shown = new Intl.ListFormat(this.locale, { type: 'unit' }).format(names.slice(0, NAMED));
-    const n = formatWhole(names.length - NAMED, this.locale);
-    const more = $localize`:@@aiProvider.pause.more:and ${n}:n: more`;
-    return `${shown} ${more}`;
   }
 
   /** The draft takes new settings: a field not edited here shows the saved value. */

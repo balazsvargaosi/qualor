@@ -311,32 +311,45 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
   test('an organisation admin switches automatic fix suggestions on in Settings → AI, and a project opts out', async ({
     page,
   }) => {
-    // The instance admin points the assistant at a host under .invalid (RFC 6761): saving contacts
-    // nothing, and no test asks the model. The organisation's block is left as it was, so the save
-    // sends none (it would undo what an organisation admin changes meanwhile).
+    // The instance admin points the provider at a host under .invalid (RFC 6761): the save
+    // contacts nothing, and its Test reaches no model. An organisation's save sends its
+    // switches and exclusions only, never the automatic fix suggestions, which would undo what an
+    // organisation admin changes meanwhile.
     await page.goto('/settings/ai');
-    await expect(page.getByRole('heading', { name: 'AI assistant', level: 2 })).toBeVisible();
-    await page.getByLabel('Kind', { exact: true }).selectOption('openai');
+    await expect(page.getByRole('heading', { name: 'AI provider', level: 2 })).toBeVisible();
+    await expect(page.locator('li[data-key="provider"] .badge')).toHaveText('Not connected');
+    await page.getByRole('radio', { name: /^OpenAI-compatible/ }).check();
     await page.getByLabel('Base URL').fill('https://llm.example.invalid/v1');
     await page.getByLabel('Model', { exact: true }).fill('fake-model');
     await page.locator('#ai-key').fill(['e2e', 'llm', 'key', 'never', 'sent'].join('-'));
-    const row = page.locator('.setting-row[data-key]').filter({ hasText: 'Default' });
-    await row.getByLabel('Enabled', { exact: true }).check();
-    await row.getByLabel('Suggest a fix').check();
-    const block = row.getByRole('group', { name: 'Automatic fix suggestions' });
-    await expect(block.getByLabel('On', { exact: true })).not.toBeChecked();
-    await expect(block.getByLabel('Minimum severity')).toHaveValue('high');
-    await expect(block.getByLabel('At most per analysis')).toHaveValue('10');
+    await page.getByRole('button', { name: 'Save and test' }).click();
+    await expect(page.locator('#provider .foot-status')).toHaveText(
+      /^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/,
+    );
+    // Once a provider is saved, the organisations: Default may use AI, with Suggest a fix.
+    const organizations = page.locator('section#organizations');
+    await organizations
+      .locator('tbody tr')
+      .filter({ hasText: 'Default' })
+      .getByRole('button', { name: 'Edit' })
+      .click();
+    const editor = page.getByRole('region', { name: 'Edit Default' });
+    await editor.getByRole('switch', { name: 'Allow AI in Default' }).check();
+    await editor.getByRole('switch', { name: 'Suggest a fix' }).check();
     const put = page.waitForRequest(
       (r) => r.method() === 'PUT' && new URL(r.url()).pathname === '/api/v0/system/llm',
     );
-    await page.getByRole('button', { name: 'Save' }).click();
+    await editor.getByRole('button', { name: 'Save Default' }).click();
     const sent = (await put).postDataJSON() as { organizations: Record<string, object> };
+    expect(Object.keys(sent.organizations)).not.toHaveLength(0);
     for (const organization of Object.values(sent.organizations)) {
       expect(organization).not.toHaveProperty('autoFix');
       expect(organization).not.toHaveProperty('autoFixDisabledProjectIds');
     }
-    await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
+    await expect(organizations.locator('.orgs-status')).toHaveText('Default saved.');
+    await expect(page.locator('li[data-key="organizations"] .badge')).toHaveText(
+      /^1 of \d+ may use AI$/,
+    );
     await expectAccessible(page);
 
     // Settings → AI, the organisation's page: its section, where the old address leads.
@@ -403,15 +416,14 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
       `Opted out by their project admins: ${PAYMENTS.name}.`,
     );
 
-    // The instance admin's screen shows what the organisation admin chose.
+    // The instance admin's screen shows, read-only, what the organisation admin switched on.
     await page.goto('/settings/ai');
-    const saved = page
-      .locator('.setting-row[data-key]')
-      .filter({ hasText: 'Default' })
-      .getByRole('group', { name: 'Automatic fix suggestions' });
-    await expect(saved.getByLabel('On', { exact: true })).toBeChecked();
-    await expect(saved.getByLabel('Minimum severity')).toHaveValue('medium');
-    await expect(saved.getByLabel('At most per analysis')).toHaveValue('5');
+    await expect(
+      page
+        .locator('section#organizations tbody tr')
+        .filter({ hasText: 'Default' })
+        .locator('td[data-label="Switched on by its admins"]'),
+    ).toHaveText('Fix suggestions');
   });
 });
 

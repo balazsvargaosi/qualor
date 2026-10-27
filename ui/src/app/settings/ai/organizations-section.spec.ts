@@ -16,7 +16,6 @@ import { ApiError } from '../../api/errors';
 import type { ItemOf, Organization } from '../../api/types';
 import { SessionStore } from '../../auth/session';
 import { OrgContext } from '../../org/org-context';
-import { LeaveGuards } from '../../shared/unsaved-changes';
 import { type OrgEntry, OrganizationsSection, type SaveEntry } from './organizations-section';
 
 type Project = ItemOf<'/api/v0/projects'>;
@@ -719,26 +718,18 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     // 120 rendered rows take about 3 s on a busy machine, near the default 5 s.
   }, 20_000);
 
-  it('opens an organisation’s AI page in the header’s organisation', async () => {
+  it('asks the page to open an organisation’s AI page, and changes nothing itself', async () => {
     setup();
-    const { fixture, root } = await render();
-    const org = TestBed.inject(OrgContext);
-    const router = TestBed.inject(Router);
-    expect(org.currentId()).toBe(ACME);
-
-    // A page with unsaved changes keeps the person on Stay: the organisation and the page stay.
-    let leave = false;
-    TestBed.runInInjectionContext(() =>
-      TestBed.inject(LeaveGuards).register({ canLeave: () => leave }),
-    );
-    await click(fixture, button(row(root, 'Research'), 'Open'));
-    expect(org.currentId()).toBe(ACME);
-    expect(router.url).toBe('/');
-
-    leave = true;
-    await click(fixture, button(row(root, 'Research'), 'Open'));
-    expect(org.currentId()).toBe(RESEARCH);
-    expect(router.url).toBe('/settings/ai-review');
+    const { fixture, root, section } = await render();
+    const opened: string[] = [];
+    section.openOrganization.subscribe((id) => opened.push(id));
+    const open = button(row(root, 'Research'), 'Open')!;
+    expect(open.getAttribute('aria-label')).toBe("Open Research's AI page");
+    await click(fixture, open);
+    expect(opened).toEqual([RESEARCH]);
+    // The header's organisation and the address are the page's to change, once it may leave.
+    expect(TestBed.inject(OrgContext).currentId()).toBe(ACME);
+    expect(TestBed.inject(Router).url).toBe('/');
   });
 
   it('is dirty while its editor has changes', async () => {

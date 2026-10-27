@@ -586,7 +586,7 @@ describe('SettingsPage navigation for members and enterprise entries (rbac-audit
     expect([...(instance?.querySelectorAll('a') ?? [])].map((a) => a.textContent?.trim())).toEqual([
       'Organizations',
       'Users',
-      'AI assistant',
+      'AI provider',
       'Email',
       'MCP',
       'Licence',

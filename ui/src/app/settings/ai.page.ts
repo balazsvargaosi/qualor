@@ -1,610 +1,272 @@
-import { DOCUMENT } from '@angular/common';
 import {
-  afterNextRender,
+  afterRenderEffect,
   Component,
   computed,
-  DestroyRef,
+  DOCUMENT,
   effect,
   ElementRef,
   inject,
-  Injector,
-  resource,
+  LOCALE_ID,
   signal,
   untracked,
   viewChild,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Api, ok } from '../api/api';
-import { fieldErrors, problemMessage } from '../api/errors';
-import type { ItemOf, Organization, RequestBody, ResponseBody } from '../api/types';
+import { problemMessage } from '../api/errors';
+import type { Organization } from '../api/types';
 import { SessionStore } from '../auth/session';
-import { Meter } from '../charts/meter';
-import { label } from '../i18n/labels';
 import { OrgContext } from '../org/org-context';
-import { inputValue, isChecked } from '../shared/forms';
+import { formatDate } from '../shared/date-time.pipe';
+import { LeaveConfirm } from '../shared/leave-confirm';
+import { formatWhole } from '../shared/numbers';
+import { type StatusLine, StatusList } from '../shared/status-list';
+import { type LeaveGuarded, LeaveGuards, whileDirty } from '../shared/unsaved-changes';
 import { SystemInfo } from '../shell/system-info';
-import {
-  settingsProblemText,
-  testHintText,
-  type TestHintCode,
-  type TestLine,
-  testLine,
-} from './ai-text';
-import { defaultOutputLimitField } from './ai/provider-section';
-import {
-  AUTO_FIX_FEATURE,
-  AUTO_FIX_SEVERITIES,
-  type AutoFix,
-  type AutoFixSeverity,
-  autoFixNotLicensed,
-  DEFAULT_AUTO_FIX,
-  isAutoFixSeverity,
-  MAX_AUTO_FIX_PER_ANALYSIS,
-  maxPerAnalysisRefusal,
-  parseMaxPerAnalysis,
-} from './auto-fix';
+import { consentFields } from './ai/consent-impact';
+import { DataSection, type SaveData } from './ai/data-section';
+import { LimitsSection, type SaveLimits } from './ai/limits-section';
+import { bodyFrom, type LlmSettings, type SectionChange } from './ai/llm-body';
+import { namesOf } from './ai/names';
+import { OrganizationsSection, type SaveEntry } from './ai/organizations-section';
+import { ProviderSection, type SaveProvider } from './ai/provider-section';
+import { AUTO_FIX_FEATURE } from './auto-fix';
 
-type Settings = ResponseBody<'/api/v0/system/llm', 'get'>;
-type SettingsBody = RequestBody<'/api/v0/system/llm', 'put'>;
-/**
- * What this form edits of an organisation, besides its automatic fix suggestions. Organisation and
- * project admins change `autoFix` and `autoFixDisabledProjectIds` meanwhile, and the server keeps
- * the stored values of the fields a save leaves out: the form sends an organisation's `autoFix`
- * only when it was edited here (ruling R1), and never `autoFixDisabledProjectIds`.
- */
-type OrgSettings = Pick<
-  Settings['organizations'][string],
-  'enabled' | 'features' | 'excludedProjectIds'
->;
-type Feature = keyof OrgSettings['features'];
-type Kind = '' | 'openai' | 'anthropic';
-type Project = ItemOf<'/api/v0/projects'>;
-/** An organisation's automatic fix suggestions as the form holds them: the maximum as typed. */
-interface AutoFixDraft {
-  enabled: boolean;
-  minSeverity: AutoFixSeverity;
-  maxPerAnalysis: string;
-}
-/** A project an organisation may exclude: a listed one, or an excluded id the list did not have. */
-interface ExcludableProject {
-  id: string;
-  name: string | null;
-}
-
-/** The form's fields a refusal can point at; each is the input `#ai-<field>`. */
-const FIELDS = [
-  'kind',
-  'url',
-  'model',
-  'strong-model',
-  'fast-model',
-  'key',
-  'workspace-id',
-  'timeout',
-  'temperature',
-  'exclude',
-  'budget-explain',
-  'budget-triage',
-  'budget-fix',
-  'budget-tokens',
-  'budget-cost',
-  'budget-user',
-  'budget-review',
-  'price-input',
-  'price-output',
-  'price-strong-input',
-  'price-strong-output',
-  'price-fast-input',
-  'price-fast-output',
-  'retention',
-] as const;
-type Field = (typeof FIELDS)[number];
-
-/** The server's 422 paths (llm.md §16) and the field each one refuses. */
-const SERVER_PATHS: [string, Field][] = [
-  ['body.provider.kind', 'kind'],
-  ['body.provider.baseUrl', 'url'],
-  ['body.provider.model', 'model'],
-  ['body.provider.strongModel', 'strong-model'],
-  ['body.provider.fastModel', 'fast-model'],
-  ['body.provider.apiKey', 'key'],
-  ['body.provider.workspaceId', 'workspace-id'],
-  ['body.provider.timeoutSeconds', 'timeout'],
-  ['body.provider.temperature', 'temperature'],
-  ['body.excludePaths', 'exclude'],
-  ['body.budgets.explainPerDay', 'budget-explain'],
-  ['body.budgets.triagePerDay', 'budget-triage'],
-  ['body.budgets.fixPerDay', 'budget-fix'],
-  ['body.budgets.tokensPerDay', 'budget-tokens'],
-  ['body.budgets.costPerDayUsd', 'budget-cost'],
-  ['body.budgets.perUserPerHour', 'budget-user'],
-  ['body.budgets.reviewTokensPerOrganizationPerDay', 'budget-review'],
-  ['body.pricing.inputUsdPerMTok', 'price-input'],
-  ['body.pricing.outputUsdPerMTok', 'price-output'],
-  ['body.pricing.strong.inputUsdPerMTok', 'price-strong-input'],
-  ['body.pricing.strong.outputUsdPerMTok', 'price-strong-output'],
-  // A tier's prices missing for its own model ("Give … prices too"). The server's other refusal
-  // there, a pair for a tier without a model of its own ("Set … first"), cannot come from this
-  // page: it sends no pair for such a tier (`pricingBody`).
-  ['body.pricing.strong', 'price-strong-input'],
-  ['body.pricing.fast.inputUsdPerMTok', 'price-fast-input'],
-  ['body.pricing.fast.outputUsdPerMTok', 'price-fast-output'],
-  ['body.pricing.fast', 'price-fast-input'],
-  ['body.pricing', 'price-input'],
-  ['body.promptRetentionDays', 'retention'],
-];
-
-/** A 422 path of an organisation's automatic fix block: its id, then the field. */
-const AUTO_FIX_PATH = /^body\.organizations\.([^.]+)\.autoFix(?:\.(\w+))?$/;
-
-/** llm.md §3.2: at most 100 excluded path globs. */
-const MAX_EXCLUDE_PATHS = 100;
-/** A model's name as the provider spells it (the server's `MODEL_PATTERN`). */
-const MODEL_NAME = /^[A-Za-z0-9._:/@+-]{1,200}$/;
-/** An Anthropic workspace as the console names it (the server's `WORKSPACE_ID_PATTERN`). */
-const WORKSPACE_ID = /^wrkspc_[A-Za-z0-9]{1,64}$/;
-/** The most a temperature may be: OpenAI-compatible providers only, Anthropic's models take none. */
-const MAX_TEMPERATURE = 2;
-/** The organisations an instance admin sees (ruling R11), read page by page up to this bound. */
+/** The organisations an instance admin sees, read page by page up to this bound. */
 const ORG_PAGES = 10;
-/** The projects offered for exclusion (all of the instance's), read page by page up to this bound. */
-const PROJECT_PAGES = 20;
+const ORG_PAGE_SIZE = 100;
+
+/** A section on the page: whether it has unsaved changes, and its name for the question. */
+interface Guarded {
+  dirty(): boolean;
+  readonly dirtyLabel: string;
+}
 
 /**
- * The AI assistant (llm.md §3, §18), for instance admins: the one provider of the instance (its
- * kind, address, model, the optional models of AI review's strong and fast tiers, and options, and
- * an API key that is write-only: read from its field once at a submission, emptied at once whatever
- * happens next, never kept in the page's state, never shown), each organisation's enablement and
- * features and its automatic fix suggestions (4E-3a §4: the Enterprise note in place of them
- * without `llm.auto-fix`), the excluded paths, the budgets (the fix budget has no edition ceiling,
- * 6I D10; the ceiling on AI review's tokens per organisation and day, which every save sends back
- * because the server clears one that is left out, 6I-2), prices (the model's, and a pair for each
- * tier that has a model of its own), prompt storage, and a Test of the saved provider's models.
- * Refusals and test problems are shown in the page's own words (plan 1F ruling Y3).
+ * Settings → AI provider (spec §3.4), for instance admins: the one provider the instance's AI
+ * features use, which organisations may use it, what they may spend, and what leaves the server.
  *
- * Step 8 of the redesign (spec §7.8): today's use of the current organisation against its budgets
- * as meters (`GET /organizations/{id}/ai`; a failed read leaves an alert in its panel), then the
- * settings in setting rows, panel by panel; the fields keep their ids.
+ * - **Status** first, computed from what is saved (`instanceStatusLines`).
+ * - **Provider** (`q-ai-provider-section`), then, once a provider is saved, **Organizations**,
+ *   **Limits** and **Data and privacy**, with an index under the head that leads to them; before
+ *   that, one line names them.
+ * - Each section saves on its own. The `PUT` replaces the whole settings, so a save sends the
+ *   settings as last saved with that section's change (`bodyFrom`), and the answer becomes the
+ *   settings every section is given; a section with unsaved changes keeps them. Saves go one at a
+ *   time: each is built on the answer to the one before, so none undoes another.
+ * - The page reads every organisation (ten pages of a hundred), never every project: the status
+ *   counts them, and the provider's question before a change names those it pauses.
+ *
+ * Leaving it with unsaved changes in any section asks first, once, naming them: Open of an
+ * organisation, which switches the header's organisation and leaves, asks once for both.
  */
 @Component({
   selector: 'q-ai-settings-page',
-  imports: [Meter, RouterLink],
+  imports: [
+    DataSection,
+    LeaveConfirm,
+    LimitsSection,
+    OrganizationsSection,
+    ProviderSection,
+    RouterLink,
+    StatusList,
+  ],
+  // Its parts are the shared ones of styles.css (.settings-head, .page-index, .ai-sections).
   templateUrl: './ai.page.html',
-  styleUrl: './ai.page.css',
 })
-export class AiSettingsPage {
+export class AiSettingsPage implements LeaveGuarded {
   private readonly api = inject(Api);
-  private readonly injector = inject(Injector);
+  private readonly router = inject(Router);
   private readonly document = inject(DOCUMENT);
-  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly element = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly locale = inject(LOCALE_ID);
   private readonly session = inject(SessionStore);
   private readonly info = inject(SystemInfo);
-  protected readonly org = inject(OrgContext);
+  private readonly org = inject(OrgContext);
+  private readonly fragment = toSignal(inject(ActivatedRoute).fragment, { initialValue: null });
+
   protected readonly instanceAdmin = computed(() => this.session.user()?.isInstanceAdmin === true);
-  /** Today's use and the budgets of the organisation chosen in the header (llm.md §12.1). */
-  protected readonly today = resource({
-    params: () => (this.instanceAdmin() ? (this.org.currentId() ?? undefined) : undefined),
-    loader: ({ params }) =>
-      ok(
-        this.api.client.GET('/api/v0/organizations/{id}/ai', { params: { path: { id: params } } }),
-      ),
-  });
-  protected readonly todayValue = computed(() =>
-    this.today.hasValue() ? this.today.value() : null,
-  );
-  /** Whether today's token or cost budget is spent: every feature waits then, not only one. */
-  protected readonly budgetHold = computed(() => {
-    const t = this.todayValue();
-    if (!t?.enabled) return false;
-    const { tokensPerDay, costPerDayUsd } = t.budgets;
-    const cost = t.usage.costUsd;
-    // A budget of 0 allows none (its meter says so): nothing waits for midnight then.
-    return (
-      (tokensPerDay !== null && tokensPerDay > 0 && t.usage.tokens >= tokensPerDay) ||
-      (costPerDayUsd !== null && costPerDayUsd > 0 && cost !== null && cost >= costPerDayUsd)
-    );
-  });
-
-  protected readonly settings = signal<Settings | null>(null);
-  protected readonly organizations = signal<Organization[]>([]);
-  /** Each organisation's projects, by organisation id. */
-  protected readonly projects = signal<Record<string, Project[]>>({});
+  /** The settings as the server last answered: what the status says and the sections are given. */
+  protected readonly saved = signal<LlmSettings | null>(null);
+  /** Every organisation, in the server's order. */
+  protected readonly organizations = signal<readonly Organization[]>([]);
   protected readonly loadError = signal<string | null>(null);
-
-  protected readonly kind = signal<Kind>('');
-  protected readonly url = signal('');
-  protected readonly model = signal('');
-  protected readonly strongModel = signal('');
-  protected readonly fastModel = signal('');
-  /** The API an OpenAI-compatible provider is asked through (the server's `api`). */
-  protected readonly openAiApi = signal<'chat_completions' | 'responses'>('chat_completions');
-  protected readonly auth = signal<'bearer' | 'api-key'>('bearer');
-  protected readonly jsonMode = signal<'json_object' | 'none'>('json_object');
-  protected readonly maxTokensField = signal<'max_tokens' | 'max_completion_tokens'>('max_tokens');
-  /** Set once the admin picks the output limit field; until then the base URL's host decides. */
-  private maxTokensFieldChosen = false;
-  protected readonly workspaceId = signal('');
-  protected readonly timeout = signal('60');
-  protected readonly temperature = signal('');
-  protected readonly removeKey = signal(false);
-  protected readonly orgSettings = signal<Record<string, OrgSettings>>({});
-  protected readonly exclude = signal('');
-  protected readonly budgets = signal<Record<string, string>>({});
-  protected readonly priceInput = signal('');
-  protected readonly priceOutput = signal('');
-  protected readonly priceStrongInput = signal('');
-  protected readonly priceStrongOutput = signal('');
-  protected readonly priceFastInput = signal('');
-  protected readonly priceFastOutput = signal('');
-  protected readonly storePrompts = signal(false);
-  protected readonly retention = signal('7');
-
-  /** Each organisation's automatic fix suggestions (4E-3a §2), stored or as edited. */
-  protected readonly autoFix = signal<Record<string, AutoFixDraft>>({});
-  /** The blocks as last loaded or saved: a save sends only those that differ (ruling R1). */
-  private loadedAutoFix: Readonly<Record<string, AutoFixDraft>> = {};
-  /** A refused automatic fix block, by organisation id. */
-  protected readonly autoFixErrors = signal<Record<string, string>>({});
-  /** The enterprise feature `llm.auto-fix` is active: else the note replaces the controls. */
+  protected readonly organizationsFailed = signal(false);
+  /** The automatic fix suggestions are licensed (`llm.auto-fix`). */
   protected readonly autoFixAvailable = computed(() =>
     this.info.features().includes(AUTO_FIX_FEATURE),
   );
-  protected readonly autoFixNotLicensed = autoFixNotLicensed();
-  protected readonly severities = AUTO_FIX_SEVERITIES;
-  protected readonly maxAutoFix = MAX_AUTO_FIX_PER_ANALYSIS;
-
-  protected readonly errors = signal<Partial<Record<Field, string>>>({});
-  protected readonly announcement = signal<string | null>(null);
-  /**
-   * What the last Test found out about tool calling, which AI review needs; null while it is not
-   * known (no Test yet, a Test that failed, or a check that could not tell).
-   */
-  protected readonly toolCalling = signal<'supported' | 'not_supported' | null>(null);
-  /**
-   * What the last Test suggests changing, when it can tell: the model takes tools only through the
-   * Responses API (asked through Chat Completions). Null: nothing to suggest. It is shown with the
-   * tool calling it explains, and a Test sets both.
-   */
-  protected readonly toolsHint = signal<TestHintCode | null>(null);
-  protected readonly useResponsesHint = testHintText('USE_RESPONSES_API');
-  /**
-   * What the last Test found out about each model, one line per model, when the provider has more
-   * than one; empty otherwise (a single model is shown as the connection and its tool calling).
-   */
-  protected readonly testLines = signal<TestLine[]>([]);
-  protected readonly error = signal<string | null>(null);
-  protected readonly busy = signal(false);
-
-  protected readonly provider = computed(() => this.settings()?.provider ?? null);
-  /**
-   * The Responses API is chosen for an OpenAI-compatible provider: its limit is always
-   * `max_output_tokens`, so the settings' output limit field is not shown. The choice is the OpenAI
-   * kind's alone.
-   */
-  protected readonly responsesChosen = computed(
-    () => this.kind() === 'openai' && this.openAiApi() === 'responses',
-  );
-  /**
-   * A tier's model as typed, when it has one of its own: only such a tier has prices of its own, so
-   * only its price fields are shown. With the kind None there is no provider and so no model of a
-   * tier: no price of a tier is shown or sent, which the server would refuse.
-   */
-  protected readonly strongOwn = computed(() => this.ownModelOf(this.strongModel()));
-  protected readonly fastOwn = computed(() => this.ownModelOf(this.fastModel()));
-  protected readonly enabledCount = computed(
-    () => Object.values(this.settings()?.organizations ?? {}).filter((o) => o.enabled).length,
-  );
-  /** The host the data would go to: the address typed, else the saved one. */
-  protected readonly targetHost = computed(() => {
-    for (const raw of [this.url(), this.provider()?.baseUrl ?? '']) {
-      try {
-        return new URL(raw.trim()).host;
-      } catch {
-        // Not a URL (yet): try the saved one.
-      }
-    }
-    return null;
+  /** The host the data go to: the saved provider's. */
+  protected readonly providerHost = computed(() => {
+    const provider = this.saved()?.provider;
+    return provider ? consentFields(provider).host : null;
   });
+  protected readonly statusLines = computed(() => {
+    const settings = this.saved();
+    return settings === null
+      ? []
+      : instanceStatusLines(settings, this.organizations(), this.locale);
+  });
+  /** The sections, in the page's order, as the index leads to them. */
+  protected readonly index: readonly { id: string; label: string }[] = [
+    { id: 'provider', label: $localize`:@@aiProvider.provider.title:Provider` },
+    { id: 'organizations', label: $localize`:@@aiProvider.orgs.title:Organizations` },
+    { id: 'limits', label: $localize`:@@aiProvider.limits.title:Limits` },
+    { id: 'data', label: $localize`:@@aiProvider.data.title:Data and privacy` },
+  ];
 
-  private readonly heading = viewChild<ElementRef<HTMLElement>>('heading');
-  private readonly keyField = viewChild<ElementRef<HTMLInputElement>>('keyField');
+  /** Stores the provider and its prices. */
+  readonly saveProvider: SaveProvider = (change) =>
+    this.put({ section: 'provider', provider: change.provider, pricing: change.pricing });
+  /** Stores one organisation's entry. */
+  readonly saveEntry: SaveEntry = async (id, entry) => {
+    await this.put({ section: 'organization', id, entry });
+  };
+  readonly saveLimits: SaveLimits = (budgets) => this.put({ section: 'limits', budgets });
+  readonly saveData: SaveData = (data) => this.put({ section: 'data', ...data });
+
+  private readonly providerSection = viewChild(ProviderSection);
+  private readonly organizationsSection = viewChild(OrganizationsSection);
+  private readonly limitsSection = viewChild(LimitsSection);
+  private readonly dataSection = viewChild(DataSection);
+  private readonly leaveConfirm = viewChild.required(LeaveConfirm);
+
+  /** The sections with unsaved changes, by their headings, in the page's order. */
+  private readonly unsavedSections = computed(() => {
+    const sections: (Guarded | undefined)[] = [
+      this.providerSection(),
+      this.organizationsSection(),
+      this.limitsSection(),
+      this.dataSection(),
+    ];
+    return sections.flatMap((section) => (section?.dirty() ? [section.dirtyLabel] : []));
+  });
+  /** The last request to `/system/llm`, settled: the next waits for it. */
+  private queue: Promise<unknown> = Promise.resolve();
+  /** Open was confirmed: the switch of the organisation and the navigation ask nothing more. */
+  private leaving = false;
+  /** The section the address named was scrolled to, or the index was used: not again. */
+  private revealed = false;
 
   constructor() {
+    whileDirty(() => this.unsavedSections().length > 0);
+    // Open switches the header's organisation, which asks the pages on screen first.
+    inject(LeaveGuards).register(this);
     effect(() => {
       const admin = this.instanceAdmin();
       untracked(() => {
         if (admin) void this.load();
       });
     });
-    // Nothing typed into the key field outlives the page.
-    inject(DestroyRef).onDestroy(() => this.emptyKey());
+    // An address that names a section: scroll to it once it has rendered.
+    afterRenderEffect(() => {
+      const fragment = this.fragment();
+      if (this.revealed || fragment === null || this.saved() === null) return;
+      if (this.reveal(fragment)) this.revealed = true;
+    });
   }
 
-  /** The tier's model as the server counts it, none while the kind is None. */
-  private ownModelOf(tier: string): string | null {
-    return this.kind() === '' ? null : ownModel(this.model(), tier);
-  }
-
-  protected set(field: Field, target: { set(value: string): void }, event: Event): void {
-    target.set(inputValue(event));
-    this.clearError(field);
-  }
-
-  protected setKind(event: Event): void {
-    const value = inputValue(event);
-    this.kind.set(value === 'openai' || value === 'anthropic' ? value : '');
-    this.clearError('kind');
-  }
-
-  protected setApi(event: Event): void {
-    this.openAiApi.set(inputValue(event) === 'responses' ? 'responses' : 'chat_completions');
-  }
-
-  protected setAuth(event: Event): void {
-    this.auth.set(inputValue(event) === 'api-key' ? 'api-key' : 'bearer');
-  }
-
-  protected setJsonMode(event: Event): void {
-    this.jsonMode.set(inputValue(event) === 'none' ? 'none' : 'json_object');
-  }
-
-  protected setMaxTokensField(event: Event): void {
-    this.maxTokensFieldChosen = true;
-    this.maxTokensField.set(
-      inputValue(event) === 'max_completion_tokens' ? 'max_completion_tokens' : 'max_tokens',
-    );
+  /** Leaving with unsaved changes asks first (the route's `canDeactivate`), naming their sections. */
+  canLeave(): boolean | Promise<boolean> {
+    if (this.leaving) return true;
+    const sections = this.unsavedSections();
+    return sections.length > 0 ? this.leaveConfirm().ask(sections) : true;
   }
 
   /**
-   * The base URL, and with it the output limit field's default when the host changes kind (an
-   * OpenAI host or another server) and the admin has not picked the field on this page.
+   * Open of an organisation: asks once, when changes are unsaved, then makes the organisation the
+   * header's and goes to its AI page; neither the switch nor the navigation asks again.
    */
-  protected setUrl(event: Event): void {
-    const before = defaultOutputLimitField(this.url());
-    this.set('url', this.url, event);
-    const after = defaultOutputLimitField(this.url());
-    if (!this.maxTokensFieldChosen && after !== before) this.maxTokensField.set(after);
-  }
-
-  protected setBudget(name: string, field: Field, event: Event): void {
-    const value = inputValue(event);
-    this.budgets.update((all) => ({ ...all, [name]: value }));
-    this.clearError(field);
-  }
-
-  protected budget(name: string): string {
-    return this.budgets()[name] ?? '';
-  }
-
-  protected orgOf(id: string): OrgSettings {
-    return (
-      this.orgSettings()[id] ?? {
-        enabled: false,
-        features: { explain: false, triage: false, fix: false },
-        excludedProjectIds: [],
+  protected async openOrganization(organizationId: string): Promise<void> {
+    if (!(await this.canLeave())) return;
+    this.leaving = true;
+    try {
+      if (await this.org.switchTo(organizationId)) {
+        await this.router.navigate(['/settings/ai-review']);
       }
-    );
+    } finally {
+      this.leaving = false;
+    }
   }
 
-  protected setOrgEnabled(id: string, event: Event): void {
-    const enabled = isChecked(event);
-    this.orgSettings.update((all) => ({ ...all, [id]: { ...this.orgOf(id), enabled } }));
-  }
-
-  protected setOrgFeature(id: string, feature: Feature, event: Event): void {
-    const on = isChecked(event);
-    this.orgSettings.update((all) => {
-      const current = this.orgOf(id);
-      return { ...all, [id]: { ...current, features: { ...current.features, [feature]: on } } };
-    });
-  }
-
-  /**
-   * The projects an organisation's "Excluded projects" offers: its own, then any excluded id the
-   * project list did not include (past the list's bound), so that it too can be removed.
-   */
-  protected excludable(orgId: string): ExcludableProject[] {
-    const listed = this.projects()[orgId] ?? [];
-    const known = new Set(listed.map((p) => p.id));
-    return [
-      ...listed.map((p) => ({ id: p.id, name: p.name })),
-      ...this.orgOf(orgId)
-        .excludedProjectIds.filter((id) => !known.has(id))
-        .map((id) => ({ id, name: null })),
-    ];
-  }
-
-  protected excludedCount(orgId: string): number {
-    return this.orgOf(orgId).excludedProjectIds.length;
-  }
-
-  protected isExcluded(orgId: string, projectId: string): boolean {
-    return this.orgOf(orgId).excludedProjectIds.includes(projectId);
-  }
-
-  protected setExcluded(orgId: string, projectId: string, event: Event): void {
-    const excluded = isChecked(event);
-    this.orgSettings.update((all) => {
-      const current = this.orgOf(orgId);
-      const others = current.excludedProjectIds.filter((id) => id !== projectId);
-      return {
-        ...all,
-        [orgId]: { ...current, excludedProjectIds: excluded ? [...others, projectId] : others },
-      };
-    });
-  }
-
-  protected autoFixOf(id: string): AutoFixDraft {
-    return this.autoFix()[id] ?? draftOf(DEFAULT_AUTO_FIX);
-  }
-
-  protected severityLabel(severity: AutoFixSeverity): string {
-    return label('severity', severity);
-  }
-
-  protected setAutoFixEnabled(id: string, event: Event): void {
-    this.editAutoFix(id, { enabled: isChecked(event) });
-  }
-
-  protected setAutoFixSeverity(id: string, event: Event): void {
-    const value = inputValue(event);
-    if (isAutoFixSeverity(value)) this.editAutoFix(id, { minSeverity: value });
-  }
-
-  protected setAutoFixMax(id: string, event: Event): void {
-    this.editAutoFix(id, { maxPerAnalysis: inputValue(event) });
-  }
-
-  protected autoFixError(id: string): string | null {
-    return this.autoFixErrors()[id] ?? null;
-  }
-
-  private editAutoFix(id: string, change: Partial<AutoFixDraft>): void {
-    this.autoFix.update((all) => ({ ...all, [id]: { ...this.autoFixOf(id), ...change } }));
-    if (this.autoFixError(id) === null) return;
-    this.autoFixErrors.update((all) =>
-      Object.fromEntries(Object.entries(all).filter(([key]) => key !== id)),
-    );
+  /** A status line's action: Test again, Manage the organisations, Enter prices. */
+  protected onAct(id: string): void {
+    switch (id) {
+      case 'test':
+        void this.providerSection()?.test();
+        return;
+      case 'manage':
+        this.reveal('organizations');
+        return;
+      case 'prices':
+        // The prices' switch, in the Provider section.
+        this.reveal('provider');
+        this.document.getElementById('ai-prices')?.focus();
+        return;
+    }
   }
 
   /**
-   * Whether the organisation's block was edited here: it differs from what was loaded or saved
-   * (the default for an organisation the settings did not hold). Only then does a save send it.
-   * The maximum compares as a number ("010" is 10); one that is not a number from 1 to 25 counts
-   * as edited, so the save refuses it.
+   * An index link's plain click: its `routerLink` puts the section in the address, and this
+   * scrolls to it and focuses its heading. A click that opens the link elsewhere (the middle
+   * button, Ctrl, ⌘ or Shift) is the browser's, and leaves this page as it is.
    */
-  private autoFixEdited(id: string): boolean {
-    const draft = this.autoFixOf(id);
-    const loaded = this.loadedAutoFix[id] ?? draftOf(DEFAULT_AUTO_FIX);
-    const max = parseMaxPerAnalysis(draft.maxPerAnalysis);
-    return (
-      draft.enabled !== loaded.enabled ||
-      draft.minSeverity !== loaded.minSeverity ||
-      max === null ||
-      max !== Number(loaded.maxPerAnalysis)
-    );
-  }
-
-  protected setRemoveKey(event: Event): void {
-    this.removeKey.set(isChecked(event));
-    this.clearError('key');
-  }
-
-  protected setStorePrompts(event: Event): void {
-    this.storePrompts.set(isChecked(event));
-  }
-
-  protected clearError(field: Field): void {
-    if (this.errors()[field] === undefined) return;
-    this.errors.update((all) =>
-      Object.fromEntries(Object.entries(all).filter(([key]) => key !== field)),
-    );
-  }
-
-  protected fieldError(field: Field): string | null {
-    return this.errors()[field] ?? null;
-  }
-
-  protected async save(event: Event): Promise<void> {
-    event.preventDefault();
-    // The key is read once and its field emptied at once, before any check or request: whatever
-    // happens next (an ignored submit, a refusal here, a 422, a network error), it never stays.
-    const apiKey = this.keyField()?.nativeElement.value ?? '';
-    this.emptyKey();
-    if (this.busy() || this.settings() === null) return;
-    const errors: Partial<Record<Field, string>> = {};
-    const autoFixErrors: Record<string, string> = {};
-    const body = this.body(apiKey, errors, autoFixErrors);
-    this.errors.set(errors);
-    this.autoFixErrors.set(autoFixErrors);
-    if (!body) {
-      this.focusFirstInvalid();
+  protected go(id: string, event: MouseEvent): void {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
       return;
     }
-    await this.run(
-      async () => {
-        const saved = await ok(this.api.client.PUT('/api/v0/system/llm', { body }));
-        this.fill(saved);
-        // Budgets and the organisation's switch may have changed: the meters read them again.
-        this.today.reload();
-        this.announcement.set(
-          $localize`:@@ai.settings.saved:The AI assistant settings were saved.`,
-        );
-      },
-      (err) => {
-        const fields = fieldErrors(err);
-        const refused: Partial<Record<Field, string>> = {};
-        const autoFixRefused: Record<string, string> = {};
-        for (const path of Object.keys(fields)) {
-          const autoFix = AUTO_FIX_PATH.exec(path);
-          if (autoFix?.[1] !== undefined) {
-            autoFixRefused[autoFix[1]] ??=
-              autoFix[2] === 'enabled' ? this.autoFixNotLicensed : maxPerAnalysisRefusal();
-            continue;
-          }
-          const match = SERVER_PATHS.find(
-            ([prefix]) => path === prefix || path.startsWith(`${prefix}.`),
-          );
-          if (match && refused[match[1]] === undefined) refused[match[1]] = refusal(match[1]);
-        }
-        if (Object.keys(refused).length === 0 && Object.keys(autoFixRefused).length === 0) {
-          return false;
-        }
-        this.errors.set(refused);
-        this.autoFixErrors.set(autoFixRefused);
-        this.focusFirstInvalid();
-        return true;
-      },
-    );
+    this.revealed = true;
+    this.reveal(id);
+  }
+
+  /** A Test answered: the server keeps it as the last Test, which the status says. */
+  protected reload(): void {
+    this.queue = this.queue.then(async () => {
+      try {
+        this.saved.set(await ok(this.api.client.GET('/api/v0/system/llm')));
+      } catch {
+        // The status keeps the Test it knew; the provider shows this one.
+      }
+    });
   }
 
   /**
-   * llm.md §16: sends a fixed prompt holding no repository data to the saved provider's models.
-   * With one model the page shows its connection and its tool calling, a failed Test as an error
-   * (role="alert") and a successful one as a status; with several, a line for each.
+   * Stores one section's change: once the request before it is answered, the settings as then
+   * saved with the change go to the server, whose answer becomes the settings. Rejects with the
+   * refusal, which the section shows. Nothing of the change (a key typed) stays after it.
    */
-  protected async test(): Promise<void> {
-    if (this.busy()) return;
-    await this.run(async () => {
-      const result = await ok(this.api.client.POST('/api/v0/system/llm/test'));
-      if (result.models.length > 1) {
-        const lines = result.models.map(testLine);
-        this.testLines.set(lines);
-        // The list is in the polite live region: a failure is also said in an alert, as one is for a
-        // single model.
-        const failed = lines.filter((line) => line.tone === 'error').length;
-        if (failed > 0) {
-          this.error.set(
-            $localize`:@@ai.test.modelsFailed:The test failed for ${failed}:failed: of ${lines.length}:total: models.`,
-          );
-        }
-      } else if (result.problem) {
-        this.error.set(settingsProblemText(result.problem.code, result.problem.providerStatus));
-      } else {
-        this.announcement.set(
-          $localize`:@@ai.settings.testOk:Connected to ${result.model ?? this.provider()?.model ?? ''}:model: in ${result.latencyMs}:latency: ms.`,
-        );
-        this.toolCalling.set(result.toolCalling === 'not_checked' ? null : result.toolCalling);
-        this.toolsHint.set(result.hint?.code ?? null);
-      }
-    });
+  private put(change: SectionChange): Promise<LlmSettings> {
+    const request = this.queue.then(() => this.send(change));
+    this.queue = request.catch(() => undefined);
+    return request;
+  }
+
+  private async send(change: SectionChange): Promise<LlmSettings> {
+    const saved = this.saved();
+    // The sections show only once the settings are read.
+    if (saved === null) throw new Error('The AI provider settings are not read yet.');
+    const answer = await ok(
+      this.api.client.PUT('/api/v0/system/llm', { body: bodyFrom(saved, change) }),
+    );
+    this.saved.set(answer);
+    return answer;
   }
 
   private async load(): Promise<void> {
     this.loadError.set(null);
-    try {
-      const [settings, organizations, projects] = await Promise.all([
-        ok(this.api.client.GET('/api/v0/system/llm')),
-        this.allOrganizations(),
-        this.allProjects(),
-      ]);
-      this.organizations.set(organizations);
-      const byOrg: Record<string, Project[]> = {};
-      for (const project of projects) (byOrg[project.organizationId] ??= []).push(project);
-      this.projects.set(byOrg);
-      this.fill(settings);
-    } catch (err) {
-      this.loadError.set(problemMessage(err));
+    this.organizationsFailed.set(false);
+    const [settings, organizations] = await Promise.allSettled([
+      ok(this.api.client.GET('/api/v0/system/llm')),
+      this.allOrganizations(),
+    ]);
+    if (settings.status === 'rejected') {
+      this.loadError.set(problemMessage(settings.reason));
+    } else if (organizations.status === 'rejected') {
+      this.organizationsFailed.set(true);
+    } else {
+      this.organizations.set(organizations.value);
+      this.saved.set(settings.value);
     }
   }
 
@@ -614,7 +276,7 @@ export class AiSettingsPage {
     for (let i = 0; i < ORG_PAGES; i++) {
       const answer: { items: Organization[]; nextCursor: string | null } = await ok(
         this.api.client.GET('/api/v0/organizations', {
-          params: { query: { limit: 100, ...(cursor ? { cursor } : {}) } },
+          params: { query: { limit: ORG_PAGE_SIZE, ...(cursor ? { cursor } : {}) } },
         }),
       );
       all.push(...answer.items);
@@ -624,410 +286,226 @@ export class AiSettingsPage {
     return all;
   }
 
-  private async allProjects(): Promise<Project[]> {
-    const all: Project[] = [];
-    let cursor: string | null = null;
-    for (let i = 0; i < PROJECT_PAGES; i++) {
-      const answer: { items: Project[]; nextCursor: string | null } = await ok(
-        this.api.client.GET('/api/v0/projects', {
-          params: { query: { limit: 100, ...(cursor ? { cursor } : {}) } },
-        }),
-      );
-      all.push(...answer.items);
-      if (answer.nextCursor === null || answer.nextCursor === cursor) break;
-      cursor = answer.nextCursor;
+  /** Scrolls to the page's section `id` and focuses its heading; false while it is not there. */
+  private reveal(id: string): boolean {
+    // By id, not by a selector: the address may hold any text.
+    const section = this.document.getElementById(id);
+    if (section?.tagName !== 'SECTION' || !this.element.nativeElement.contains(section)) {
+      return false;
     }
-    return all;
+    section.scrollIntoView();
+    section.querySelector<HTMLElement>('h3')?.focus({ preventScroll: true });
+    return true;
   }
-
-  /** Puts saved settings into the form (never a key: the server has none to give). */
-  private fill(settings: Settings): void {
-    this.settings.set(settings);
-    const p = settings.provider;
-    this.kind.set(p?.kind ?? '');
-    this.url.set(p?.baseUrl ?? '');
-    this.model.set(p?.model ?? '');
-    this.strongModel.set(p?.strongModel ?? '');
-    this.fastModel.set(p?.fastModel ?? '');
-    this.openAiApi.set(p?.api ?? 'chat_completions');
-    this.auth.set(p?.auth ?? 'bearer');
-    this.jsonMode.set(p?.jsonMode ?? 'json_object');
-    this.maxTokensField.set(p?.maxTokensField ?? 'max_tokens');
-    this.maxTokensFieldChosen = false;
-    this.workspaceId.set(p?.workspaceId ?? '');
-    this.timeout.set(String(p?.timeoutSeconds ?? 60));
-    this.temperature.set(p?.temperature === null || p === null ? '' : String(p.temperature));
-    this.removeKey.set(false);
-    this.orgSettings.set(
-      Object.fromEntries(
-        Object.entries(settings.organizations).map(([id, o]) => [
-          id,
-          {
-            enabled: o.enabled,
-            features: { ...o.features },
-            excludedProjectIds: [...o.excludedProjectIds],
-          },
-        ]),
-      ),
-    );
-    this.autoFix.set(
-      Object.fromEntries(
-        Object.entries(settings.organizations).map(([id, o]) => [id, draftOf(o.autoFix)]),
-      ),
-    );
-    this.loadedAutoFix = this.autoFix();
-    this.autoFixErrors.set({});
-    this.exclude.set(settings.excludePaths.join('\n'));
-    const b = settings.budgets;
-    this.budgets.set({
-      explainPerDay: String(b.explainPerDay),
-      triagePerDay: String(b.triagePerDay),
-      fixPerDay: String(b.fixPerDay),
-      tokensPerDay: String(b.tokensPerDay),
-      costPerDayUsd: b.costPerDayUsd === null ? '' : String(b.costPerDayUsd),
-      perUserPerHour: String(b.perUserPerHour),
-      reviewTokensPerOrganizationPerDay:
-        b.reviewTokensPerOrganizationPerDay === null
-          ? ''
-          : String(b.reviewTokensPerOrganizationPerDay),
-    });
-    const pricing = settings.pricing;
-    this.priceInput.set(pricing ? String(pricing.inputUsdPerMTok) : '');
-    this.priceOutput.set(pricing ? String(pricing.outputUsdPerMTok) : '');
-    this.priceStrongInput.set(pricing?.strong ? String(pricing.strong.inputUsdPerMTok) : '');
-    this.priceStrongOutput.set(pricing?.strong ? String(pricing.strong.outputUsdPerMTok) : '');
-    this.priceFastInput.set(pricing?.fast ? String(pricing.fast.inputUsdPerMTok) : '');
-    this.priceFastOutput.set(pricing?.fast ? String(pricing.fast.outputUsdPerMTok) : '');
-    this.storePrompts.set(settings.storePrompts);
-    this.retention.set(String(settings.promptRetentionDays));
-    this.errors.set({});
-  }
-
-  /** The whole `PUT` body from the form, or null with `errors` filled. */
-  private body(
-    apiKey: string,
-    errors: Partial<Record<Field, string>>,
-    autoFixErrors: Record<string, string>,
-  ): SettingsBody | null {
-    const provider = this.providerBody(apiKey, errors);
-
-    const excludePaths = this.exclude()
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '');
-    if (excludePaths.length > MAX_EXCLUDE_PATHS) refuse(errors, 'exclude');
-
-    const budgets = this.budgetsBody(errors);
-    const pricing = this.pricingBody(errors);
-    const organizations = this.organizationsBody(autoFixErrors);
-
-    const body: SettingsBody = {
-      provider,
-      organizations,
-      excludePaths,
-      budgets,
-      pricing,
-      storePrompts: this.storePrompts(),
-      promptRetentionDays: wholeNumber(errors, 'retention', this.retention(), 1, 90),
-    };
-    return Object.keys(errors).length === 0 && Object.keys(autoFixErrors).length === 0
-      ? body
-      : null;
-  }
-
-  /** The provider part of the body: null for None, with `errors` filled for a refused field. */
-  private providerBody(
-    apiKey: string,
-    errors: Partial<Record<Field, string>>,
-  ): SettingsBody['provider'] {
-    const kind = this.kind();
-    if (kind === '') {
-      // A key typed with no provider would be dropped silently: refuse it instead.
-      if (apiKey !== '') errors.key = keyWithoutKind();
-      return null;
-    }
-    const baseUrl = this.url().trim();
-    const model = this.model().trim();
-    const strongModel = this.strongModel().trim();
-    const fastModel = this.fastModel().trim();
-    if (baseUrl === '') refuse(errors, 'url');
-    if (!MODEL_NAME.test(model)) refuse(errors, 'model');
-    // A tier's model is optional: empty is sent as null, and the tier uses the model above.
-    if (strongModel !== '' && !MODEL_NAME.test(strongModel)) refuse(errors, 'strong-model');
-    if (fastModel !== '' && !MODEL_NAME.test(fastModel)) refuse(errors, 'fast-model');
-    if (apiKey !== '' && this.removeKey()) errors.key = keyAndRemove();
-    else if (apiKey !== '' && !/^[\x21-\x7e]{1,4096}$/.test(apiKey)) errors.key = keyFormat();
-    const workspaceId = this.workspaceId().trim();
-    if (kind === 'anthropic' && workspaceId !== '' && !WORKSPACE_ID.test(workspaceId)) {
-      refuse(errors, 'workspace-id');
-    }
-    // Anthropic's current models take no temperature: none is sent for them, whatever was typed.
-    const temperature =
-      kind === 'anthropic' || this.temperature().trim() === ''
-        ? null
-        : decimalNumber(errors, 'temperature', this.temperature(), 0, MAX_TEMPERATURE);
-    return {
-      kind,
-      baseUrl,
-      model,
-      strongModel: strongModel === '' ? null : strongModel,
-      fastModel: fastModel === '' ? null : fastModel,
-      ...(kind === 'openai'
-        ? {
-            api: this.openAiApi(),
-            auth: this.auth(),
-            jsonMode: this.jsonMode(),
-            maxTokensField: this.maxTokensField(),
-          }
-        : { workspaceId: workspaceId === '' ? null : workspaceId }),
-      temperature,
-      timeoutSeconds: wholeNumber(errors, 'timeout', this.timeout(), 5, 600),
-      ...keyChange(apiKey, this.removeKey()),
-    };
-  }
-
-  /** The budgets part of the body, with `errors` filled for a refused budget. */
-  private budgetsBody(errors: Partial<Record<Field, string>>): SettingsBody['budgets'] {
-    const budget = (field: Field, key: keyof SettingsBody['budgets'], min: number, max: number) =>
-      wholeNumber(errors, field, this.budget(key), min, max);
-    const costRaw = this.budget('costPerDayUsd').trim();
-    const ceilingRaw = this.budget('reviewTokensPerOrganizationPerDay').trim();
-    return {
-      explainPerDay: budget('budget-explain', 'explainPerDay', 0, 100_000),
-      triagePerDay: budget('budget-triage', 'triagePerDay', 0, 100_000),
-      fixPerDay: budget('budget-fix', 'fixPerDay', 0, 100_000),
-      tokensPerDay: budget('budget-tokens', 'tokensPerDay', 0, 1_000_000_000),
-      costPerDayUsd:
-        costRaw === '' ? null : decimalNumber(errors, 'budget-cost', costRaw, 0, 1_000_000),
-      perUserPerHour: budget('budget-user', 'perUserPerHour', 1, 10_000),
-      // Always sent, null for no ceiling: a save writes what the page shows. (A body that left it
-      // out would keep the stored ceiling; only null removes it.)
-      reviewTokensPerOrganizationPerDay:
-        ceilingRaw === ''
-          ? null
-          : wholeNumber(errors, 'budget-review', ceilingRaw, 0, 1_000_000_000),
-    };
-  }
-
-  /**
-   * The prices part of the body: null when none is given, with `errors` filled for a refusal. Once
-   * a price is given the server needs the standard model's pair and the pair of each tier that has
-   * a model of its own, so a pair left out is refused; a tier without a model of its own sends none.
-   */
-  private pricingBody(errors: Partial<Record<Field, string>>): SettingsBody['pricing'] {
-    const standard = { input: this.priceInput(), output: this.priceOutput() };
-    const strong =
-      this.strongOwn() === null
-        ? null
-        : { input: this.priceStrongInput(), output: this.priceStrongOutput() };
-    const fast =
-      this.fastOwn() === null
-        ? null
-        : { input: this.priceFastInput(), output: this.priceFastOutput() };
-    const typed = [standard, strong, fast].some(
-      (pair) => pair !== null && (pair.input.trim() !== '' || pair.output.trim() !== ''),
-    );
-    if (!typed) return null;
-    return {
-      ...pricePair(errors, ['price-input', 'price-output'], standard),
-      strong: strong && pricePair(errors, ['price-strong-input', 'price-strong-output'], strong),
-      fast: fast && pricePair(errors, ['price-fast-input', 'price-fast-output'], fast),
-    };
-  }
-
-  /** The organisations part of the body, with `autoFixErrors` filled for a refused maximum. */
-  private organizationsBody(autoFixErrors: Record<string, string>): SettingsBody['organizations'] {
-    // An organisation's automatic fix block goes only when it was edited here (ruling R1), so a
-    // save keeps what an organisation admin changed meanwhile; the projects opted out never go.
-    const edited = new Set(Object.keys(this.autoFix()).filter((id) => this.autoFixEdited(id)));
-    const organizations: SettingsBody['organizations'] = {};
-    for (const id of new Set([...Object.keys(this.orgSettings()), ...edited])) {
-      const settings = this.orgOf(id);
-      if (!edited.has(id)) {
-        organizations[id] = settings;
-        continue;
-      }
-      const draft = this.autoFixOf(id);
-      const maxPerAnalysis = parseMaxPerAnalysis(draft.maxPerAnalysis);
-      if (maxPerAnalysis === null) autoFixErrors[id] = maxPerAnalysisRefusal();
-      const autoFix: AutoFix = {
-        enabled: draft.enabled,
-        minSeverity: draft.minSeverity,
-        maxPerAnalysis: maxPerAnalysis ?? 0,
-      };
-      organizations[id] = { ...settings, autoFix };
-    }
-    return organizations;
-  }
-
-  private emptyKey(): void {
-    const field = this.keyField()?.nativeElement;
-    if (field) field.value = '';
-  }
-
-  private focusFirstInvalid(): void {
-    const errors = this.errors();
-    const first = FIELDS.find((field) => errors[field] !== undefined);
-    // Else the first organisation (in the page's order) whose automatic fix block was refused.
-    const id = first ? `ai-${first}` : this.firstRefusedAutoFix();
-    if (!id) return;
-    // After the render that marks it invalid (and, for the key, shows its error text).
-    afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>(`#${id}`)?.focus(), {
-      injector: this.injector,
-    });
-  }
-
-  /** The maximum's input of the first organisation whose automatic fix block was refused. */
-  private firstRefusedAutoFix(): string | null {
-    const autoFix = this.organizations().find((o) => this.autoFixError(o.id) !== null);
-    return autoFix ? `ai-org-${autoFix.id}-auto-fix-max` : null;
-  }
-
-  /**
-   * Runs one request; while one runs, the buttons stay enabled (and focusable) but do nothing. A
-   * refused field goes to its field; anything else to the page's alert.
-   */
-  private async run(action: () => Promise<void>, field?: (err: unknown) => boolean): Promise<void> {
-    this.busy.set(true);
-    this.error.set(null);
-    this.announcement.set(null);
-    this.toolCalling.set(null);
-    this.testLines.set([]);
-    try {
-      await action();
-    } catch (err) {
-      if (field?.(err)) return;
-      this.error.set(problemMessage(err));
-      const active = this.document.activeElement;
-      if (active === null || active === this.document.body) this.heading()?.nativeElement.focus();
-    } finally {
-      this.busy.set(false);
-    }
-  }
-}
-
-function draftOf(autoFix: AutoFix): AutoFixDraft {
-  return {
-    enabled: autoFix.enabled,
-    minSeverity: autoFix.minSeverity,
-    maxPerAnalysis: String(autoFix.maxPerAnalysis),
-  };
-}
-
-/** The page's own words for a refused field (the server's text is never shown). */
-function refusal(field: Field): string {
-  switch (field) {
-    case 'kind':
-      return $localize`:@@ai.settings.badKind:Choose OpenAI-compatible or Anthropic.`;
-    case 'url':
-      return $localize`:@@ai.settings.badUrl:Use the provider's http(s) address, such as https://api.openai.com/v1. An internal host must be listed, with its port, by the operator in QUALOR_LLM_INTERNAL_HOSTS.`;
-    case 'model':
-    case 'strong-model':
-    case 'fast-model':
-      return $localize`:@@ai.settings.badModel:Use the model's name as the provider spells it: letters, digits and . _ : / @ + - only.`;
-    case 'key':
-      return $localize`:@@ai.settings.keyForNewUrl:Enter the API key again for a new address, or check Remove the key. The key is 1 to 4096 printable characters without spaces.`;
-    case 'workspace-id':
-      return $localize`:@@ai.settings.badWorkspaceId:Use the workspace ID as the console shows it: wrkspc_ and then letters and digits.`;
-    case 'timeout':
-      return $localize`:@@ai.settings.badTimeout:Use a whole number of seconds from 5 to 600.`;
-    case 'temperature':
-      return $localize`:@@ai.settings.badTemperature:Use a number from 0 to 2, or leave it empty.`;
-    case 'exclude':
-      return $localize`:@@ai.settings.badExclude:Use at most 100 globs, one per line, relative to the repository root.`;
-    case 'budget-explain':
-    case 'budget-triage':
-    case 'budget-fix':
-    case 'budget-tokens':
-      return $localize`:@@ai.settings.badBudget:Use a whole number, 0 or more.`;
-    case 'budget-user':
-      return $localize`:@@ai.settings.badUserBudget:Use a whole number, 1 or more.`;
-    case 'budget-review':
-      return $localize`:@@ai.settings.badReviewCeiling:Use a whole number, 0 or more, or leave it empty for no limit.`;
-    case 'budget-cost':
-      return $localize`:@@ai.settings.badCost:Use an amount in US dollars, or leave it empty for no cost budget.`;
-    case 'price-input':
-    case 'price-output':
-      return $localize`:@@ai.settings.badPrice:Give both prices, in US dollars per million tokens (0 to 10000), or neither.`;
-    case 'price-strong-input':
-    case 'price-strong-output':
-      return $localize`:@@ai.settings.badStrongPrice:Give the strong model's prices too, in US dollars per million tokens (0 to 10000).`;
-    case 'price-fast-input':
-    case 'price-fast-output':
-      return $localize`:@@ai.settings.badFastPrice:Give the fast model's prices too, in US dollars per million tokens (0 to 10000).`;
-    case 'retention':
-      return $localize`:@@ai.settings.badRetention:Use a whole number of days from 1 to 90.`;
-  }
-}
-
-/** Records the refusal of `field` (its first refusal stays) and stands in 0 for its value. */
-function refuse(errors: Partial<Record<Field, string>>, field: Field): number {
-  errors[field] ??= refusal(field);
-  return 0;
-}
-
-/** A whole number from `min` to `max` as typed in `field`, else refused. */
-function wholeNumber(
-  errors: Partial<Record<Field, string>>,
-  field: Field,
-  raw: string,
-  min: number,
-  max: number,
-): number {
-  const value = raw.trim();
-  if (!/^\d{1,10}$/.test(value)) return refuse(errors, field);
-  const n = Number(value);
-  return n >= min && n <= max ? n : refuse(errors, field);
-}
-
-/** A number from `min` to `max` as typed in `field`, else refused. */
-function decimalNumber(
-  errors: Partial<Record<Field, string>>,
-  field: Field,
-  raw: string,
-  min: number,
-  max: number,
-): number {
-  const value = raw.trim();
-  const n = value === '' ? Number.NaN : Number(value);
-  return Number.isFinite(n) && n >= min && n <= max ? n : refuse(errors, field);
 }
 
 /**
- * The tier's model as the server counts it: its own when it is set and is not the standard model,
- * else none. A tier without one runs on the standard model, at its prices.
+ * The instance's AI as its Status card says it (spec §3.4 M-I3, Appendix A), from what is saved:
+ *
+ * - the provider: connected, or failing its last Test; its kind, host and models; what that Test
+ *   found, which is kept until the provider changes;
+ * - the organisations that may use AI, by name up to three;
+ * - where AI review runs, or is paused until an organisation's admins confirm the provider now:
+ *   on only with a provider, in an organisation allowed to use AI whose admins switched it on and
+ *   confirmed (the server's order of reasons); an organisation the settings lack has it off;
+ * - once a provider is saved, the limits and the prices.
  */
-function ownModel(standard: string, tier: string): string | null {
-  const model = tier.trim();
-  return model === '' || model === standard.trim() ? null : model;
+export function instanceStatusLines(
+  saved: LlmSettings,
+  organizations: readonly Organization[],
+  locale: string,
+): StatusLine[] {
+  const lines = [
+    providerLine(saved, locale),
+    organizationsLine(saved, organizations, locale),
+    reviewLine(saved, organizations, locale),
+  ];
+  if (saved.provider !== null) lines.push(limitsLine(saved, locale), pricesLine(saved, locale));
+  return lines;
 }
 
-/** A pair of prices as typed, each from 0 to 10 000, else refused on its own field. */
-function pricePair(
-  errors: Partial<Record<Field, string>>,
-  fields: readonly [Field, Field],
-  typed: { input: string; output: string },
-): { inputUsdPerMTok: number; outputUsdPerMTok: number } {
+function providerLine(saved: LlmSettings, locale: string): StatusLine {
+  const label = $localize`:@@aiProvider.status.provider:Provider`;
+  const provider = saved.provider;
+  if (provider === null) {
+    return {
+      key: 'provider',
+      label,
+      tone: 'off',
+      state: $localize`:@@aiProvider.status.notConnected:Not connected`,
+      action: null,
+    };
+  }
+  const kind =
+    provider.kind === 'openai'
+      ? $localize`:@@aiProvider.status.kindOpenai:OpenAI-compatible`
+      : $localize`:@@aiProvider.status.kindAnthropic:Anthropic`;
+  const { host, models } = consentFields(provider);
+  const count = models.length;
+  const n = formatWhole(count, locale);
+  const test = saved.lastTest;
+  const failed = test?.models.filter((m) => !m.ok || m.problemCode !== null) ?? [];
   return {
-    inputUsdPerMTok: decimalNumber(errors, fields[0], typed.input, 0, 10_000),
-    outputUsdPerMTok: decimalNumber(errors, fields[1], typed.output, 0, 10_000),
+    key: 'provider',
+    label,
+    tone: failed.length > 0 ? 'broken' : 'ok',
+    state:
+      failed.length > 0
+        ? $localize`:@@aiProvider.status.testFailed:Test failed`
+        : $localize`:@@aiProvider.status.connected:Connected`,
+    text:
+      count === 1
+        ? $localize`:@@aiProvider.status.providerTextOne:${kind}:kind: at ${host}:host: · 1 model`
+        : $localize`:@@aiProvider.status.providerText:${kind}:kind: at ${host}:host: · ${n}:n: models`,
+    sub: testedText(test, locale),
+    action: { id: 'test', label: $localize`:@@aiProvider.testAgain:Test again` },
   };
 }
 
-/** The key part of the provider: the key typed, its removal, or else the stored key kept. */
-function keyChange(apiKey: string, remove: boolean): { apiKey?: string | null } {
-  if (apiKey !== '') return { apiKey };
-  return remove ? { apiKey: null } : {};
+/** What the last Test found, in a sentence: failures first, then models that cannot call tools. */
+function testedText(test: LlmSettings['lastTest'], locale: string): string {
+  if (test === null) {
+    return $localize`:@@aiProvider.status.notTested:Not tested since the provider changed.`;
+  }
+  const date = formatDate(test.at, locale);
+  const list = (models: readonly string[]) =>
+    new Intl.ListFormat(locale, { type: 'conjunction' }).format(models);
+  const failed = test.models.filter((m) => !m.ok || m.problemCode !== null).map((m) => m.model);
+  if (failed.length > 0) {
+    const models = list(failed);
+    return $localize`:@@aiProvider.status.testedFailed:Tested ${date}:date:: the test failed for ${models}:models:.`;
+  }
+  const noTools = test.models.filter((m) => m.toolCalling === 'not_supported').map((m) => m.model);
+  if (noTools.length > 0) {
+    const models = list(noTools);
+    return $localize`:@@aiProvider.status.testedNoTools:Tested ${date}:date:: ${models}:models: cannot call tools.`;
+  }
+  const count = test.models.length;
+  const n = formatWhole(count, locale);
+  if (test.models.some((m) => m.toolCalling === 'not_checked')) {
+    return count === 1
+      ? $localize`:@@aiProvider.status.testedConnectsOne:Tested ${date}:date:: the model connects.`
+      : $localize`:@@aiProvider.status.testedConnects:Tested ${date}:date:: all ${n}:n: models connect.`;
+  }
+  return count === 1
+    ? $localize`:@@aiProvider.status.testedOne:Tested ${date}:date:: the model connects and can call tools.`
+    : $localize`:@@aiProvider.status.tested:Tested ${date}:date:: all ${n}:n: models connect and can call tools.`;
 }
 
-function keyWithoutKind(): string {
-  return $localize`:@@ai.settings.keyWithoutKind:Choose a provider kind before typing an API key; with None no key is kept.`;
+function organizationsLine(
+  saved: LlmSettings,
+  organizations: readonly Organization[],
+  locale: string,
+): StatusLine {
+  const label = $localize`:@@aiProvider.status.organizations:Organizations`;
+  const allowed = organizations.filter((o) => saved.organizations[o.id]?.enabled === true);
+  const action = { id: 'manage', label: $localize`:@@aiProvider.status.manage:Manage` };
+  if (allowed.length === 0) {
+    return {
+      key: 'organizations',
+      label,
+      tone: 'off',
+      state: $localize`:@@aiProvider.status.noneAllowed:None may use AI`,
+      sub: null,
+      action: saved.provider === null ? null : action,
+    };
+  }
+  const a = formatWhole(allowed.length, locale);
+  const t = formatWhole(organizations.length, locale);
+  return {
+    key: 'organizations',
+    label,
+    tone: 'ok',
+    state: $localize`:@@aiProvider.status.allowed:${a}:allowed: of ${t}:total: may use AI`,
+    sub: namesOf(
+      allowed.map((o) => o.name),
+      locale,
+    ),
+    action,
+  };
 }
 
-function keyFormat(): string {
-  return $localize`:@@ai.settings.keyFormat:This is not an API key: a key is 1 to 4096 printable characters without spaces.`;
+function reviewLine(
+  saved: LlmSettings,
+  organizations: readonly Organization[],
+  locale: string,
+): StatusLine {
+  const label = $localize`:@@aiProvider.status.review:AI review`;
+  // The server's reasons, in its order: a provider, the organisation allowed, the switch, the
+  // consent. Only the last leaves AI review paused, which its admins can resume.
+  const switchedOn =
+    saved.provider === null
+      ? []
+      : organizations.filter((o) => {
+          const stored = saved.organizations[o.id];
+          return stored?.enabled === true && stored.reviewStatus.enabled;
+        });
+  const current = (o: Organization) => saved.organizations[o.id]?.reviewStatus.consentCurrent;
+  const on = switchedOn.filter((o) => current(o)).map((o) => o.name);
+  const paused = switchedOn.filter((o) => !current(o)).map((o) => o.name);
+  const onText = (names: readonly string[]) => {
+    const list = namesOf(names, locale);
+    return $localize`:@@aiProvider.status.reviewOn:On in ${list}:names:`;
+  };
+  if (paused.length > 0) {
+    const list = namesOf(paused, locale);
+    return {
+      key: 'review',
+      label,
+      tone: 'attention',
+      state: $localize`:@@aiProvider.status.reviewPaused:Paused in ${list}:names:`,
+      text: on.length > 0 ? onText(on) : null,
+    };
+  }
+  if (on.length > 0) return { key: 'review', label, tone: 'ok', state: onText(on) };
+  return {
+    key: 'review',
+    label,
+    tone: 'off',
+    state: $localize`:@@aiProvider.status.reviewOff:Off everywhere`,
+  };
 }
 
-function keyAndRemove(): string {
-  return $localize`:@@ai.settings.keyAndRemove:Type a new API key or check Remove the key, not both.`;
+function limitsLine(saved: LlmSettings, locale: string): StatusLine {
+  const tokens = formatWhole(saved.budgets.tokensPerDay, locale);
+  const ceiling = saved.budgets.reviewTokensPerOrganizationPerDay;
+  const cap = ceiling === null ? null : formatWhole(ceiling, locale);
+  return {
+    key: 'limits',
+    label: $localize`:@@aiProvider.status.limits:Limits`,
+    tone: 'ok',
+    state: $localize`:@@aiProvider.limits.chip:Set`,
+    text:
+      cap === null
+        ? $localize`:@@aiProvider.status.limitsNoCap:Assistant: ${tokens}:tokens: tokens a day per organization · AI review: no cap (each organization admin may set up to 1,000,000,000 a day)`
+        : $localize`:@@aiProvider.status.limitsCap:Assistant: ${tokens}:tokens: tokens a day per organization · AI review: capped at ${cap}:cap: tokens a day per organization`,
+  };
+}
+
+function pricesLine(saved: LlmSettings, locale: string): StatusLine {
+  const label = $localize`:@@aiProvider.status.prices:Prices`;
+  const pricing = saved.pricing;
+  if (pricing === null) {
+    return {
+      key: 'prices',
+      label,
+      tone: 'off',
+      state: $localize`:@@aiProvider.status.pricesNotSet:Not set`,
+      sub: $localize`:@@aiProvider.status.pricesNotSetSub:Costs are not counted, and cost limits count nothing.`,
+      action: { id: 'prices', label: $localize`:@@aiProvider.status.enterPrices:Enter prices` },
+    };
+  }
+  const count = 1 + (pricing.strong === null ? 0 : 1) + (pricing.fast === null ? 0 : 1);
+  const n = formatWhole(count, locale);
+  return {
+    key: 'prices',
+    label,
+    tone: 'ok',
+    state:
+      count === 1
+        ? $localize`:@@aiProvider.status.pricesSetOne:Set for 1 model`
+        : $localize`:@@aiProvider.status.pricesSet:Set for ${n}:n: models`,
+    sub: null,
+    action: null,
+  };
 }

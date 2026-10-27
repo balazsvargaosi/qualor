@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { provideRouter, type Routes } from '@angular/router';
 import { FakeServer, me, ORG_ID, page, provideFakeServer, settle } from './fake-server';
 import type { Organization, ResponseBody } from '../app/api/types';
 import { SessionStore } from '../app/auth/session';
@@ -53,12 +53,6 @@ export const CONFIGURED = {
     },
   },
 };
-
-export const PROJECTS = [
-  { id: 'p1', organizationId: ORG_ID, key: 'acme/payments', name: 'Payments' },
-  { id: 'p2', organizationId: ORG_ID, key: 'acme/web', name: 'Web' },
-  { id: 'p3', organizationId: 'other-org', key: 'other/api', name: 'Other API' },
-];
 
 /**
  * `count` organisations as `GET /organizations` lists them: "Org 1" (key `org-1`) to "Org
@@ -124,19 +118,25 @@ export function testAnswer(
   };
 }
 
-export function setup(settings: object = EMPTY, features: string[] = ['llm.auto-fix']): FakeServer {
+/**
+ * The instance's AI provider page against a fake server: the settings given, and the default
+ * organisation alone, for an instance admin. `routes` are the router's (by default, any address).
+ */
+export function setup(
+  settings: object = EMPTY,
+  features: string[] = ['llm.auto-fix'],
+  routes: Routes = [{ path: '**', children: [] }],
+): FakeServer {
   const server = new FakeServer();
   server.on('GET', '/api/v0/system/info', {
     body: { version: '0.8.0', edition: 'enterprise', features, extensions: [] },
   });
   server.on('GET', '/api/v0/system/llm', { body: settings });
-  server.on('GET', `/api/v0/organizations/${ORG_ID}/ai`, { body: orgAi({ enabled: false }) });
-  server.on('GET', '/api/v0/projects', { body: page(PROJECTS) });
   server.on('GET', '/api/v0/organizations', {
     body: page([{ id: ORG_ID, key: 'default', name: 'Default', createdAt: '', updatedAt: '' }]),
   });
   TestBed.configureTestingModule({
-    providers: [provideRouter([{ path: '**', children: [] }]), provideFakeServer(server)],
+    providers: [provideRouter(routes), provideFakeServer(server)],
   });
   TestBed.inject(SessionStore).set(me({ admin: true }));
   return server;
@@ -144,13 +144,10 @@ export function setup(settings: object = EMPTY, features: string[] = ['llm.auto-
 export async function render() {
   const fixture = TestBed.createComponent(AiSettingsPage);
   await settle(fixture);
-  return { fixture, root: fixture.nativeElement as HTMLElement };
+  return { fixture, root: fixture.nativeElement as HTMLElement, page: fixture.componentInstance };
 }
 export function type(root: HTMLElement, selector: string, value: string): void {
   const input = root.querySelector<HTMLInputElement | HTMLSelectElement>(selector)!;
   input.value = value;
   input.dispatchEvent(new Event(input.tagName === 'SELECT' ? 'change' : 'input'));
-}
-export function submit(root: HTMLElement): void {
-  root.querySelector<HTMLFormElement>('form#ai-settings')!.dispatchEvent(new Event('submit'));
 }
