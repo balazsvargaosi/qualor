@@ -1,5 +1,5 @@
 import { projectItem } from '../../../testing/fake-server';
-import { chosenState, selectionSummary, summaryText } from './review-state';
+import { chosenState, dialogSummaryText, selectionSummary, summaryText } from './review-state';
 
 // Payments is linked to a repository; Web Shop is not; an instance admin excluded Legacy.
 const PAYMENTS = projectItem({
@@ -97,6 +97,16 @@ describe('summaryText', () => {
       'No project is selected yet: choose projects below first.',
     );
     expect(summaryText(summary(0, 0), 'all', 'Default')).toBe('Default has no project yet.');
+  });
+
+  it('says in the switch-on dialog what no project selected means, the rest as the page does', () => {
+    expect(dialogSummaryText(summary(0, 0), 'selected', 'Default')).toBe(
+      'No project is selected yet, so nothing is reviewed until you select some.',
+    );
+    expect(dialogSummaryText(summary(0, 0), 'all', 'Default')).toBe('Default has no project yet.');
+    expect(dialogSummaryText(summary(3, 1, 1, 1), 'selected', 'Default')).toBe(
+      summaryText(summary(3, 1, 1, 1), 'selected', 'Default'),
+    );
   });
 
   it('says every project will be reviewed when each can be', () => {

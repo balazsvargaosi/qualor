@@ -2145,6 +2145,7 @@
     "orgAi.summary.someAll": "{$reviewable} of the {$total} projects of {$org} can be reviewed: {$parts}.",
     "orgAi.summary.someOne": "{$reviewable} of 1 selected project can be reviewed: {$parts}.",
     "orgAi.summary.some": "{$reviewable} of {$total} selected projects can be reviewed: {$parts}.",
+    "orgAi.dialog.none": "No project is selected yet, so nothing is reviewed until you select some.",
     "orgs.title": "Organizations",
     "orgs.adminsOnly": " Only instance administrators manage organizations. ",
     "orgs.intro": " Each organization has its own projects, quality gates, quality profiles, members and connections. You become the admin of each organization you create. ",

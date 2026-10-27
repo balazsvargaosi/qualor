@@ -65,7 +65,12 @@ import {
 } from './ai-review';
 import { AUTO_FIX_FEATURE } from './auto-fix';
 import { FixSuggestionsSection } from './org-ai/fix-suggestions-section';
-import { chosenState, selectionSummary, summaryText } from './org-ai/review-state';
+import {
+  chosenState,
+  dialogSummaryText,
+  selectionSummary,
+  summaryText,
+} from './org-ai/review-state';
 
 type Project = ItemOf<'/api/v0/projects'>;
 type Feature = keyof OrgAi['features'];
@@ -281,17 +286,26 @@ export class AiReviewPage implements LeaveGuarded {
       ? null
       : selectionSummary(this.knownProjects(), settings.scope, settings.projectIds);
   });
-  /** What the edited scope and projects would give it, in a sentence; null until the projects are in. */
-  protected readonly draftSummaryText = computed(() =>
+  /** What the edited scope and projects would give it; null until the projects are in. */
+  private readonly draftSummary = computed(() =>
     this.projectsReady()
-      ? summaryText(
-          selectionSummary(this.knownProjects(), this.scope(), this.selected()),
-          this.scope(),
-          this.orgName(),
-          this.locale,
-        )
+      ? selectionSummary(this.knownProjects(), this.scope(), this.selected())
       : null,
   );
+  /** The draft's summary in a sentence, as the page says it; null until the projects are in. */
+  protected readonly draftSummaryText = computed(() => {
+    const summary = this.draftSummary();
+    return summary === null
+      ? null
+      : summaryText(summary, this.scope(), this.orgName(), this.locale);
+  });
+  /** The draft's summary as the switch-on dialog says it; null until the projects are in. */
+  protected readonly scopeLineText = computed(() => {
+    const summary = this.draftSummary();
+    return summary === null
+      ? null
+      : dialogSummaryText(summary, this.scope(), this.orgName(), this.locale);
+  });
   /** The chosen projects, in their order, with what review does with each. */
   protected readonly chosenRows = computed(() => {
     const byId = this.projectsById();

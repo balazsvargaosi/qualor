@@ -385,6 +385,21 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(row(root, 'Web Shop').querySelector('td a')).toBeNull();
     });
 
+    it('says in the switch-on dialog that nothing is reviewed until projects are selected', async () => {
+      setup();
+      const { fixture, root } = await render();
+      expect(rows(root)).toEqual([]);
+      await act(fixture, root, 'Switch on AI review…');
+      expect(consentDialog(root).open).toBe(true);
+      // The picker is not in the dialog: the line says what no project means.
+      expect(text(field(root, 'ai-review-scope-line'))).toBe(
+        'No project is selected yet, so nothing is reviewed until you select some.',
+      );
+      expect(text(section(root).querySelector('.dep > .hint'))).toBe(
+        'No project is selected yet: choose projects below first.',
+      );
+    });
+
     it('adds projects with the picker, which offers an excluded project disabled with the reason', async () => {
       const { server } = setup();
       const { fixture, root } = await render();

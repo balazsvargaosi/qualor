@@ -597,7 +597,7 @@
         </p>
       }
       <p id="ai-review-notice" class="notice">{{ consent()?.notice }}</p>
-      @if (draftSummaryText(); as summary) {
+      @if (scopeLineText(); as summary) {
         <p id="ai-review-scope-line">{{ summary }}</p>
       }
       <!-- Said of the switch-on alone: a paused review's Switch off sends only what is stored. -->

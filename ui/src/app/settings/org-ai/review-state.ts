@@ -103,3 +103,18 @@ export function summaryText(
     ? $localize`:@@orgAi.summary.someOne:${reviewable}:reviewable: of 1 selected project can be reviewed: ${parts}:parts:.`
     : $localize`:@@orgAi.summary.some:${reviewable}:reviewable: of ${total}:total: selected projects can be reviewed: ${parts}:parts:.`;
 }
+
+/**
+ * The summary as the switch-on dialog says it: as `summaryText`, except with no project selected,
+ * where it says what that means rather than pointing to the picker, which is not in the dialog.
+ */
+export function dialogSummaryText(
+  s: SelectionSummary,
+  scope: AiReviewScope,
+  organization: string,
+  locale = 'en-US',
+): string {
+  return s.total === 0 && scope === 'selected'
+    ? $localize`:@@orgAi.dialog.none:No project is selected yet, so nothing is reviewed until you select some.`
+    : summaryText(s, scope, organization, locale);
+}
