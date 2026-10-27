@@ -197,32 +197,40 @@ export class OrganizationsSection {
       (a, b) => this.collator.compare(a.name, b.name) || this.collator.compare(a.key, b.key),
     ),
   );
-  /**
-   * The organisations the filter finds, by name or key in any case. The one being edited stays,
-   * so a filter never hides an editor.
-   */
+  /** The organisations the filter finds, by name or key in any case. */
   private readonly matching = computed(() => {
     const query = this.filter().trim().toLocaleLowerCase(this.locale);
     if (query === '') return this.sorted();
-    const editing = this.editingId();
     return this.sorted().filter(
       (o) =>
-        o.id === editing ||
         o.name.toLocaleLowerCase(this.locale).includes(query) ||
         o.key.toLocaleLowerCase(this.locale).includes(query),
     );
   });
-  /** The rows shown: the first so many found, and the one being edited wherever it is. */
+  /** How many of those found are shown: the first so many. */
+  private readonly shownCount = computed(() => Math.min(this.limit(), this.matching().length));
+  /**
+   * The rows shown: the first so many found, and the one being edited wherever it is, so neither
+   * a filter nor the page hides an editor. That one is held in view, not found: it is not counted.
+   */
   protected readonly rows = computed<Row[]>(() => {
-    const limit = this.limit();
+    const shown = new Set(
+      this.matching()
+        .slice(0, this.shownCount())
+        .map((o) => o.id),
+    );
     const editing = this.editingId();
     const settings = this.settings();
     const autoFix = this.autoFixAvailable();
-    return this.matching()
-      .filter((o, index) => index < limit || o.id === editing)
+    return this.sorted()
+      .filter((o) => shown.has(o.id) || o.id === editing)
       .map((o) => this.rowOf(o, settings, autoFix, o.id === editing));
   });
-  /** "{shown} of {total} organizations", or that the filter finds none. */
+  /**
+   * "{shown} of {total} organizations", or that the filter finds none. It counts what the filter
+   * and the page show, never the row held for its editor: closing it changes no count, so this
+   * line never speaks over the status.
+   */
   protected readonly countText = computed(() => {
     const total = this.matching().length;
     if (total === 0) {
@@ -230,12 +238,12 @@ export class OrganizationsSection {
         ? ''
         : $localize`:@@aiProvider.orgs.noMatch:No organization matches.`;
     }
-    const shown = formatWhole(this.rows().length, this.locale);
+    const shown = formatWhole(this.shownCount(), this.locale);
     return $localize`:@@aiProvider.orgs.count:${shown}:shown: of ${formatWhole(total, this.locale)}:total: organizations`;
   });
   /** "Show 25 more", or fewer for the last ones; null when every one found is shown. */
   protected readonly moreText = computed(() => {
-    const n = Math.min(PAGE, this.matching().length - this.rows().length);
+    const n = Math.min(PAGE, this.matching().length - this.shownCount());
     return n > 0
       ? $localize`:@@aiProvider.orgs.more:Show ${formatWhole(n, this.locale)}:n: more`
       : null;

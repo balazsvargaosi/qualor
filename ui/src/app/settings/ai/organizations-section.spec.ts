@@ -183,6 +183,7 @@ const button = (within: Element, name: string) =>
 const field = (root: HTMLElement, id: string) => root.querySelector<HTMLInputElement>(`#${id}`);
 const editor = (root: HTMLElement) => root.querySelector<HTMLElement>('tr.editor');
 const status = (root: HTMLElement) => text(root.querySelector('.orgs-status'));
+const count = (root: HTMLElement) => text(root.querySelector('.orgs-count'));
 const foot = (root: HTMLElement) => text(editor(root)?.querySelector('.foot-status'));
 /** A button of the open editor's foot (the picker has a Cancel of its own). */
 const footButton = (root: HTMLElement, name: string) =>
@@ -670,6 +671,43 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     expect(editor(root)?.previousElementSibling).toBe(row(root, 'Acme'));
     await click(fixture, button(row(root, 'Acme'), 'Close'));
     expect(rows(root).map(nameOf)).toEqual(['Research']);
+  });
+
+  it('counts what the filter finds, never the row held in view for its editor', async () => {
+    setup();
+    const { fixture, root } = await render();
+    await edit(fixture, root, 'Acme');
+    type(root, 'ai-orgs-filter', 'research');
+    await settle(fixture);
+    expect(rows(root).map(nameOf)).toEqual(['Acme', 'Research']);
+    expect(count(root)).toBe('1 of 1 organizations');
+    type(root, 'ai-orgs-filter', 'nothing like it');
+    await settle(fixture);
+    expect(rows(root).map(nameOf)).toEqual(['Acme']);
+    expect(count(root)).toBe('No organization matches.');
+    // Closing changes no count: the count line and the status never speak at once.
+    await click(fixture, button(row(root, 'Acme'), 'Close'));
+    expect(rows(root)).toHaveLength(0);
+    expect(count(root)).toBe('No organization matches.');
+  });
+
+  it('counts the page without the row held past it for its editor', async () => {
+    const organizations = organizationsFixture(120);
+    setup(organizations);
+    const { fixture, root } = await render({ organizations, settings: CONFIGURED as Settings });
+    await click(fixture, button(root, 'Show 25 more'));
+    await edit(fixture, root, 'Org 30');
+    // A filter starts again at 25 rows: Org 30 stays for its editor, and is not counted.
+    type(root, 'ai-orgs-filter', 'org');
+    await settle(fixture);
+    expect(rows(root)).toHaveLength(26);
+    expect(count(root)).toBe('25 of 120 organizations');
+    expect(button(root, 'Show 25 more')).toBeDefined();
+    await click(fixture, field(root, `org-${organizations[29]!.id}-allow`));
+    await click(fixture, footButton(root, 'Save Org 30'));
+    expect(rows(root)).toHaveLength(25);
+    expect(status(root)).toBe('Org 30 saved.');
+    expect(count(root)).toBe('25 of 120 organizations');
   });
 
   it('gives the focus to the filter when the row it edited leaves with its editor', async () => {
