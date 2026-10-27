@@ -175,7 +175,7 @@ describe('AiSettingsPage: what it shows', () => {
     TestBed.inject(SessionStore).set(me());
     const { root } = await render();
     expect(text(root.querySelector('h2'))).toBe('AI provider');
-    expect(root.textContent).toContain('Only instance administrators configure the AI assistant.');
+    expect(root.textContent).toContain('Only instance admins connect the AI provider.');
     expect(server.requests.filter((r) => r.path.startsWith('/api/v0/system/llm'))).toEqual([]);
     expect(root.querySelector('q-status-list')).toBeNull();
   });

@@ -2123,9 +2123,7 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
     it('tells a member who is not an organisation admin, and asks the server nothing', async () => {
       const { server } = setup('member');
       const { root } = await render();
-      expect(root.textContent).toContain(
-        'Only organisation administrators change the AI review settings.',
-      );
+      expect(root.textContent).toContain('Only organization admins change the AI settings.');
       expect(root.querySelector('section#review')).toBeNull();
       expect(server.requests.filter((r) => r.path.includes('/ai'))).toHaveLength(0);
       expect(server.requests.filter((r) => r.path === '/api/v0/projects')).toHaveLength(0);
@@ -2136,9 +2134,7 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       const { fixture, root } = await render();
       TestBed.inject(OrgContext).select(OTHER_ID);
       await settle(fixture);
-      expect(root.textContent).toContain(
-        'Only organisation administrators change the AI review settings.',
-      );
+      expect(root.textContent).toContain('Only organization admins change the AI settings.');
       expect(root.querySelector('section#review')).toBeNull();
       expect(server.requestsTo('GET', `/api/v0/organizations/${OTHER_ID}/ai/review`)).toHaveLength(
         0,

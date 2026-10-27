@@ -370,9 +370,7 @@ test.describe('as people other than the instance admin', () => {
     await expect(nav.getByRole('link', { name: 'AI', exact: true })).toHaveCount(0);
 
     await page.goto('/settings/ai-review');
-    await expect(
-      page.getByText('Only organisation administrators change the AI review settings.'),
-    ).toBeVisible();
+    await expect(page.getByText('Only organization admins change the AI settings.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Switch on AI review…' })).toHaveCount(0);
     await expectAccessible(page);
   });

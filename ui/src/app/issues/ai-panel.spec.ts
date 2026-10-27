@@ -380,6 +380,21 @@ describe('AiPanel (llm.md §18)', () => {
     expect(server.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
   });
 
+  it('says so when AI was turned off for the organisation while the request waited', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/issues/i1/ai', {
+      body: {
+        explain: request({ status: 'failed', error: { code: 'AI_DISABLED', detail: null } }),
+        triage: null,
+        fix: null,
+      },
+    });
+    const { root } = await render();
+    expect(root.querySelector('[role="alert"]')?.textContent?.trim()).toBe(
+      'AI was turned off for this organization.',
+    );
+  });
+
   it('names a key that is not scoped to a workspace in words that point at the settings', async () => {
     const server = setup();
     server.on('GET', '/api/v0/issues/i1/ai', {

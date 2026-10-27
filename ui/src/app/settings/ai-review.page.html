@@ -22,9 +22,7 @@
 } @else if (!org.current() && !org.organizations.isLoading()) {
   <p class="muted" i18n="@@aiReview.noOrganization">There is no organization to show.</p>
 } @else if (org.current() && !allowed()) {
-  <p class="muted" i18n="@@aiReview.adminsOnly">
-    Only organisation administrators change the AI review settings.
-  </p>
+  <p class="muted" i18n="@@aiReview.adminsOnly">Only organization admins change the AI settings.</p>
 } @else if (loadError(); as message) {
   <p class="alert alert-error" role="alert">{{ message }}</p>
 } @else if (current(); as settings) {

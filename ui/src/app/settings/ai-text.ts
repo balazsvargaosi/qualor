@@ -52,7 +52,7 @@ export function llmProblemText(code: LlmErrorCode, providerStatus: number | null
     case 'OUTPUT_REFUSED':
       return $localize`:@@ai.problem.unsafe:The suggested fix was not safe to show.`;
     case 'AI_DISABLED':
-      return $localize`:@@ai.problem.disabled:The AI assistant was turned off for this organisation.`;
+      return $localize`:@@ai.problem.disabled:AI was turned off for this organization.`;
     case 'SETTINGS_CHANGED':
     case 'ISSUE_CHANGED':
     case 'ISSUE_GONE':
