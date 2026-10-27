@@ -63,11 +63,12 @@ const unpackKey = (projectId: string): string => `review-snapshot:project:${proj
 
 /**
  * How long an unpack whose analysis is not ingested yet waits before it looks again: 15 seconds,
- * doubling with each wait (`deferrals` before this one), to 5 minutes at most. The ingestion makes
+ * doubling with each wait (`deferrals` before this one), to 1 minute at most (the wait holds the
+ * project's unpack key). The ingestion makes
  * the waiting job due at once (unpackDueNow), so this bounds only a wait that ends otherwise.
  */
 export function unpackDeferralSeconds(deferrals: number): number {
-  return Math.min(300, 15 * 2 ** Math.min(Math.max(deferrals, 0), 5));
+  return Math.min(60, 15 * 2 ** Math.min(Math.max(deferrals, 0), 5));
 }
 
 /** The snapshot's limits: QUALOR_REVIEW_SNAPSHOT_MAX_* (`config.reviewSnapshot`). */
@@ -470,7 +471,7 @@ class Unpacker {
     this.changes += 1;
     await this.add(line.path, size, (row) => {
       row.change = line.status;
-      row.oldPath = line.oldPath;
+      row.oldPath = line.status === 'renamed' ? line.oldPath : null;
       row.patch = line.patch;
       row.since =
         line.since === null ? null : line.since.map(([from, to]): [number, number] => [from, to]);

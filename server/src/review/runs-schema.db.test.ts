@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { LLM_FEATURES } from '@qualor/shared';
-import { eq, inArray } from 'drizzle-orm';
+import { count, eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
 import { seedIssue, seedRule } from '../../test/issues';
@@ -82,7 +82,7 @@ describe('review_runs and review_findings (6I-3, migration 0016_review_runs)', (
   const runValues = async (over: Partial<RunInsert> = {}): Promise<RunInsert> => ({
     projectId,
     branchId: mergeRequestId,
-    analysisId: await newAnalysis(),
+    analysisId: over.analysisId ?? (await newAnalysis()),
     deadlineAt: DEADLINE,
     ...over,
   });
@@ -379,6 +379,30 @@ describe('review_runs and review_findings (6I-3, migration 0016_review_runs)', (
     for (const phase of ['planning', 'Judge', '']) {
       expect(await tryRun(analysisId, { status: 'running', phase: phase as never }), phase).toEqual(
         checkViolation('review_runs_phase_check'),
+      );
+    }
+  });
+
+  it('runValues with an analysisId makes no other analysis', async () => {
+    const analysisId = await newAnalysis();
+    const total = async () => first(await t.db.select({ n: count() }).from(analyses)).n;
+    const before = await total();
+    expect((await runValues({ analysisId })).analysisId).toBe(analysisId);
+    expect(await total()).toBe(before);
+  });
+
+  it('a head_sha with a leading space or a trailing newline is refused', async () => {
+    const analysisId = await newAnalysis();
+    for (const sha of [
+      ` ${SHA1}`,
+      `${SHA1}
+`,
+      ` ${SHA256}`,
+      `${SHA256}
+`,
+    ]) {
+      expect(await tryRun(analysisId, { headSha: sha }), JSON.stringify(sha)).toEqual(
+        checkViolation('review_runs_head_sha_format'),
       );
     }
   });

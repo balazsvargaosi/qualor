@@ -363,6 +363,23 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
       ]);
     });
 
+    it("a non-rename change line's oldPath is not stored", async () => {
+      const { snapshotId, outcome } = await unpacked(
+        snapshotText([
+          changeLine('src/m.ts', { status: 'modified', oldPath: 'src/was-m.ts' }),
+          changeLine('src/r.ts', { status: 'renamed', oldPath: 'src/was-r.ts' }),
+          fileLine('src/m.ts'),
+          fileLine('src/r.ts'),
+        ]),
+      );
+      expect(outcome).toBe('ready');
+      const rows = await fileRows(snapshotId);
+      expect(rows.map((r) => [r.path, r.change, r.oldPath])).toEqual([
+        ['src/m.ts', 'modified', null],
+        ['src/r.ts', 'renamed', 'src/was-r.ts'],
+      ]);
+    });
+
     it('merges each change into its file across batches of rows', async () => {
       // 120 changes before 250 files, as the scanner writes them: the change of a path is
       // stored batches before its file line comes.
@@ -1041,9 +1058,9 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
       expect(await fileRows(snapshotId)).toEqual([]);
     });
 
-    it('waits longer each time, and decides at once for an analysis that failed', async () => {
+    it("the unpack's deferral waits 15, 30, 60, 60 … s, and decides at once for an analysis that failed", async () => {
       expect([0, 1, 2, 3, 4, 5, 6, 40].map(unpackDeferralSeconds)).toEqual([
-        15, 30, 60, 120, 240, 300, 300, 300,
+        15, 30, 60, 60, 60, 60, 60, 60,
       ]);
       const iid = nextMergeRequest();
       const analysisId = await queuedAnalysis(iid);
@@ -1051,8 +1068,8 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
       expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS, { deferrals: 3 })).toBe('deferred');
       const next = (await unpackJobsOf(snapshotId)).at(-1);
       expect(next).toMatchObject({ status: 'queued', payload: { snapshotId, deferrals: 4 } });
-      expect(next!.inSeconds).toBeGreaterThanOrEqual(118);
-      expect(next!.inSeconds).toBeLessThanOrEqual(120);
+      expect(next!.inSeconds).toBeGreaterThanOrEqual(58);
+      expect(next!.inSeconds).toBeLessThanOrEqual(60);
       // Its report could not be read: the analysis failed before it had a merge request, and
       // the snapshot is refused (R22).
       await h.ctx.db.update(analyses).set({ status: 'failed' }).where(eq(analyses.id, analysisId));

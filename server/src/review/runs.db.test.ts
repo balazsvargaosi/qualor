@@ -681,6 +681,32 @@ describe('the review run lifecycle (6I-3, R15)', () => {
       expect(await decorationsOf(early.analysisId)).toEqual([]);
     });
 
+    it('a waiting run swept past its deadline with a ready snapshot gets a job, not no_snapshot', async () => {
+      const mr = nextMergeRequest();
+      const run = await runOf(await p.ingestOk(report(mr)));
+      await snapshotOf(run.analysisId, mr);
+      // Its job died twice over; the deadline has passed.
+      await h.ctx.db.delete(jobs).where(sql`${jobs.payload} ->> 'runId' = ${run.id}`);
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ deadlineAt: sql`now() - interval '1 minute'` })
+        .where(eq(reviewRuns.id, run.id));
+      const decorated = await decorationsOf(run.analysisId);
+      expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+        ended: 0,
+        queued: 1,
+      });
+      expect(await runOf(run.analysisId)).toMatchObject({ status: 'waiting', finishedAt: null });
+      expect(await jobsOf(run.id)).toEqual([expect.objectContaining({ due: true })]);
+      expect(await decorationsOf(run.analysisId)).toEqual(decorated); // no end, no decoration
+      // The job is there now: a second sweep makes no other.
+      expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+        ended: 0,
+        queued: 0,
+      });
+      expect(await jobsOf(run.id)).toHaveLength(1);
+    });
+
     it('leaves a run alone while a job of it is queued or running, however old the run', async () => {
       const waiting = await runOf(await p.ingestOk(report(nextMergeRequest())));
       const running = await runOf(await p.ingestOk(report(nextMergeRequest())));

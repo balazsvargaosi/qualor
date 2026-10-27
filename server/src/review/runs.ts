@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { Db, Executor, Tx } from '../db/client';
 import { uuidv7 } from '../db/ids';
-import { branches, jobs, reviewRuns, type ReviewRunStatus } from '../db/schema';
+import { branches, jobs, reviewRuns, reviewSnapshots, type ReviewRunStatus } from '../db/schema';
 import { enqueue } from '../queue/queue';
 import type { WorkerLogger } from '../queue/worker';
 import { tryLockBranchQueue } from '../scm/queue';
@@ -354,6 +354,20 @@ async function reconcileRun(
       await queueAtDeadline(tx, run);
       return 'queued';
     }
+    if (run.status === 'waiting') {
+      // Its job died after the deadline, but the snapshot is there: a job decides it, as it would
+      // have. (A missing or failed snapshot ends the run below, as before.)
+      const [ready] = await tx
+        .select({ id: reviewSnapshots.id })
+        .from(reviewSnapshots)
+        .where(
+          and(eq(reviewSnapshots.analysisId, run.analysisId), eq(reviewSnapshots.status, 'ready')),
+        );
+      if (ready !== undefined) {
+        await queueJob(tx, run);
+        return 'queued';
+      }
+    }
     const end: RunEnd =
       run.status === 'running'
         ? { status: 'failed', reason: 'internal' }
@@ -371,7 +385,7 @@ async function reconcileRun(
  * so nothing would ever end them and the merge request's summary would say the review is in
  * progress for good. After every reap of the review worker (main.ts, every 30 seconds), each is
  * ended here, never through a job: a running one `failed: internal`, a waiting one past its
- * deadline `skipped: no_snapshot`, and a waiting one before its deadline gets a job at the
+ * deadline `skipped: no_snapshot` (given a job instead when its snapshot is ready), and a waiting one before its deadline gets a job at the
  * deadline. Each end is decorated (run-ends.ts). Decided by whether a job is there, never by the
  * run's age: a long review keeps its job running, its lease extended by the worker. A run whose
  * transaction fails is said once (its id and the error's class) and left to the next sweep; the
