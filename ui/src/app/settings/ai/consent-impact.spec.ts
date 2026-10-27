@@ -140,6 +140,19 @@ describe('reviewingOrganizations', () => {
     } as unknown as LlmSettings;
     expect(reviewingOrganizations(settings, [acme, research])).toEqual([]);
   });
+
+  it('names none that may not use AI, whatever its admins switched on', () => {
+    const settings = {
+      ...CONFIGURED,
+      organizations: {
+        [acme.id]: status(true, true),
+        [research.id]: { ...status(true, true), enabled: false },
+      },
+    } as unknown as LlmSettings;
+    expect(reviewingOrganizations(settings, [acme, research])).toEqual([
+      { id: acme.id, name: acme.name },
+    ]);
+  });
 });
 
 describe('unnamedReviewing', () => {
@@ -163,5 +176,16 @@ describe('unnamedReviewing', () => {
     // It names Acme: one more.
     expect(unnamedReviewing(settings, [acme])).toBe(1);
     expect(unnamedReviewing(settings, [acme, research])).toBe(0);
+  });
+
+  it('counts none that may not use AI, whatever its admins switched on', () => {
+    const settings = {
+      ...CONFIGURED,
+      organizations: {
+        [acme.id]: status(true, true),
+        [research.id]: { ...status(true, true), enabled: false },
+      },
+    } as unknown as LlmSettings;
+    expect(unnamedReviewing(settings, [])).toBe(1);
   });
 });

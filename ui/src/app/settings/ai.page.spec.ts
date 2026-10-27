@@ -622,6 +622,36 @@ describe('AiSettingsPage: its actions', () => {
     expect(document.activeElement).toBe(field(root, 'ai-prices'));
   });
 
+  it('asks nothing before a model change where AI review is off everywhere: an organisation that may not use AI reviews nothing', async () => {
+    const settings = configured({
+      organizations: {
+        [ORG_ID]: stored({
+          enabled: false,
+          reviewStatus: { enabled: true, consentCurrent: true },
+        }),
+      },
+    });
+    const server = setup(settings);
+    storeBodies(server, settings);
+    server.on('GET', '/api/v0/organizations', { body: page([DEFAULT_ORG]) });
+    server.on('POST', '/api/v0/system/llm/test', {
+      body: testAnswer({
+        ok: true,
+        model: 'qwen3-coder',
+        latencyMs: 12,
+        toolCalling: 'supported',
+        problem: null,
+      }),
+    });
+    const { fixture, root } = await render();
+    expect(text(statusLine(root, 'review'))).toBe('AI review Off everywhere');
+    await fill(fixture, root, 'ai-model', 'qwen3-coder');
+    await click(fixture, button(root.querySelector('section#provider')!, 'Save and test'));
+    expect(root.querySelector<HTMLDialogElement>('#ai-pause-dialog')?.open).toBe(false);
+    expect(puts(server)).toHaveLength(1);
+    expect(puts(server)[0]?.provider).toMatchObject({ model: 'qwen3-coder' });
+  });
+
   it('gives the provider every organisation, so its question names one listed on a later page', async () => {
     const first = organizationsFixture(100);
     const late: Organization = { ...RESEARCH_ORG, name: 'Late Org' };

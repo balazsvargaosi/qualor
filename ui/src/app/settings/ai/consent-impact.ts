@@ -57,7 +57,9 @@ export function pausesReview(saved: LlmSettings['provider'], draft: ConsentInput
 
 /**
  * The organisations whose AI review is on and confirmed for the provider saved now, in the order
- * given: those a provider change pauses. An organisation the settings do not hold has neither.
+ * given: those a provider change pauses. Only an organisation that may use AI reviews: one that
+ * may not reviews nothing, whatever its admins switched on. An organisation the settings do not
+ * hold has neither.
  */
 export function reviewingOrganizations(
   settings: LlmSettings,
@@ -65,16 +67,16 @@ export function reviewingOrganizations(
 ): { id: string; name: string }[] {
   return organizations
     .filter((o) => {
-      const review = settings.organizations[o.id]?.reviewStatus;
-      return review?.enabled === true && review.consentCurrent;
+      const entry = settings.organizations[o.id];
+      return entry !== undefined && reviewing(entry);
     })
     .map((o) => ({ id: o.id, name: o.name }));
 }
 
 /**
- * How many organisations a provider change pauses that `organizations` does not name: their AI
- * review is on and confirmed, and the list lacks them (it could not be read, or ends before
- * them). They are counted, so the question before the change is still asked.
+ * How many organisations a provider change pauses that `organizations` does not name: they may
+ * use AI, their AI review is on and confirmed, and the list lacks them (it could not be read, or
+ * ends before them). They are counted, so the question before the change is still asked.
  */
 export function unnamedReviewing(
   settings: LlmSettings,
@@ -82,6 +84,11 @@ export function unnamedReviewing(
 ): number {
   const named = new Set(organizations.map((o) => o.id));
   return Object.entries(settings.organizations).filter(
-    ([id, o]) => !named.has(id) && o.reviewStatus.enabled && o.reviewStatus.consentCurrent,
+    ([id, entry]) => !named.has(id) && reviewing(entry),
   ).length;
+}
+
+/** An organisation reviews: it may use AI, and its review is on and confirmed for the provider. */
+function reviewing(entry: LlmSettings['organizations'][string]): boolean {
+  return entry.enabled && entry.reviewStatus.enabled && entry.reviewStatus.consentCurrent;
 }
