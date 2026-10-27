@@ -50,6 +50,8 @@ let pickers = 0;
  *   take (`unavailable` gives its reason) is disabled with the reason as text.
  * - Add emits the ticked projects, in the order they were ticked. Add, Cancel and Escape close the
  *   panel and give the focus back to the button; it opens afresh each time.
+ * - What is ticked and not added yet is `pending`, which the page counts as unsaved; the page's
+ *   Save adds it first (`addPending`).
  */
 @Component({
   selector: 'q-project-picker',
@@ -83,6 +85,11 @@ export class ProjectPicker {
   protected readonly errorText = signal('');
   /** The projects ticked so far, by id, in the order they were ticked. */
   protected readonly ticked = signal<ReadonlyMap<string, PickedProject>>(new Map());
+  /**
+   * The projects ticked and not added yet, in the order they were ticked: the page's list counts
+   * them as unsaved, and its Save adds them first (`addPending`).
+   */
+  readonly pending = computed(() => [...this.ticked().values()]);
 
   protected readonly options = computed(() => {
     const chosen = new Set(this.chosen());
@@ -137,10 +144,15 @@ export class ProjectPicker {
   }
 
   protected addTicked(): void {
-    const picked = [...this.ticked().values()];
-    if (picked.length === 0) return;
-    this.close();
-    this.add.emit(picked);
+    this.emitTicked(true);
+  }
+
+  /**
+   * Adds the projects ticked, as Add does, for the page's Save: the focus stays where it is (on
+   * the Save). Nothing ticked, nothing happens.
+   */
+  addPending(): void {
+    this.emitTicked(false);
   }
 
   /** Escape closes the open panel, and only it: a dialog around the picker stays open. */
@@ -162,6 +174,14 @@ export class ProjectPicker {
     this.errorText.set('');
     this.state.set('idle');
     if (refocus) this.button().nativeElement.focus();
+  }
+
+  /** Closes the panel and emits the projects ticked; `refocus` gives the button the focus. */
+  private emitTicked(refocus: boolean): void {
+    const picked = this.pending();
+    if (picked.length === 0) return;
+    this.close(refocus);
+    this.add.emit(picked);
   }
 
   private show(): void {

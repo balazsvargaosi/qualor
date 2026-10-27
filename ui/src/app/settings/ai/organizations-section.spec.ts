@@ -471,6 +471,47 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     expect(cells(row(root, 'Acme'))[3]).toBe('1 project');
   });
 
+  it('counts the projects ticked and not added as changes, and its Save adds them first', async () => {
+    setup();
+    const { fixture, root, section, saves } = await render();
+    await edit(fixture, root, 'Acme');
+    await click(fixture, button(editor(root)!, 'Add a project'));
+    const boxes = () => [
+      ...editor(root)!.querySelectorAll<HTMLInputElement>('q-project-picker li input'),
+    ];
+    await click(fixture, boxes()[1]);
+    await click(fixture, boxes()[0]);
+    expect(section.dirty()).toBe(true);
+    expect(foot(root)).toBe('2 unsaved changes');
+    // Unticked, a project is no change.
+    await click(fixture, boxes()[1]);
+    expect(foot(root)).toBe('1 unsaved change');
+
+    const save = button(editor(root)!, 'Save Acme')!;
+    save.focus();
+    await click(fixture, save);
+    expect(saves).toEqual([
+      [ACME, { enabled: true, features: ALL_ON, excludedProjectIds: ['p3', 'p1'] }],
+    ]);
+    expect(editor(root)).toBeNull();
+    expect(cells(row(root, 'Acme'))[3]).toBe('2 projects');
+  });
+
+  it('forgets the projects ticked once its picker is cancelled', async () => {
+    setup();
+    const { fixture, root, section } = await render();
+    await edit(fixture, root, 'Acme');
+    await click(fixture, button(editor(root)!, 'Add a project'));
+    await click(
+      fixture,
+      editor(root)!.querySelector<HTMLInputElement>('q-project-picker li input'),
+    );
+    expect(section.dirty()).toBe(true);
+    await click(fixture, button(editor(root)!.querySelector('q-project-picker')!, 'Cancel'));
+    expect(section.dirty()).toBe(false);
+    expect(foot(root)).toBe('No unsaved changes');
+  });
+
   it('names the projects never sent from their organisation’s list, page by page, and says when one is not listed', async () => {
     const many = Array.from({ length: 150 }, (_, i) =>
       projectItem({ id: `q${i}`, key: `acme/q${i}`, name: `Q ${i}` }),

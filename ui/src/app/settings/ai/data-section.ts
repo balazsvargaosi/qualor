@@ -61,7 +61,8 @@ const MAX_DAYS = 90;
  * - **What is sent** to the provider's host, feature by feature, and what is never sent.
  * - **Never send these paths:** a list of globs with Remove, and a field that adds one. A glob is
  *   checked as the server does (not empty, at most 200 characters, from the repository root, no
- *   NUL), and once only; at most 100.
+ *   NUL), and once only; at most 100. A pattern typed and not added is an unsaved change: Save
+ *   adds it first, or refuses it as Add would and sends nothing.
  * - **Copies of what is sent:** the switch, and the days they are kept under it.
  *
  * Its own foot saves them (`saveData`); a refusal marks its field in the page's own words, and an
@@ -108,9 +109,9 @@ export class DataSection {
   /** The settings as last saved, as the section holds them: what the draft compares with. */
   private readonly base = signal<Draft>(draftOf(null, this.locale));
   protected readonly draft = signal<Draft>(draftOf(null, this.locale));
-  /** The add field's text: a pattern not added yet is no change. */
+  /** The add field's text: a pattern typed and not added yet is one change, which Save adds. */
   protected readonly pattern = signal('');
-  /** Why Add did not take the pattern: the field says it, and nothing to save is refused. */
+  /** Why Add did not take the pattern: the field says it. */
   private readonly addError = signal<string | null>(null);
   protected readonly errors = signal<Errors>({});
   private readonly saving = signal(false);
@@ -124,8 +125,17 @@ export class DataSection {
 
   private readonly addField = viewChild<ElementRef<HTMLInputElement>>('addField');
 
-  /** The changes from what is saved: each path added or removed, the switch, the days. */
-  private readonly changes = computed(() => changesOf(this.draft(), this.base()));
+  /** A pattern is typed and not added: Save adds it first. Spaces alone are no pattern. */
+  private readonly typed = computed(() => this.pattern().trim() !== '');
+  /**
+   * The changes from what is saved: each path added or removed, the switch, the days, and a
+   * pattern typed and not added.
+   */
+  private readonly changes = computed(() => {
+    const changes = changesOf(this.draft(), this.base());
+    const typed = Number(this.typed());
+    return { ...changes, paths: changes.paths + typed, count: changes.count + typed };
+  });
   /** Edits wait to be saved: leaving the page asks first. */
   readonly dirty = computed(() => this.changes().count > 0);
   protected readonly pathsChanged = computed(() => this.changes().paths > 0);
@@ -177,9 +187,11 @@ export class DataSection {
     return this.errors()[field] ?? null;
   }
 
+  /** Typing is an edit of the list: the pattern waits to be saved, and a refusal of it goes. */
   protected setPattern(event: Event): void {
     this.pattern.set(inputValue(event));
     this.addError.set(null);
+    this.edited('exclude');
   }
 
   /** Enter in the add field adds, as Add does. */
@@ -191,27 +203,16 @@ export class DataSection {
 
   /**
    * Add: the pattern joins the list when it is a glob from the repository root not listed yet,
-   * and the list has room; else the field says why, keeps the pattern and takes the focus. A
-   * pattern refused is not the section's: its Save still saves the list as it is.
+   * and the list has room; else the field says why, keeps the pattern and takes the focus.
    */
   protected add(): void {
-    const glob = this.pattern().trim();
-    const paths = this.draft().paths;
-    const refused = !isGlob(glob)
-      ? badGlob()
-      : paths.includes(glob)
-        ? $localize`:@@aiProvider.data.listed:That pattern is already listed.`
-        : paths.length >= MAX_PATHS
-          ? tooManyPaths()
-          : null;
+    const refused = refusalOf(this.pattern().trim(), this.draft().paths);
     this.addError.set(refused);
     if (refused !== null) {
       this.focusLater(INPUTS.exclude);
       return;
     }
-    this.draft.update((d) => ({ ...d, paths: [...d.paths, glob] }));
-    clearField(this.addField(), this.pattern);
-    this.edited('exclude');
+    this.takePattern();
   }
 
   /** Removes a path; the focus goes to the Remove that takes its place, else the add field. */
@@ -244,9 +245,21 @@ export class DataSection {
     if (read(before) === null || read(before) !== read(text)) this.edited('retention');
   }
 
-  /** Save data and privacy: the days are checked first (a refusal sends nothing), then the save. */
+  /**
+   * Save data and privacy: a pattern typed and not added joins the list first, and the days are
+   * checked; either refused, nothing is sent and the field says why. Then the save.
+   */
   protected async save(): Promise<void> {
     if (this.saving()) return;
+    if (this.typed()) {
+      const refused = refusalOf(this.pattern().trim(), this.draft().paths);
+      if (refused !== null) {
+        this.addError.set(null);
+        this.refuse({ exclude: refused });
+        return;
+      }
+      this.takePattern();
+    }
     const d = this.draft();
     let promptRetentionDays = this.savedDays;
     if (d.storePrompts) {
@@ -272,6 +285,14 @@ export class DataSection {
     } finally {
       this.saving.set(false);
     }
+  }
+
+  /** The pattern typed joins the list, and the add field empties. */
+  private takePattern(): void {
+    const glob = this.pattern().trim();
+    this.draft.update((d) => ({ ...d, paths: [...d.paths, glob] }));
+    clearField(this.addField(), this.pattern);
+    this.edited('exclude');
   }
 
   /** The draft takes new settings: what is not edited here shows the saved value. */
@@ -361,6 +382,18 @@ function changesOf(
 /** A glob as the server takes one: 1 to 200 characters, from the repository root, without NUL. */
 function isGlob(glob: string): boolean {
   return glob !== '' && glob.length <= MAX_GLOB && !glob.startsWith('/') && !glob.includes('\0');
+}
+
+/**
+ * Why a pattern cannot join the list, or null when it can: a glob from the repository root, not
+ * listed yet, while the list has room.
+ */
+function refusalOf(glob: string, paths: readonly string[]): string | null {
+  if (!isGlob(glob)) return badGlob();
+  if (paths.includes(glob)) {
+    return $localize`:@@aiProvider.data.listed:That pattern is already listed.`;
+  }
+  return paths.length >= MAX_PATHS ? tooManyPaths() : null;
 }
 
 function badGlob(): string {

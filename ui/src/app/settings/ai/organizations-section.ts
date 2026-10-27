@@ -12,6 +12,7 @@ import {
   output,
   signal,
   untracked,
+  viewChild,
 } from '@angular/core';
 import { Api, ok } from '../../api/api';
 import { problemMessage } from '../../api/errors';
@@ -95,7 +96,8 @@ type Count =
  *   and the projects never sent hanging from it. Its own foot saves the entry (`saveEntry`); an
  *   edit made while the save is on its way stays, unsaved.
  * - The names of the projects never sent are read from the organisation's list when the editor
- *   opens (never every project of the instance); "Add a project" searches the server.
+ *   opens (never every project of the instance); "Add a project" searches the server. Projects
+ *   ticked there and not added count as changes, and Save adds them first.
  * - **Open** asks the page to open the organisation's AI page (`openOrganization`): the page
  *   asks once before it leaves unsaved changes, switches the header's organisation, and goes there.
  *
@@ -264,10 +266,18 @@ export class OrganizationsSection {
       : null;
   });
 
-  /** The open editor's changes: each switch, and each project added to or taken from the list. */
+  /** The open editor's picker of the projects never sent, while it shows. */
+  private readonly picker = viewChild(ProjectPicker);
+  /**
+   * The open editor's changes: each switch, each project added to or taken from the list, and
+   * each project ticked in its picker and not added yet, which its Save adds first.
+   */
   private readonly changeCount = computed(() => {
     const editor = this.editor();
-    return editor === null ? 0 : changes(editor.draft, editor.base);
+    if (editor === null) return 0;
+    const listed = new Set(editor.draft.excludedProjectIds);
+    const ticked = (this.picker()?.pending() ?? []).filter((p) => !listed.has(p.id)).length;
+    return changes(editor.draft, editor.base) + ticked;
   });
   /** The open editor has unsaved changes: leaving the page asks first. */
   readonly dirty = computed(() => this.changeCount() > 0);
@@ -459,13 +469,16 @@ export class OrganizationsSection {
   }
 
   /**
-   * Save {org}: the entry as it is now. On success the editor closes, unless something was edited
-   * while the save was on its way: that stays, unsaved. A refusal shows in the editor's foot.
+   * Save {org}: the entry as it is now, with the projects ticked in the picker and not added yet,
+   * which it adds first. On success the editor closes, unless something was edited while the save
+   * was on its way: that stays, unsaved. A refusal shows in the editor's foot.
    */
   protected async save(): Promise<void> {
+    const org = this.organizations().find((o) => o.id === this.editingId());
+    if (org === undefined || this.saving()) return;
+    this.picker()?.addPending();
     const editor = this.editor();
-    const org = this.organizations().find((o) => o.id === editor?.id);
-    if (editor === null || org === undefined || this.saving()) return;
+    if (editor === null) return;
     const sent = copyOf(editor.draft);
     const generation = this.generation;
     this.saving.set(true);

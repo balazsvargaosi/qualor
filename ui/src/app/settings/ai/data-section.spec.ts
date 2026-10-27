@@ -248,18 +248,14 @@ describe('DataSection: the paths never sent', () => {
       expect(text(root.querySelector('#ai-exclude-add-error')), pattern).toBe(LISTED);
       expect(items(root), pattern).toEqual(['config/**', '**/*.pem']);
     }
-    // A pattern refused is no refusal of the section: nothing to save is wrong.
-    expect(foot(root)).toBe('No unsaved changes');
+    // A pattern refused by Add stays in its field: it waits to be saved, as one typed does.
+    expect(foot(root)).toBe('1 unsaved change');
     // Typing again clears the refusal; 200 characters are a glob.
     await fill(fixture, root, 'ai-exclude-add', 'x'.repeat(200));
     expect(root.querySelector('#ai-exclude-add-error')).toBeNull();
     await click(fixture, button(root, 'Add'));
     expect(items(root)).toHaveLength(3);
-    // The list added to stays savable while a pattern is refused.
-    await add(fixture, root, 'config/**');
-    expect(text(root.querySelector('#ai-exclude-add-error'))).toBe(LISTED);
     expect(foot(root)).toBe('1 unsaved change');
-    expect(button(root, 'Save data and privacy').hasAttribute('disabled')).toBe(false);
   });
 
   it('refuses a 101st path', async () => {
@@ -273,6 +269,82 @@ describe('DataSection: the paths never sent', () => {
     expect(items(root)).toHaveLength(100);
     expect(field(root, 'ai-exclude-add').value).toBe('one-more/**');
     expect(puts(server)).toEqual([]);
+  });
+
+  it('counts a pattern typed and not added as a change, and Save adds it before it saves', async () => {
+    const server = setup();
+    const { fixture, root, section } = await render({ settings: PATHS });
+    await fill(fixture, root, 'ai-exclude-add', ' legacy/** ');
+    expect(items(root)).toEqual(['config/**', '**/*.pem']);
+    expect(section.dirty()).toBe(true);
+    expect(foot(root)).toBe('1 unsaved change');
+    expect(root.querySelector('#ai-exclude-name')?.classList).toContain('changed');
+
+    await save(fixture, root);
+    expect(puts(server)).toEqual([
+      {
+        excludePaths: ['config/**', '**/*.pem', 'legacy/**'],
+        storePrompts: false,
+        promptRetentionDays: 7,
+      },
+    ]);
+    expect(items(root)).toEqual(['config/**', '**/*.pem', 'legacy/**']);
+    expect(field(root, 'ai-exclude-add').value).toBe('');
+    expect(foot(root)).toMatch(/^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/);
+    expect(section.dirty()).toBe(false);
+  });
+
+  it('refuses a pattern typed that Add would refuse, on the add field, and sends nothing', async () => {
+    const server = setup();
+    const hundred = Array.from({ length: 100 }, (_, i) => `p${i}/**`);
+    for (const [settings, pattern, message] of [
+      [PATHS, '/etc/**', BAD_GLOB],
+      [PATHS, ' config/** ', LISTED],
+      [
+        { ...CONFIGURED, excludePaths: hundred },
+        'one-more/**',
+        'Use at most 100 globs, relative to the repository root.',
+      ],
+    ] as const) {
+      const { fixture, root, section } = await render({ settings });
+      const before = items(root);
+      await fill(fixture, root, 'ai-exclude-add', pattern);
+      expect(foot(root), pattern).toBe('1 unsaved change');
+      await save(fixture, root);
+      expect(puts(server), pattern).toEqual([]);
+      const input = field(root, 'ai-exclude-add');
+      expect(input.getAttribute('aria-invalid'), pattern).toBe('true');
+      expect(text(root.querySelector('#ai-exclude-add-error')), pattern).toBe(message);
+      expect(foot(root), pattern).toBe('1 field needs attention: Never send these paths');
+      expect(document.activeElement, pattern).toBe(input);
+      expect(input.value, pattern).toBe(pattern);
+      expect(items(root), pattern).toEqual(before);
+      expect(section.dirty(), pattern).toBe(true);
+      // Typing again is an edit: the refusal goes. Spaces alone are no pattern, and no change.
+      await fill(fixture, root, 'ai-exclude-add', '   ');
+      expect(root.querySelector('#ai-exclude-add-error'), pattern).toBeNull();
+      expect(foot(root), pattern).toBe('No unsaved changes');
+      expect(section.dirty(), pattern).toBe(false);
+      fixture.destroy();
+    }
+  });
+
+  it('adds a pattern typed before it checks the days', async () => {
+    const server = setup();
+    const { fixture, root } = await render({ settings: COPIES });
+    await fill(fixture, root, 'ai-exclude-add', 'legacy/**');
+    await fill(fixture, root, 'ai-retention', '0');
+    await save(fixture, root);
+    expect(puts(server)).toEqual([]);
+    // The pattern is in the list, unsaved; the days are refused.
+    expect(items(root)).toEqual(['legacy/**']);
+    expect(field(root, 'ai-exclude-add').value).toBe('');
+    expect(foot(root)).toBe('1 field needs attention: Keep for');
+    await fill(fixture, root, 'ai-retention', '20');
+    await save(fixture, root);
+    expect(puts(server)).toEqual([
+      { excludePaths: ['legacy/**'], storePrompts: true, promptRetentionDays: 20 },
+    ]);
   });
 
   it('maps the server’s refusal of the paths to the add field', async () => {

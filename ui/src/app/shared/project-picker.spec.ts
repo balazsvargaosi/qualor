@@ -231,6 +231,32 @@ describe('ProjectPicker', () => {
     expect(document.activeElement).toBe(toggle());
   });
 
+  it('tells the page what is ticked and not added, and adds it on the page’s Save, the focus left where it is', async () => {
+    const { added, toggle, panel } = await render();
+    const picker = fixture.componentInstance;
+    expect(picker.pending()).toEqual([]);
+    toggle().click();
+    await flush();
+    box(panel(), 'Web shop').click();
+    box(panel(), 'Payments core').click();
+    await flush();
+    expect(picker.pending()).toEqual([SHOP, PAYMENTS]);
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    onTestFinished(() => outside.remove());
+    outside.focus();
+
+    picker.addPending();
+    await flush();
+    expect(added).toEqual([[SHOP, PAYMENTS]]);
+    expect(picker.pending()).toEqual([]);
+    expect(panel().hidden).toBe(true);
+    expect(document.activeElement).toBe(outside);
+    // Nothing ticked: nothing to add.
+    picker.addPending();
+    expect(added).toHaveLength(1);
+  });
+
   it('keeps what was ticked while the search changes', async () => {
     const { added, toggle, panel, search, button } = await render();
     toggle().click();

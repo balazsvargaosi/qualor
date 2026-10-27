@@ -773,6 +773,26 @@ describe('AiSettingsPage: leaving', () => {
     await expect(answer).resolves.toBe(true);
   });
 
+  it('asks before leaving a path typed and not added', async () => {
+    setup(CONFIGURED);
+    const { fixture, root, page: aiPage } = await render();
+    await fill(fixture, root, 'ai-exclude-add', 'legacy/**');
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+
+    const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
+    const answer = aiPage.canLeave() as Promise<boolean>;
+    await settle(fixture);
+    expect(leave.open).toBe(true);
+    expect(text(leave.querySelector('#leave-text'))).toBe(
+      'Your changes to Data and privacy are not saved yet.',
+    );
+    await click(fixture, button(leave, 'Stay'));
+    await expect(answer).resolves.toBe(false);
+    expect(field(root, 'ai-exclude-add').value).toBe('legacy/**');
+  });
+
   it('asks once before the header switches the organisation with unsaved changes; Stay keeps it', async () => {
     const server = setup(CONFIGURED);
     server.on('GET', '/api/v0/organizations', { body: page([DEFAULT_ORG, RESEARCH_ORG]) });
