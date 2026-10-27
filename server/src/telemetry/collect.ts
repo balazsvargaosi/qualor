@@ -112,15 +112,17 @@ const oneOf = (value: string, known: readonly string[]): string =>
 
 /**
  * Schema 2's numbers, or null when either collector fails. The day's report is then schema 1, which
- * the receiver takes, and never zeros, which would read as no reviews.
+ * the receiver takes, and never zeros, which would read as no reviews. The settings are those the
+ * report reads: a failure to read them is the report's own, and is not caught here.
  */
 async function countAiUse(
   deps: CollectDeps,
-  settings: StoredLlmSettings,
+  settings: Promise<StoredLlmSettings>,
 ): Promise<{ aiReview: AiReviewUsage; assistant30d: AssistantUsage } | null> {
+  const read = await settings;
   try {
     const [aiReview, assistant30d] = await Promise.all([
-      collectAiReviewUsage(deps.db, settings),
+      collectAiReviewUsage(deps.db, read),
       collectAssistantUsage(deps.db),
     ]);
     return { aiReview, assistant30d };
@@ -143,6 +145,8 @@ export async function collectTelemetry(deps: CollectDeps): Promise<TelemetryPayl
   const values = async (query: SQL): Promise<(string | null)[]> =>
     (await db.execute<{ v: string | null }>(query)).rows.map((r) => r.v);
   const recent = sql`queued_at > now() - interval '30 days'`;
+  // The settings are read once: AI review's numbers are of the same settings as the features.
+  const settings = readLlmSettings(db);
 
   const [
     organizations,
@@ -159,6 +163,7 @@ export async function collectTelemetry(deps: CollectDeps): Promise<TelemetryPayl
     engines,
     scm,
     llm,
+    aiUse,
   ] = await Promise.all([
     count(sql`SELECT count(*) AS n FROM organizations`),
     count(sql`SELECT count(*) AS n FROM users`),
@@ -178,10 +183,9 @@ export async function collectTelemetry(deps: CollectDeps): Promise<TelemetryPayl
         FROM analyses a CROSS JOIN LATERAL jsonb_array_elements(a.engines) e
        WHERE a.queued_at > now() - interval '30 days' AND e ->> 'status' = 'ok'`),
     values(sql`SELECT DISTINCT provider AS v FROM scm_connections`),
-    readLlmSettings(db),
+    settings,
+    countAiUse(deps, settings),
   ]);
-  // The settings are read once: AI review's numbers are of the same settings as the features.
-  const aiUse = await countAiUse(deps, llm);
 
   const report: TelemetryPayloadV1 = {
     schema: 1,
