@@ -1,6 +1,5 @@
-import type { Organization, ResponseBody } from '../../api/types';
-
-type LlmSettings = ResponseBody<'/api/v0/system/llm', 'get'>;
+import type { Organization } from '../../api/types';
+import type { LlmSettings } from './llm-body';
 
 /** The provider's fields an organisation's AI review confirmation names: its address and models. */
 export interface ConsentInput {

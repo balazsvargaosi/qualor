@@ -37,9 +37,8 @@ import {
   pausesReview,
   reviewingOrganizations,
 } from './consent-impact';
-import type { LlmBody } from './llm-body';
+import type { LlmBody, LlmSettings } from './llm-body';
 
-type LlmSettings = ResponseBody<'/api/v0/system/llm', 'get'>;
 type SavedProvider = NonNullable<LlmSettings['provider']>;
 type TestAnswer = ResponseBody<'/api/v0/system/llm/test', 'post'>;
 

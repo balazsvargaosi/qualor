@@ -15,7 +15,7 @@ import {
 import { Router } from '@angular/router';
 import { Api, ok } from '../../api/api';
 import { problemMessage } from '../../api/errors';
-import type { ItemOf, Organization, ResponseBody } from '../../api/types';
+import type { ItemOf, Organization } from '../../api/types';
 import { OrgContext } from '../../org/org-context';
 import { keepFocus } from '../../shared/focus';
 import { inputValue, isChecked } from '../../shared/forms';
@@ -25,8 +25,8 @@ import { type PickedProject, ProjectPicker } from '../../shared/project-picker';
 import { Requirement } from '../../shared/requirement';
 import { type FootOutcome, SectionFoot } from '../../shared/section-foot';
 import { TONE_CHIPS } from '../../shared/status-list';
+import type { LlmSettings } from './llm-body';
 
-type LlmSettings = ResponseBody<'/api/v0/system/llm', 'get'>;
 type StoredOrg = LlmSettings['organizations'][string];
 type Project = ItemOf<'/api/v0/projects'>;
 
