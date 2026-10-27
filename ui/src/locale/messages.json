@@ -1150,6 +1150,7 @@
     "orgAi.index": "On this page",
     "orgAi.assistant.title": " Assistant ",
     "orgAi.none.state": "Not set up",
+    "orgAi.notAllowed.state": "Not allowed",
     "orgAi.none.title": " AI isn't set up on this server yet. ",
     "orgAi.none.text": " An instance admin connects an AI provider in {$START_LINK}Settings → AI provider{$CLOSE_LINK} and allows {$INTERPOLATION} to use it. Then you can switch on AI review here. ",
     "orgAi.setUpProvider": "Set up the provider",

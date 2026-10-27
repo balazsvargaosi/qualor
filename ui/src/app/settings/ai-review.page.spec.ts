@@ -1597,7 +1597,7 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
         "on this server's AI provider (llm.example.com).",
       );
       const card = root.querySelector<HTMLElement>('.ai-unavailable')!;
-      expect(text(card.querySelector('.badge'))).toBe('Not set up');
+      expect(text(card.querySelector('.badge'))).toBe('Not allowed');
       expect(text(card.querySelector('h3'))).toBe('Default may not use AI yet.');
       expect(text(card.querySelector('.empty > p'))).toBe(
         'An instance admin allows it in Settings → AI provider → Organizations.',
@@ -1611,6 +1611,7 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
     it("links the AI provider's organizations for an instance admin", async () => {
       setup('instanceAdmin', { organizationEnabled: false });
       const { root } = await render();
+      expect(text(root.querySelector('.ai-unavailable .badge'))).toBe('Not allowed');
       expect(root.querySelector('.ai-unavailable a')?.getAttribute('href')).toBe(
         '/settings/ai#organizations',
       );

@@ -62,10 +62,13 @@
       <section class="card panel ai-unavailable" aria-labelledby="ai-unavailable-title">
         <div class="empty">
           <span class="badge badge-none"
-            ><q-icon name="minus" /><ng-container i18n="@@orgAi.none.state"
-              >Not set up</ng-container
-            ></span
-          >
+            ><q-icon name="minus" />
+            @if (settings.unavailableReason === 'no_provider') {
+              <ng-container i18n="@@orgAi.none.state">Not set up</ng-container>
+            } @else {
+              <ng-container i18n="@@orgAi.notAllowed.state">Not allowed</ng-container>
+            }
+          </span>
           @if (settings.unavailableReason === 'no_provider') {
             <h3 id="ai-unavailable-title" class="big" i18n="@@orgAi.none.title">
               AI isn't set up on this server yet.
