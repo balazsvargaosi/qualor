@@ -522,6 +522,73 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     );
   });
 
+  it('reads and offers only the projects of the organisation edited, whatever the header shows', async () => {
+    const research = [
+      projectItem({
+        id: 'r1',
+        key: 'research/api',
+        name: 'Research API',
+        organizationId: RESEARCH,
+      }),
+      projectItem({
+        id: 'r2',
+        key: 'research/web',
+        name: 'Research web',
+        organizationId: RESEARCH,
+      }),
+    ];
+    const server = setup(ORGS, [...PROJECTS, ...research]);
+    const { fixture, root } = await render({
+      settings: {
+        ...SETTINGS,
+        organizations: {
+          ...SETTINGS.organizations,
+          [RESEARCH]: stored({ enabled: false, excludedProjectIds: ['r1'] }),
+        },
+      },
+    });
+    expect(TestBed.inject(OrgContext).currentId()).toBe(ACME);
+    await edit(fixture, root, 'Research');
+    await click(fixture, field(root, `org-${RESEARCH}-allow`));
+    expect(items(root)).toEqual(['Research API research/api Remove']);
+    await click(fixture, button(editor(root)!, 'Add a project'));
+    expect(
+      [...editor(root)!.querySelectorAll('q-project-picker li')].map((li) => text(li)),
+    ).toEqual(['Research API research/api Already in the list', 'Research web research/web']);
+    expect(
+      server.requestsTo('GET', '/api/v0/projects').map((r) => r.query.get('organizationId')),
+    ).toEqual([RESEARCH, RESEARCH]);
+  });
+
+  it('keeps a project never sent that its organisation does not list', async () => {
+    setup();
+    const { fixture, root, saves } = await render({
+      settings: {
+        ...SETTINGS,
+        organizations: {
+          ...SETTINGS.organizations,
+          [ACME]: stored({ excludedProjectIds: ['p3', 'p9'] }),
+        },
+      },
+    });
+    await edit(fixture, root, 'Acme');
+    expect(items(root)).toEqual([
+      'Legacy billing acme/legacy-billing Remove',
+      'A project not listed here (p9) Remove',
+    ]);
+    await click(fixture, editor(root)!.querySelector<HTMLElement>('.list-editor li button'));
+    await click(fixture, button(editor(root)!, 'Add a project'));
+    await click(
+      fixture,
+      editor(root)!.querySelectorAll<HTMLElement>('q-project-picker li input')[1],
+    );
+    await click(fixture, button(editor(root)!, 'Add 1 project'));
+    await click(fixture, footButton(root, 'Save Acme'));
+    expect(saves).toEqual([
+      [ACME, { enabled: true, features: ALL_ON, excludedProjectIds: ['p9', 'p2'] }],
+    ]);
+  });
+
   it('reads 20 pages at most for the names, and nothing for an organisation that excludes none', async () => {
     const server = setup();
     // A list that never ends.
