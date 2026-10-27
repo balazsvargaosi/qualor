@@ -453,7 +453,7 @@ export async function anthropicConverse(
   }));
   const ask = answerAsker(config, http, MESSAGES_STREAM);
   const pair = pairOf(config);
-  let cached = !uncachedPairs.has(pair);
+  let marking = !uncachedPairs.has(pair);
   return await askWithRoom(config, conversation, async (maxTokens) => {
     const bodyOf = (withMarks: boolean): Record<string, unknown> => {
       const body: Record<string, unknown> = {
@@ -471,12 +471,12 @@ export async function anthropicConverse(
     const request = (withMarks: boolean) =>
       ask({ path: '/v1/messages', headers: headers(config, apiKey), body: bodyOf(withMarks) });
     let raw: unknown;
-    if (cached) {
+    if (marking) {
       try {
         raw = await request(true);
       } catch (error) {
         if (!(error instanceof LlmError && error.refusedCacheControl)) throw error;
-        cached = false;
+        marking = false;
         if (error.cacheControlUnsupported) uncachedPairs.add(pair);
         raw = await request(false);
       }

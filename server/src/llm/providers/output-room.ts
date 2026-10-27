@@ -67,14 +67,16 @@ export function outputLimitRefusal(message: string): OutputLimitRefusal | null {
 }
 
 /**
- * The statuses of a refusal that may be the room refused: a 400, and a 422, which Hugging Face TGI
- * answers for a request that does not validate, a limit past its window among them.
+ * The statuses of a refusal of a request's contents: a 400, and a 422, which Hugging Face TGI
+ * answers for a request that does not validate, a limit past its window among them. The room that
+ * is refused (`mayRefuseTheRoom`) and the prompt-cache markers that are refused (`refusedBy`) are
+ * read from these.
  */
-export const ROOM_REFUSAL_STATUSES: ReadonlySet<number> = new Set([400, 422]);
+export const REFUSAL_STATUSES: ReadonlySet<number> = new Set([400, 422]);
 
 /**
  * Whether the error of a call that asked for the room may be the room refused, whatever its words
- * say: a refusal (`rejected`, with a status of ROOM_REFUSAL_STATUSES) that is classified as nothing
+ * say: a refusal (`rejected`, with a status of REFUSAL_STATUSES) that is classified as nothing
  * else. A refusal of the workspace is a failure of its own (`workspace_required`); a refusal of
  * tools (`refusedTools`), the Responses hint among them (`needsResponses`), one of the stream
  * (`refusedStream`) and one of the prompt-cache markers (`refusedCacheControl`) are something else,
@@ -85,7 +87,7 @@ function mayRefuseTheRoom(error: unknown): error is LlmError {
     error instanceof LlmError &&
     error.failure === 'rejected' &&
     error.status !== null &&
-    ROOM_REFUSAL_STATUSES.has(error.status) &&
+    REFUSAL_STATUSES.has(error.status) &&
     !error.refusedTools &&
     !error.needsResponses &&
     !error.refusedStream &&

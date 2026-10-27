@@ -9,7 +9,7 @@ import {
 } from '../../http/outbound';
 import { isInternalHostAllowed, scmRefusedAddress } from '../../scm/url';
 import { llmBaseUrlProblem } from '../url';
-import { outputLimitRefusal, ROOM_REFUSAL_STATUSES } from './output-room';
+import { outputLimitRefusal, REFUSAL_STATUSES } from './output-room';
 import { parseSse, SseError, type SseEvent } from './sse';
 import {
   LLM_MAX_ANSWER_BYTES,
@@ -451,7 +451,7 @@ function refusedBy(
   // without them. Before the other refusals, which may name the field the marker was put in: a
   // `tool_result` block, the system prompt.
   if (
-    ROOM_REFUSAL_STATUSES.has(status) &&
+    REFUSAL_STATUSES.has(status) &&
     carriesCacheControl(request) &&
     refusesCacheControl(refused)
   ) {
@@ -463,7 +463,7 @@ function refusedBy(
   }
   // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
   // too, and it is the value that is refused then, not the field.
-  const limit = ROOM_REFUSAL_STATUSES.has(status) ? outputLimitRefusal(refused.message) : null;
+  const limit = REFUSAL_STATUSES.has(status) ? outputLimitRefusal(refused.message) : null;
   if (limit !== null) {
     return new LlmError('rejected', refusedText(status), {
       status,
