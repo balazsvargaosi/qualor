@@ -33,7 +33,7 @@ import {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   newToolPolicy,
 } from '../../server/src/review/tool-conversation';
-import type { ToolPolicy } from '../../server/src/review/tools';
+import { TOOL_LIMITS, type ToolPolicy } from '../../server/src/review/tools';
 
 /*
  * Plan 6I-3 Task 14 (spec §12): the evaluation set of the AI review, and the harness that scores
@@ -759,7 +759,8 @@ export interface EvalReport {
   maxCallInputTokens: number;
   /**
    * The verifications (one conversation each): how many ran, how they ended among the findings
-   * the reviews kept, and how many began with no tool calls left in the review's budget.
+   * the reviews kept, and how many found the review's tool calls used up (the floor, `TOOL_LIMITS.verifyCallsFloor`,
+   * gave them calls of their own).
    */
   verification: {
     run: number;
@@ -992,7 +993,7 @@ export function formatReport(report: EvalReport): string {
       : [
           `model calls: ${report.calls}; per call: median ${seconds(callLatency.median)}, p95 ${seconds(callLatency.p95)}, max ${seconds(callLatency.max)}; largest input ${count(report.maxCallInputTokens)} tokens`,
         ]),
-    `verification: ${verification.run} run (${verification.confirmed} confirmed, ${verification.needsValidation} needs validation, ${verification.rejectedOrUnread} rejected or unread), ${verification.starved} begun with no tool calls left`,
+    `verification: ${verification.run} run (${verification.confirmed} confirmed, ${verification.needsValidation} needs validation, ${verification.rejectedOrUnread} rejected or unread), ${verification.starved} found the review's tool calls used up (the floor gave them ${TOOL_LIMITS.verifyCallsFloor})`,
     `wrap-ups: ${wrapUps.budget} at the token budget, ${wrapUps.turns} at the turn limit, ${wrapUps.window} at the context window${byRole === '' ? '' : ` (${byRole})`}`,
     `tokens by stage: specialists ${count(stageTokens.specialists)}, judge ${count(stageTokens.judge)}, verification ${count(stageTokens.verification)}`,
     `cache: ${count(cache.read)} read, ${count(cache.write)} written (hit rate ${cache.hitRate === null ? '-' : (100 * cache.hitRate).toFixed(1)} % of input); ${STAGES.map(stage).join(', ')}`,

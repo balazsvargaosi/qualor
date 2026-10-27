@@ -1032,7 +1032,7 @@ describe('runEval scores', () => {
       expect(report).toMatchObject({ calls: 0, callLatencyMs: null, maxCallInputTokens: 0 });
     });
 
-    it('counts the verifications, their verdicts, and those begun with no tool calls left', async () => {
+    it("counts the verifications, their verdicts, and those that found the review's tool calls used up", async () => {
       const cases = ['a', 'b'].map((id) => synthetic({ id }));
       const { deps, roles } = scripted({
         said: twoSecurity,
@@ -1521,7 +1521,7 @@ describe('the report', () => {
     expect(lines).toEqual(
       expect.arrayContaining([
         'model calls: 310; per call: median 2.5 s, p95 21.0 s, max 48.4 s; largest input 187,654 tokens',
-        'verification: 9 run (5 confirmed, 1 needs validation, 3 rejected or unread), 2 begun with no tool calls left',
+        'verification: 9 run (5 confirmed, 1 needs validation, 3 rejected or unread), 2 found the review\x27s tool calls used up (the floor gave them 8)',
         'wrap-ups: 3 at the token budget, 1 at the turn limit, 0 at the context window (judge 2, security 2)',
         'tokens by stage: specialists 900,000, judge 300,000, verification 40,000',
         'cache: 700,000 read, 120,000 written (hit rate 56.7 % of input); specialists 500,000/80,000, judge 150,000/30,000, verification 50,000/10,000',
