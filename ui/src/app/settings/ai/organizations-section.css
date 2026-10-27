@@ -10,11 +10,8 @@
 section {
   margin: 0;
 }
+/* The shared toolbar, on the section's edge. */
 .orgs-tools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
   padding: 0 22px;
 }
 .orgs-tools .search-field {

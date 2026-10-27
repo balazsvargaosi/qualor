@@ -681,6 +681,8 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
 
     const filter = field(root, 'ai-orgs-filter')!;
     expect(text(root.querySelector('label[for="ai-orgs-filter"]'))).toBe('Filter organizations');
+    // The filter sits in the shared toolbar, as the other lists' controls do.
+    expect(filter.closest('.toolbar')).not.toBeNull();
     type(root, 'ai-orgs-filter', 'org 101');
     await settle(fixture);
     expect(rows(root).map(nameOf)).toEqual(['Org 101']);
