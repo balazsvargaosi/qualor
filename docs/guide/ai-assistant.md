@@ -171,8 +171,8 @@ tools ([In Qualor](./ai-review.md#in-qualor)).
   not followed, and no proxy is used.
 - After 5 failures in a row (timeouts, no answer, rate limits) Qualor pauses calls to the address
   for 10 minutes. [AI review](./ai-review.md) calls the same provider, with a pause of its own:
-  failing reviews never pause **Explain**, **Suggest triage** and **Suggest a fix**, and their
-  failures never pause reviews.
+  failing reviews never pause **Explain**, **Suggest triage** and **Suggest a fix**, and the
+  assistant's failures never pause reviews.
 
 ### The current models
 
