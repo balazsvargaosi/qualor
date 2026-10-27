@@ -793,7 +793,7 @@ describe('AiSettingsPage: leaving', () => {
     expect(field(root, 'ai-exclude-add').value).toBe('legacy/**');
   });
 
-  it('asks once before the header switches the organisation with unsaved changes; Stay keeps it', async () => {
+  it('lets the header switch the organisation without asking, and keeps the drafts: nothing on it depends on the organisation', async () => {
     const server = setup(CONFIGURED);
     server.on('GET', '/api/v0/organizations', { body: page([DEFAULT_ORG, RESEARCH_ORG]) });
     const { fixture, root } = await render();
@@ -805,17 +805,13 @@ describe('AiSettingsPage: leaving', () => {
     const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
 
     // As the header's select does.
-    const switching = org.switchTo(RESEARCH);
+    expect(await org.switchTo(RESEARCH)).toBe(true);
     await settle(fixture);
-    expect(leave.open).toBe(true);
-    expect(ask).toHaveBeenCalledTimes(1);
-    expect(text(leave.querySelector('#leave-text'))).toBe(
-      'Your changes to Limits are not saved yet.',
-    );
-    await click(fixture, button(leave, 'Stay'));
-    expect(await switching).toBe(false);
-    expect(org.currentId()).toBe(ORG_ID);
+    expect(ask).not.toHaveBeenCalled();
+    expect(leave.open).toBe(false);
+    expect(org.currentId()).toBe(RESEARCH);
     expect(field(root, 'ai-budget-explain').value).toBe('300');
+    expect(footOf(root, 'limits')).toBe('1 unsaved change');
   });
 
   it('has the route ask it before the router leaves, under its own title', () => {

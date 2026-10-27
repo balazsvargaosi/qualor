@@ -20,7 +20,7 @@ import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { LeaveConfirm } from '../shared/leave-confirm';
 import { StatusList } from '../shared/status-list';
-import { type LeaveGuarded, LeaveGuards, whileDirty } from '../shared/unsaved-changes';
+import { type LeaveGuarded, whileDirty } from '../shared/unsaved-changes';
 import { SystemInfo } from '../shell/system-info';
 import { consentFields } from './ai/consent-impact';
 import { DataSection, type SaveData } from './ai/data-section';
@@ -59,7 +59,8 @@ interface Guarded {
  *   section offers to read them again.
  *
  * Leaving it with unsaved changes in any section asks first, once, naming them: Open of an
- * organisation, which switches the header's organisation and leaves, asks once for both.
+ * organisation, which switches the header's organisation and leaves, asks once for both. A switch
+ * of the header's organisation alone asks nothing: nothing on the page depends on it.
  */
 @Component({
   selector: 'q-ai-settings-page',
@@ -161,8 +162,8 @@ export class AiSettingsPage implements LeaveGuarded {
 
   constructor() {
     whileDirty(() => this.unsavedSections().length > 0);
-    // Open switches the header's organisation, which asks the pages on screen first.
-    inject(LeaveGuards).register(this);
+    // Nothing on the page depends on the header's organisation, so a switch of it asks nothing
+    // here: the drafts stay. Open asks itself before it switches and leaves.
     effect(() => {
       const admin = this.instanceAdmin();
       untracked(() => {
