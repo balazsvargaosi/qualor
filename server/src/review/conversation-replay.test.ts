@@ -6,6 +6,7 @@ import {
   createFakeLlm,
   responsesAnswer,
   responsesReasoning,
+  withoutMarks,
   type FakeLlm,
   type LlmReply,
   type RecordedLlmRequest,
@@ -14,17 +15,6 @@ import { converse, type LlmToolCall, type ProviderConfig } from '../llm/provider
 import { parseInternalHosts } from '../scm/url';
 import { CONVERSATION_LIMITS, runConversation, type ConversationInput } from './conversation';
 import { newNonce } from './envelope';
-
-/** A value without its prompt-cache markers (`cache_control`), wherever they are. */
-function withoutMarks(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutMarks);
-  if (value === null || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key]) => key !== 'cache_control')
-      .map(([key, inner]) => [key, withoutMarks(inner)]),
-  );
-}
 
 type Kind = 'openai' | 'anthropic';
 /** The wires the loop is run over: the two kinds, and the Responses API of the OpenAI kind. */

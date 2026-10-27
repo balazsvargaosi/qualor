@@ -571,7 +571,7 @@ function chatToolsProblem(models: readonly string[] | undefined, json: unknown):
 }
 
 /** A value without its `cache_control` keys, wherever they are. */
-function withoutMarks(value: unknown): unknown {
+export function withoutMarks(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutMarks);
   if (value === null || typeof value !== 'object') return value;
   return Object.fromEntries(

@@ -6,6 +6,7 @@ import {
   anthropicToolUse,
   createFakeLlm,
   llmShape,
+  withoutMarks,
   type FakeLlm,
 } from '../../../test/fake-llm';
 import { parseInternalHosts } from '../../scm/url';
@@ -769,16 +770,6 @@ describe('the Anthropic adapter: the current models', () => {
     const MARK = { type: 'ephemeral' };
     /** The `cache_control` keys of request `n`, anywhere in its body. */
     const marksOf = (n: number) => fake.requests[n]!.body.match(/"cache_control"/g)?.length ?? 0;
-    /** A value without its `cache_control` keys, wherever they are. */
-    const stripped = (value: unknown): unknown => {
-      if (Array.isArray(value)) return value.map(stripped);
-      if (value === null || typeof value !== 'object') return value;
-      return Object.fromEntries(
-        Object.entries(value)
-          .filter(([key]) => key !== 'cache_control')
-          .map(([key, inner]) => [key, stripped(inner)]),
-      );
-    };
     /** A turn of thinking and a call, which goes back as it came. */
     const THOUGHT = [
       anthropicThinking('sig-cache'),
@@ -856,8 +847,12 @@ describe('the Anthropic adapter: the current models', () => {
       }
       expect(fake.requests).toHaveLength(3);
       for (const n of [1, 2]) {
-        const before = stripped(body(n - 1)) as { system: unknown; tools: unknown; messages: [] };
-        const after = stripped(body(n)) as { system: unknown; tools: unknown; messages: [] };
+        const before = withoutMarks(body(n - 1)) as {
+          system: unknown;
+          tools: unknown;
+          messages: [];
+        };
+        const after = withoutMarks(body(n)) as { system: unknown; tools: unknown; messages: [] };
         expect(JSON.stringify(after.system)).toBe(JSON.stringify(before.system));
         expect(JSON.stringify(after.tools)).toBe(JSON.stringify(before.tools));
         expect(JSON.stringify(after.messages.slice(0, before.messages.length))).toBe(
@@ -923,7 +918,7 @@ describe('the Anthropic adapter: the current models', () => {
         expect(sentMarks()).toEqual([2, 0]);
         // Else the same request, its system prompt the plain text it was before the markers.
         expect(gateway.requests[1]!.json).toEqual(
-          stripped({ ...(gateway.requests[0]!.json as object), system: 'S' }),
+          withoutMarks({ ...(gateway.requests[0]!.json as object), system: 'S' }),
         );
         // The second call to the pair has no marker, and is asked once.
         await converse(config, gateway.apiKey, { ...start, messages: history }, gatewayHttp);
