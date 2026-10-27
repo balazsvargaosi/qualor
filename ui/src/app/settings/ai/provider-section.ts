@@ -1089,13 +1089,8 @@ export class ProviderSection {
  * and Azure OpenAI's current models refuse `max_tokens`; vLLM, Ollama and the others want it.
  */
 export function defaultOutputLimitField(url: string): OutputLimit {
-  let host: string;
-  try {
-    host = new URL(url.trim()).hostname.toLowerCase();
-  } catch {
-    return 'max_tokens';
-  }
-  return host === OPENAI_HOST || host.endsWith('.openai.azure.com')
+  const host = hostOf(url);
+  return host !== null && (host === OPENAI_HOST || host.endsWith('.openai.azure.com'))
     ? 'max_completion_tokens'
     : 'max_tokens';
 }
@@ -1274,12 +1269,13 @@ function temperatureValue(d: Draft): number | string | null {
 /** The address as the server keeps it, or as typed when it does not parse. */
 function normalUrl(text: string): string {
   try {
-    return new URL(text.trim()).href.replace(/\/+$/, '');
+    return consentFields({ baseUrl: text, model: '', strongModel: null, fastModel: null }).url;
   } catch {
     return text.trim();
   }
 }
 
+/** The host name of an address, in lower case; null when it does not parse. */
 function hostOf(text: string): string | null {
   try {
     return new URL(text.trim()).hostname.toLowerCase();
