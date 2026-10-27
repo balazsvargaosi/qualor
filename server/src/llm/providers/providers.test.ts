@@ -240,7 +240,7 @@ describe('callProvider (llm.md §2, §4, §14)', () => {
     expect(err).toMatchObject({
       failure: 'rejected',
       status: 400,
-      message: `The model does not accept ${sent}; set the output limit field to ${other} in the AI assistant settings`,
+      message: `The model does not accept ${sent}; set the output limit parameter to ${other} in the AI provider settings`,
     });
     expect((err as Error).message).not.toContain('Fake error text');
   });
@@ -307,7 +307,7 @@ describe('callProvider (llm.md §2, §4, §14)', () => {
     );
     expect(err).toMatchObject({ failure: 'timeout' });
     expect((err as Error).message).toBe(
-      'The model did not answer within 1 s; raise the timeout in the AI assistant settings',
+      'The model did not answer within 1 s; raise the timeout in the AI provider settings',
     );
   });
 

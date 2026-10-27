@@ -395,7 +395,7 @@ describe('AiPanel (llm.md §18)', () => {
     const { root } = await render();
     const text = root.querySelector('[role="alert"]')?.textContent ?? '';
     expect(text).toContain(
-      'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.',
+      'This key is not scoped to a workspace: give its workspace ID in the AI provider settings.',
     );
     // The field is on the settings page: nothing here is below the message.
     expect(text).not.toContain('below');

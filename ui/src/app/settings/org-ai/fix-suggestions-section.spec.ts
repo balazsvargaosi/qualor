@@ -377,7 +377,7 @@ describe('FixSuggestionsSection (AI settings redesign, Task 6)', () => {
     await click(fixture, field(root, 'auto-fix-enabled'));
     await save(fixture, root);
     expect(foot(root)).toBe(
-      'Switching them on needs the AI assistant enabled for this organisation with Suggest a fix. An instance administrator sets that in the AI assistant settings.',
+      'Switching them on needs AI set up on this server and allowed for this organization, with Suggest a fix. An instance admin sets that up in Settings → AI provider.',
     );
   });
 

@@ -1139,7 +1139,7 @@ const port = 8080;
           await vi.advanceTimersByTimeAsync(2_000);
           expect(await call).toMatchObject({
             failure: 'timeout',
-            message: `The model sent nothing for ${waits} s; raise the timeout in the AI assistant settings`,
+            message: `The model sent nothing for ${waits} s; raise the timeout in the AI provider settings`,
           });
         } finally {
           vi.useRealTimers();

@@ -54,7 +54,7 @@ export function autoFixRefusal(err: unknown): string | null {
   if (!(err instanceof ApiError)) return null;
   if (err.status === 403 && err.code === 'FEATURE_NOT_LICENSED') return autoFixNotLicensed();
   if (err.status === 409 && err.code === 'AI_DISABLED') {
-    return $localize`:@@autoFix.aiDisabled:Switching them on needs the AI assistant enabled for this organisation with Suggest a fix. An instance administrator sets that in the AI assistant settings.`;
+    return $localize`:@@autoFix.aiDisabled:Switching them on needs AI set up on this server and allowed for this organization, with Suggest a fix. An instance admin sets that up in Settings → AI provider.`;
   }
   return null;
 }

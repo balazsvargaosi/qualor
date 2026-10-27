@@ -831,7 +831,7 @@ describe('the ai-review job (6I-3, R15)', () => {
         .flatMap((d) => d.notes)
         .find((n) => markerOf(n.body)?.kind === 'summary')?.body ?? '';
     expect(summary).toContain(
-      'AI review did not run because this merge request is too large for the Tokens per review budget; raise it in the AI review settings.',
+      'AI review did not run because this merge request is too large for the Tokens per review budget; raise it in Settings → AI.',
     );
     expect(summary).not.toContain('token budget for today');
   });

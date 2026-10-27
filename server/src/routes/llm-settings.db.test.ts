@@ -495,7 +495,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
       const refused = await test(session);
       expect(refused.statusCode, refused.body).toBe(200);
       const hint =
-        'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
+        'This key is not scoped to a workspace: give its workspace ID in the AI provider settings.';
       expect(refused.json()).toMatchObject({
         ok: false,
         problem: { code: 'PROVIDER_WORKSPACE_REQUIRED', message: hint, providerStatus: 400 },
@@ -592,7 +592,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
       const HINT = {
         code: 'USE_RESPONSES_API',
         message:
-          'This model takes tools only through the Responses API: choose Responses in the AI assistant settings.',
+          'This model takes tools only through the Responses API: choose Responses in the AI provider settings.',
       };
       const line = (tier: string, model: string, over: Record<string, unknown> = {}) => ({
         tier,

@@ -122,6 +122,12 @@ const FINDING_START = /^- \*\*(?:High|Medium|Low|Unknown)\*\* · /;
 /** Qualor's link in the section: its fixed label, over https to the base the tests give Qualor. */
 const SECTION_LINK = /^\[View in Qualor\]\(https:\/\/q\.example\/[A-Za-z0-9/-]*\)$/;
 const MARKUP_LINES: ReadonlySet<string> = new Set(AI_SECTION_MARKUP_LINES);
+/**
+ * The skip of a merge request too large for Tokens per review: fixed text that names the settings
+ * page with its arrow, so it is accepted as this whole line only.
+ */
+const TOO_LARGE_LINE =
+  /^AI review did not run because this (?:merge|pull) request is too large for the Tokens per review budget; raise it in Settings → AI\.$/;
 
 /**
  * The line of a finding that sits on no changed line: after its severity, its place in a code span,
@@ -147,10 +153,18 @@ function checkFindingLine(line: string): boolean {
 /**
  * Whether one line of the AI review section keeps to the rule that model text is only ordinary
  * words outside code spans: a fence line of its prompt block, one of its fixed lines that hold
- * markup, its count line or the line of a finding in their shapes, or prose.
+ * markup or the settings page's arrow, its count line or the line of a finding in their shapes, or
+ * prose.
  */
 export function checkSectionLine(line: string): boolean {
-  if (FENCE_LINE.test(line) || MARKUP_LINES.has(line) || FINDINGS_LINE.test(line)) return true;
+  if (
+    FENCE_LINE.test(line) ||
+    MARKUP_LINES.has(line) ||
+    TOO_LARGE_LINE.test(line) ||
+    FINDINGS_LINE.test(line)
+  ) {
+    return true;
+  }
   if (line.startsWith('- **')) return checkFindingLine(line);
   return checkProse(line);
 }

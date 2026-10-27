@@ -147,7 +147,7 @@ describe('MCP AI tools (ruling R1)', () => {
     expect(r.structured).toMatchObject({ status: 'failed', requestId });
     expect(r.text).toContain('PROVIDER_WORKSPACE_REQUIRED');
     expect(r.text).toContain(
-      'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.',
+      'This key is not scoped to a workspace: give its workspace ID in the AI provider settings.',
     );
   });
 

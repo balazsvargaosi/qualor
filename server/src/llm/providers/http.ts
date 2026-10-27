@@ -156,7 +156,7 @@ export async function postJson(
       () =>
         new LlmError(
           'timeout',
-          `The model did not answer within ${config.timeoutSeconds} s; raise the timeout in the AI assistant settings`,
+          `The model did not answer within ${config.timeoutSeconds} s; raise the timeout in the AI provider settings`,
         ),
     );
   }
@@ -191,7 +191,7 @@ function streamTimeout(
   const silent = Math.round((timer === 'idle' ? limits.idleMs : limits.firstByteMs) / 1_000);
   return new LlmError(
     'timeout',
-    `The model sent nothing for ${silent} s; raise the timeout in the AI assistant settings`,
+    `The model sent nothing for ${silent} s; raise the timeout in the AI provider settings`,
   );
 }
 
@@ -461,7 +461,7 @@ function refusedBy(
     const other = outputLimitField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
     return new LlmError(
       'rejected',
-      `The model does not accept ${outputLimitField}; set the output limit field to ${other} in the AI assistant settings`,
+      `The model does not accept ${outputLimitField}; set the output limit parameter to ${other} in the AI provider settings`,
       { status },
     );
   }

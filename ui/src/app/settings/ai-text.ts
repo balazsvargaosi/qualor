@@ -22,7 +22,7 @@ export type TestHintCode = NonNullable<TestAnswer['hint']>['code'];
 export function llmProblemText(code: LlmErrorCode, providerStatus: number | null = null): string {
   switch (code) {
     case 'PROVIDER_TIMEOUT':
-      return $localize`:@@ai.problem.timeout:The model did not answer in time; raise the timeout in the AI assistant settings.`;
+      return $localize`:@@ai.problem.timeout:The model did not answer in time; raise the timeout in the AI provider settings.`;
     case 'PROVIDER_UNAVAILABLE':
       return $localize`:@@ai.problem.unavailable:The model provider could not be reached.`;
     case 'PROVIDER_RATE_LIMITED':
@@ -35,7 +35,7 @@ export function llmProblemText(code: LlmErrorCode, providerStatus: number | null
         ? $localize`:@@ai.problem.key:The provider refused the API key.`
         : $localize`:@@ai.problem.keyStatus:The provider refused the API key (HTTP ${providerStatus}:status:).`;
     case 'PROVIDER_WORKSPACE_REQUIRED':
-      return $localize`:@@ai.problem.workspaceRequiredInSettings:This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.`;
+      return $localize`:@@ai.problem.workspaceRequiredInSettings:This key is not scoped to a workspace: give its workspace ID in the AI provider settings.`;
     case 'PROVIDER_REJECTED_REQUEST':
       return $localize`:@@ai.problem.rejected:The provider refused the request; check the base URL and the model.`;
     case 'PROVIDER_BAD_ANSWER':

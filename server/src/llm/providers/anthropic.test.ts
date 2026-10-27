@@ -47,7 +47,7 @@ const start: LlmConversation = {
 };
 const WORKSPACE = 'wrkspc_01AbCdEf';
 const NOT_SCOPED =
-  'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
+  'This key is not scoped to a workspace: give its workspace ID in the AI provider settings.';
 
 /** The content of a Messages answer, as the API sent it. */
 interface Content {

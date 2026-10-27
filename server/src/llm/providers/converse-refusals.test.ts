@@ -386,7 +386,7 @@ describe('converse: conversations with read-only tools (R5)', () => {
         failure: 'rejected',
         status: 400,
         message:
-          'The model does not accept max_tokens; set the output limit field to max_completion_tokens in the AI assistant settings',
+          'The model does not accept max_tokens; set the output limit parameter to max_completion_tokens in the AI provider settings',
       });
       expect(limits()).toEqual([5_200, 1_200]);
     });

@@ -389,7 +389,7 @@ describe('postStream', () => {
         failure: 'rejected',
         status: 400,
         message:
-          'The model does not accept max_tokens; set the output limit field to max_completion_tokens in the AI assistant settings',
+          'The model does not accept max_tokens; set the output limit parameter to max_completion_tokens in the AI provider settings',
       },
     ],
     [
@@ -765,7 +765,7 @@ describe('postStream', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(shape(await quiet)).toMatchObject({
         failure: 'timeout',
-        message: 'The model sent nothing for 1 s; raise the timeout in the AI assistant settings',
+        message: 'The model sent nothing for 1 s; raise the timeout in the AI provider settings',
       });
       await answer.closed;
     });
@@ -834,7 +834,7 @@ describe('postStream', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(shape(await quiet)).toMatchObject({
         failure: 'timeout',
-        message: 'The model sent nothing for 1 s; raise the timeout in the AI assistant settings',
+        message: 'The model sent nothing for 1 s; raise the timeout in the AI provider settings',
       });
       await answer.closed;
     });
@@ -894,7 +894,7 @@ describe('postStream', () => {
       expect(err).toBeInstanceOf(LlmError);
       expect(shape(err)).toMatchObject({
         failure: 'timeout',
-        message: 'The model sent nothing for 5 s; raise the timeout in the AI assistant settings',
+        message: 'The model sent nothing for 5 s; raise the timeout in the AI provider settings',
         status: null,
       });
       await answer.closed;
@@ -931,7 +931,7 @@ describe('postStream', () => {
       await vi.advanceTimersByTimeAsync(2_000);
       expect(shape(await quiet)).toMatchObject({
         failure: 'timeout',
-        message: 'The model sent nothing for 2 s; raise the timeout in the AI assistant settings',
+        message: 'The model sent nothing for 2 s; raise the timeout in the AI provider settings',
       });
       await answer.closed;
       expect(vi.getTimerCount()).toBe(0);

@@ -140,10 +140,10 @@ describe('the AI review section', () => {
     expect(section(tooLarge)).toEqual([
       '#### AI review',
       '',
-      'AI review did not run because this merge request is too large for the Tokens per review budget; raise it in the AI review settings.',
+      'AI review did not run because this merge request is too large for the Tokens per review budget; raise it in Settings → AI.',
     ]);
     expect(section(tooLarge, 'github')[2]).toBe(
-      'AI review did not run because this pull request is too large for the Tokens per review budget; raise it in the AI review settings.',
+      'AI review did not run because this pull request is too large for the Tokens per review budget; raise it in Settings → AI.',
     );
     // The day's budget keeps its own sentence.
     expect(section({ kind: 'skipped', reason: 'budget_spent', detail: null })[2]).toBe(

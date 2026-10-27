@@ -13,7 +13,7 @@ describe('the failures of a provider call and their codes (llm.md §14)', () => 
   it('gives a key that is not scoped to a workspace a code of its own, with its fixed text, and does not retry it', () => {
     expect(errorCodeOf({ failure: 'workspace_required' })).toBe('PROVIDER_WORKSPACE_REQUIRED');
     expect(ERROR_TEXTS.PROVIDER_WORKSPACE_REQUIRED).toBe(
-      'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.',
+      'This key is not scoped to a workspace: give its workspace ID in the AI provider settings.',
     );
     // The provider answered and no wait mends a setting: it is neither retried nor held against it.
     expect(TRANSIENT_FAILURES.has('workspace_required')).toBe(false);

@@ -1228,7 +1228,7 @@ describe('the OpenAI Responses API wire', () => {
         message: RESPONSES_REQUIRED_TEXT,
       });
       expect(RESPONSES_REQUIRED_TEXT).toBe(
-        'This model takes tools only through the Responses API: choose Responses in the AI assistant settings.',
+        'This model takes tools only through the Responses API: choose Responses in the AI provider settings.',
       );
       expect((err as Error).message).not.toContain('reasoning_effort');
     });

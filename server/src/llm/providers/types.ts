@@ -149,7 +149,7 @@ export const REASONING_ALLOWANCE_TOKENS = { conversation: 16_000, singleShot: 4_
  * provider's own words.
  */
 export const WORKSPACE_REQUIRED_TEXT =
-  'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
+  'This key is not scoped to a workspace: give its workspace ID in the AI provider settings.';
 
 /**
  * What the Test is told of a model that takes function tools only through the Responses API, when
@@ -157,7 +157,7 @@ export const WORKSPACE_REQUIRED_TEXT =
  * A fixed text, never the provider's own words.
  */
 export const RESPONSES_REQUIRED_TEXT =
-  'This model takes tools only through the Responses API: choose Responses in the AI assistant settings.';
+  'This model takes tools only through the Responses API: choose Responses in the AI provider settings.';
 
 /** llm.md §14: why a provider call gave no usable answer. */
 export const LLM_FAILURES = [

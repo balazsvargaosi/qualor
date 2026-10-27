@@ -825,7 +825,7 @@ describe('converse: a stream answered by hand', () => {
       await vi.advanceTimersByTimeAsync(2_000);
       expect(await quiet).toMatchObject({
         failure: 'timeout',
-        message: 'The model sent nothing for 2 s; raise the timeout in the AI assistant settings',
+        message: 'The model sent nothing for 2 s; raise the timeout in the AI provider settings',
       });
       await answer.closed;
 
@@ -834,7 +834,7 @@ describe('converse: a stream answered by hand', () => {
       await vi.advanceTimersByTimeAsync(3_000);
       expect(await silent).toMatchObject({
         failure: 'timeout',
-        message: 'The model sent nothing for 3 s; raise the timeout in the AI assistant settings',
+        message: 'The model sent nothing for 3 s; raise the timeout in the AI provider settings',
       });
     });
   });

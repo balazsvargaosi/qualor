@@ -1605,7 +1605,7 @@ describe('ProviderSection: Save and test', () => {
     expect(lines(mine.root)).toEqual([
       'qwen2.5-coder: connected · can call tools',
       'qwen3-max: connected · cannot call tools, so AI review would fail',
-      'qwen2.5-small: The model did not answer in time; raise the timeout in the AI assistant settings.',
+      'qwen2.5-small: The model did not answer in time; raise the timeout in the AI provider settings.',
     ]);
     expect(tones(mine.root)).toEqual(['ok', 'bad', 'bad']);
     expect(textOf(mine.root, '#ai-test-failed')).toBe('The test failed for 1 of 3 models.');
