@@ -73,26 +73,38 @@
             <h3 id="ai-unavailable-title" class="big" i18n="@@orgAi.none.title">
               AI isn't set up on this server yet.
             </h3>
-            <p i18n="@@orgAi.none.text">
-              An instance admin connects an AI provider in
-              <a [routerLink]="providerLink()">Settings → AI provider</a> and allows
-              {{ orgName() }} to use it. Then you can switch on AI review here.
-            </p>
+            <!-- The place is a link only for a viewer who can open it; else plain text. -->
             @if (providerLink(); as link) {
+              <p i18n="@@orgAi.none.text">
+                An instance admin connects an AI provider in
+                <a [routerLink]="link">Settings → AI provider</a> and allows {{ orgName() }} to use
+                it. Then you can switch on AI review here.
+              </p>
               <a class="btn btn-primary" [routerLink]="link" i18n="@@orgAi.setUpProvider"
                 >Set up the provider</a
               >
+            } @else {
+              <p i18n="@@orgAi.none.textPlain">
+                An instance admin connects an AI provider in Settings → AI provider and allows
+                {{ orgName() }} to use it. Then you can switch on AI review here.
+              </p>
             }
           } @else {
             <h3 id="ai-unavailable-title" class="big" i18n="@@orgAi.notAllowed.title">
               {{ orgName() }} may not use AI yet.
             </h3>
-            <p i18n="@@orgAi.notAllowed.text">
-              An instance admin allows it in
-              <a [routerLink]="providerLink()" fragment="organizations"
-                >Settings → AI provider → Organizations</a
-              >.
-            </p>
+            @if (providerLink(); as link) {
+              <p i18n="@@orgAi.notAllowed.text">
+                An instance admin allows it in
+                <a [routerLink]="link" fragment="organizations"
+                  >Settings → AI provider → Organizations</a
+                >.
+              </p>
+            } @else {
+              <p i18n="@@orgAi.notAllowed.textPlain">
+                An instance admin allows it in Settings → AI provider → Organizations.
+              </p>
+            }
           }
         </div>
         @if (settings.enabled) {

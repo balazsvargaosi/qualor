@@ -1561,7 +1561,8 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
         'An instance admin connects an AI provider in Settings → AI provider and allows Default to use it. Then you can switch on AI review here.',
       );
       // An organisation admin cannot open the provider's settings: no link, and no button to.
-      expect(card.querySelector('a[href]')).toBeNull();
+      // The place is plain text, not drawn as a link.
+      expect(card.querySelector('a')).toBeNull();
       expect(text(card)).not.toContain('Set up the provider');
       expect(root.querySelector('q-status-list')).toBeNull();
       // Nor an index: there is one card only.
@@ -1602,7 +1603,8 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(text(card.querySelector('.empty > p'))).toBe(
         'An instance admin allows it in Settings → AI provider → Organizations.',
       );
-      expect(card.querySelector('a[href]')).toBeNull();
+      // The place is plain text for an organisation admin, not drawn as a link.
+      expect(card.querySelector('a')).toBeNull();
       // Nothing was ever switched on: nothing to stop.
       expect(card.querySelector('.setting-actions')).toBeNull();
       expect(button(card, 'Switch off AI review')).toBeUndefined();
