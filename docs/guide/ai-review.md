@@ -893,10 +893,10 @@ problems." The token limit is a ceiling Qualor works to, not a count to the toke
 the model when it expects the next answer not to fit, but it cannot know how long an answer will
 be, so a review can end somewhat over it. Each of them also answers with what it has once it has
 read the code for 16 turns, whatever tokens it has left, and the summary then says "A reviewer
-reached its limit of 16 turns, so it may have missed problems." The day's budget is checked as each review
-starts, so reviews that start together, one on each worker slot (`QUALOR_REVIEW_WORKER_CONCURRENCY`
-on each replica of the server), can each spend what was left: the day can end over its budget by up
-to about (slots − 1) × Tokens per review.
+reached its limit of 16 turns, so it may have missed problems." The day's budget is checked as
+each review starts, and a review that starts while others of the organisation run counts what each
+of those may still spend, up to Tokens per review, as spent: reviews that run together do not pass
+the day together. One that starts beside them may get less than the day had left.
 
 **Answers to replies.** An answer asks the day for room before it starts, as a review does, with a
 ceiling of 60 000 tokens in the place of Tokens per review, which it keeps to as far as it can tell

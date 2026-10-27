@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { StoredLlmSettings, StoredProvider } from '../llm/settings';
+import { DEFAULT_REVIEW_BUDGETS } from './settings';
 import {
+  remainingReviewTokens,
   REVIEW_CALL_MIN_TIMEOUT_SECONDS,
   REVIEW_STREAM_TOTAL_SECONDS,
   reviewCallSettings,
@@ -73,5 +75,22 @@ describe('reviewStreamLimits', () => {
         maxStreamBytes: 16 * 1024 * 1024,
       });
     }
+  });
+});
+
+describe('remainingReviewTokens with a reservation', () => {
+  it('takes what running reviews reserve from the day, never from Tokens per review', () => {
+    const budgets = {
+      ...DEFAULT_REVIEW_BUDGETS,
+      maxTokensPerReview: 300_000,
+      tokensPerDay: 500_000,
+      perProjectTokensPerDay: null,
+      costPerDayUsd: null,
+    };
+    const usage = { organization: { tokens: 100_000, costMicroUsd: 0 }, project: null };
+    expect(
+      remainingReviewTokens(budgets, usage, null, null, { organization: 200_000, project: 0 }),
+    ).toBe(200_000);
+    expect(remainingReviewTokens(budgets, usage, null, null)).toBe(300_000);
   });
 });

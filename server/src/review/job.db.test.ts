@@ -37,12 +37,14 @@ import {
   rules,
 } from '../db/schema';
 import { createLlmRuntime } from '../llm/job';
-import type { StoredPricing, StoredProvider } from '../llm/settings';
+import { readLlmSettings, type StoredPricing, type StoredProvider } from '../llm/settings';
 import { runUntilIdle, startWorker } from '../queue/worker';
 import { markerOf } from '../scm/markdown';
 import { enqueueLatestDecoration, lockBranchQueue, SCM_QUEUE } from '../scm/queue';
 import { parseInternalHosts } from '../scm/url';
 import { REVIEW_LEASE_MS, reviewHandlers, type ReviewJobDeps } from './job';
+import { reviewTokensLeft } from './job-context';
+import type { Running } from './job-start';
 import { mergeRequestStateHandlers, REVIEW_MR_STATE_QUEUE } from './lifecycle';
 import { AI_REVIEW_QUEUE, reconcileStuckReviewRuns, requestReviewRun } from './runs';
 import type { ReviewBudgets } from './settings';
@@ -806,6 +808,100 @@ describe('the ai-review job (6I-3, R15)', () => {
       detail: null,
     });
     expect(reviewCalls()).toHaveLength(calls);
+  });
+
+  it('a review writes its spend after each conversation', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    // The quality reviewer answers; the judge, the second conversation, is held.
+    const judge = held(FOUND.judge as string);
+    llm.enqueue(
+      reviewResponder({ quality: FOUND.quality }),
+      reviewResponder({ judge: judge.answer }),
+    );
+    let job: Promise<number> | undefined;
+    try {
+      job = runReviews();
+      await judge.reached;
+      const during = await runOf(analysisId);
+      expect(during.status).toBe('running');
+      expect(during.inputTokens).toBe(REVIEW_CALL_USAGE.input);
+      expect(during.outputTokens).toBe(REVIEW_CALL_USAGE.output);
+      expect(during.modelCalls).toBe(1);
+    } finally {
+      judge.release();
+      await Promise.allSettled([job]);
+    }
+    // The end writes the totals of both conversations.
+    expect(await runOf(analysisId)).toMatchObject({
+      status: 'done',
+      inputTokens: 2 * REVIEW_CALL_USAGE.input,
+      outputTokens: 2 * REVIEW_CALL_USAGE.output,
+      modelCalls: 2,
+    });
+  });
+
+  it('a review that starts while another of the organisation runs gets what the day has left less that one’s reservation', async () => {
+    // Nothing else of the organisation is running.
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ status: 'superseded', finishedAt: new Date() })
+      .where(eq(reviewRuns.status, 'running'));
+    const used = await reviewUsageToday(h.ctx.db, h.organizationId);
+    // The day has 400 000 left; run A is running with 100 000 written, so 200 000 of its 300 000
+    // are reserved.
+    await reviewOn({ budgets: { tokensPerDay: used.tokens + 100_000 + 400_000 } });
+    await h.ctx.db.insert(llmRequests).values({
+      organizationId: h.organizationId,
+      projectId: p.id,
+      feature: 'review',
+      cacheKey: 'c'.repeat(64),
+      provider: 'openai',
+      providerHost: 'api.example.com',
+      model: 'm',
+      promptVersion: 'review-1',
+      status: 'succeeded',
+      inputSha256: 'd'.repeat(64),
+      inputBytes: 10,
+      fields: ['review'],
+      inputTokens: 100_000,
+      outputTokens: 0,
+    });
+    const startedRun = async () => {
+      const analysisId = await analysisOf(mergeRequest());
+      const run = await runOf(analysisId);
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ status: 'running', phase: 'specialists', startedAt: new Date() })
+        .where(eq(reviewRuns.id, run.id));
+      return runOf(analysisId);
+    };
+    const runA = await startedRun();
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ inputTokens: 80_000, outputTokens: 20_000 })
+      .where(eq(reviewRuns.id, runA.id));
+    const runB = await startedRun();
+    const settings = await readLlmSettings(h.ctx.db);
+    const left = (run: typeof runB) =>
+      reviewTokensLeft(h.ctx.db, {
+        run,
+        settings,
+        organizationId: h.organizationId,
+      } as unknown as Running);
+    expect(await left(runB)).toBe(200_000);
+    // A, beside nothing that runs, has all the day left (up to Tokens per review).
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ status: 'superseded', phase: null, finishedAt: new Date() })
+      .where(eq(reviewRuns.id, runB.id));
+    expect(await left(runA)).toBe(300_000);
+    // Neither is left running for the tests after this one.
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ status: 'superseded', phase: null, finishedAt: new Date() })
+      .where(eq(reviewRuns.id, runA.id));
   });
 
   it('a merge request too large for Tokens per review is skipped as too large, and the summary says so', async () => {

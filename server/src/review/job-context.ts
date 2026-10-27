@@ -22,7 +22,7 @@ import { lastReviewedDigest } from './runs';
 import { effectiveReviewBudgets } from './settings';
 import type { SnapshotChange, SnapshotReader } from './snapshot-reader';
 import type { ToolPolicy } from './tools';
-import { remainingReviewTokens, reviewUsageToday } from './usage';
+import { remainingReviewTokens, reservedReviewTokens, reviewUsageToday } from './usage';
 
 /**
  * What the context's limits throw, before anything is masked: the review is skipped. A budget that
@@ -142,17 +142,33 @@ export async function runContext(
   return { kind: 'built', context };
 }
 
-/** What the review may spend: the smallest of its own ceiling and what the day has left (C2). */
+/**
+ * What the review may spend: the smallest of its own ceiling and what the day has left (C2), less
+ * what the other running reviews of the organisation (and of the project) may still spend (R45).
+ */
 export async function reviewTokensLeft(db: Executor, running: Running): Promise<number> {
   const { organizationId, run, settings } = running;
-  const [organization, project] = await Promise.all([
+  const budgets = effectiveReviewBudgets(settings, organizationId);
+  const perReview = budgets.maxTokensPerReview;
+  const [organization, project, reservedOrganization, reservedProject] = await Promise.all([
     reviewUsageToday(db, organizationId),
     reviewUsageToday(db, organizationId, run.projectId),
+    reservedReviewTokens(db, { organizationId, exceptRunId: run.id, perReview }),
+    // Without a budget of its own the project's reservation cannot change the answer.
+    budgets.perProjectTokensPerDay === null
+      ? 0
+      : reservedReviewTokens(db, {
+          organizationId,
+          projectId: run.projectId,
+          exceptRunId: run.id,
+          perReview,
+        }),
   ]);
   return remainingReviewTokens(
-    effectiveReviewBudgets(settings, organizationId),
+    budgets,
     { organization, project },
     settings.pricing,
     settings.provider,
+    { organization: reservedOrganization, project: reservedProject },
   );
 }

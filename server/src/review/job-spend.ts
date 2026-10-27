@@ -91,6 +91,9 @@ export class RunLedger {
     this.inputTokens += result.inputTokens;
     this.outputTokens += result.outputTokens;
     this.toolCalls += result.toolCalls;
+    // Written now, not only at the end: the day's budget reserves what the run has not yet spent.
+    // Guarded by `startedAtIs`, like the end's write: a run started again is another job's.
+    await writeRunSpend(this.deps.db, running.run.id, this.spend(), running.run.startedAt);
     return result;
   }
 

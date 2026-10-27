@@ -246,6 +246,28 @@ export async function reviewUsageToday(
 }
 
 /**
+ * What the running reviews of the organisation (or of one of its projects), but `exceptRunId`'s own,
+ * may still spend: each counts `perReview` less what it has written as spent, and no less than 0.
+ * No day filter: what a run still spends lands today, however long ago it started. A run that ended
+ * reserves nothing, and so does one the sweep ended.
+ */
+export async function reservedReviewTokens(
+  db: Executor,
+  o: { organizationId: string; projectId?: string; exceptRunId: string; perReview: number },
+): Promise<number> {
+  const rows = await db.execute<{ reserved: string }>(sql`
+    SELECT coalesce(sum(greatest(0, ${o.perReview}::bigint - (r.input_tokens + r.output_tokens))), 0)::bigint
+             AS reserved
+      FROM review_runs r
+      JOIN projects p ON p.id = r.project_id
+     WHERE p.organization_id = ${o.organizationId}
+       ${o.projectId === undefined ? sql`` : sql`AND r.project_id = ${o.projectId}`}
+       AND r.status = 'running'
+       AND r.id <> ${o.exceptRunId}`);
+  return Number(first(rows.rows).reserved);
+}
+
+/**
  * The tokens one review may use now: the smallest of what one review may use, what the
  * organisation has left of its day, what its project has left of the day when the project has a
  * budget, and, when the review has a cost budget (`costPerDayUsd`) and there are prices, what the
@@ -253,7 +275,10 @@ export async function reviewUsageToday(
  * before it is made and any model's may be the next, so the price that cannot overspend is the
  * dearest of them all, the dearer of its input and its output. Without a provider, as without
  * prices, nothing is priced. A cost budget at or past its limit leaves nothing. `usage` is the day
- * so far, as `reviewUsageToday` counts it for the organisation and for the project. The answer to a
+ * so far, as `reviewUsageToday` counts it for the organisation and for the project. `reserved` is
+ * what the other running reviews may still spend (`reservedReviewTokens`): the organisation's
+ * tokens left, the project's and the tokens the cost buys each lose their part of it, and Tokens
+ * per review never does. The answer to a
  * reply asks it with its own ceiling in the place of `maxTokensPerReview`.
  */
 export function remainingReviewTokens(
@@ -264,10 +289,14 @@ export function remainingReviewTokens(
   },
   pricing: StoredPricing,
   provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'> | null,
+  reserved: { organization: number; project: number } = { organization: 0, project: 0 },
 ): number {
-  const left = [budgets.maxTokensPerReview, budgets.tokensPerDay - usage.organization.tokens];
+  const left = [
+    budgets.maxTokensPerReview,
+    budgets.tokensPerDay - usage.organization.tokens - reserved.organization,
+  ];
   if (usage.project !== null && budgets.perProjectTokensPerDay !== null) {
-    left.push(budgets.perProjectTokensPerDay - usage.project.tokens);
+    left.push(budgets.perProjectTokensPerDay - usage.project.tokens - reserved.project);
   }
   if (budgets.costPerDayUsd !== null) {
     const costLeft =
@@ -277,7 +306,7 @@ export function remainingReviewTokens(
     // A price is in dollars for a million tokens, which is micro-USD for a token.
     const perToken =
       dearest === null ? 0 : Math.max(dearest.inputUsdPerMTok, dearest.outputUsdPerMTok);
-    if (perToken > 0) left.push(Math.floor(costLeft / perToken));
+    if (perToken > 0) left.push(Math.floor(costLeft / perToken) - reserved.organization);
   }
   return Math.max(0, Math.min(...left));
 }

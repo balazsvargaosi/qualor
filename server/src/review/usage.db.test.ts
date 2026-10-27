@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { REDACTED } from '@qualor/shared';
-import { asc, sql } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { testConfig } from '../../test/config';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
@@ -55,6 +55,7 @@ import {
 import { newNonce } from './envelope';
 import { Masker } from './masker';
 import { modelFor, type ModelTier } from './model-tiers';
+import { reconcileStuckReviewRuns } from './runs';
 import { CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
 import { REPLY_PROMPT_VERSION } from './prompts';
 import { REPLY_TOKEN_BUDGET } from './replies';
@@ -70,6 +71,7 @@ import {
   recordReviewCall,
   RedactionTally,
   remainingReviewTokens,
+  reservedReviewTokens,
   REVIEW_CALL_MIN_TIMEOUT_SECONDS,
   REVIEW_FEATURE,
   REVIEW_REPLY_FEATURE,
@@ -1834,6 +1836,73 @@ const port = 8080;
         tokens: 1_020,
         costMicroUsd: 300,
       });
+    });
+  });
+
+  describe('reservedReviewTokens', () => {
+    const PER_REVIEW = 300_000;
+    /** A run of the project that has written `spent` (input, output) tokens as spent. */
+    const runWith = async (
+      projectId: string,
+      spent: [number, number],
+      status: 'running' | 'done' = 'running',
+      startedAt: Date = new Date(),
+    ) => {
+      const run = await newRun(projectId, status, startedAt);
+      await t.db
+        .update(reviewRuns)
+        .set({ inputTokens: spent[0], outputTokens: spent[1] })
+        .where(eq(reviewRuns.id, run.id));
+      return run;
+    };
+    const reserved = (o: { projectId?: string; exceptRunId: string }) =>
+      reservedReviewTokens(t.db, { organizationId: orgA, perReview: PER_REVIEW, ...o });
+    const clear = () =>
+      t.db
+        .update(reviewRuns)
+        .set({ status: 'superseded', finishedAt: new Date() })
+        .where(eq(reviewRuns.status, 'running'));
+    beforeEach(clear);
+
+    it('a running review of the organisation reserves Tokens per review less what it has written', async () => {
+      await runWith(projectA1, [80_000, 20_000]);
+      const me = await newRun(projectA2, 'running', new Date());
+      expect(await reserved({ exceptRunId: me.id })).toBe(200_000);
+      // Two of them add up, and one that wrote more than a review may use reserves nothing.
+      await runWith(projectA2, [10_000, 0]);
+      await runWith(projectA1, [400_000, 1]);
+      expect(await reserved({ exceptRunId: me.id })).toBe(200_000 + 290_000);
+    });
+
+    it('a run that ended, a run of another organisation, and the run itself reserve nothing', async () => {
+      await runWith(projectA1, [0, 0], 'done');
+      await runWith(projectB, [0, 0]);
+      const itself = await runWith(projectA1, [0, 0]);
+      expect(await reserved({ exceptRunId: itself.id })).toBe(0);
+      expect(await reserved({ exceptRunId: randomUUID() })).toBe(PER_REVIEW);
+    });
+
+    it('the project’s reservation counts only the project’s runs', async () => {
+      await runWith(projectA1, [50_000, 0]);
+      await runWith(projectA2, [100_000, 0]);
+      const me = await newRun(projectA1, 'running', new Date());
+      expect(await reserved({ projectId: projectA1, exceptRunId: me.id })).toBe(250_000);
+      expect(await reserved({ projectId: projectA2, exceptRunId: me.id })).toBe(200_000);
+      expect(await reserved({ exceptRunId: me.id })).toBe(450_000);
+    });
+
+    it('a run left running by a dead job reserves until the sweep ends it, and a run started yesterday still reserves', async () => {
+      await runWith(
+        projectA1,
+        [100_000, 0],
+        'running',
+        new Date(Date.now() - 24 * 3_600_000 - 60_000),
+      );
+      const me = await newRun(projectA2, 'running', new Date());
+      expect(await reserved({ exceptRunId: me.id })).toBe(200_000);
+      // Its job is gone, and so are the others': the sweep ends every run of them.
+      await reconcileStuckReviewRuns(t.db, { info: () => undefined, warn: () => undefined });
+      expect(await reserved({ exceptRunId: me.id })).toBe(0);
     });
   });
 
