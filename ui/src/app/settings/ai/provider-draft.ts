@@ -120,6 +120,8 @@ export const DEFAULT_TIMEOUT = 60;
 /** The bounds of the context window, in tokens, as the server holds them. */
 export const CONTEXT_WINDOW_MIN = 8000;
 export const CONTEXT_WINDOW_MAX = 10_000_000;
+/** What an empty context window means, in tokens (the hint under the field says it too). */
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 /** OpenAI's own host, whose newest models call tools only through the Responses API. */
 export const OPENAI_HOST = 'api.openai.com';
 /**

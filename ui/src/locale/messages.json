@@ -1515,6 +1515,7 @@
     "aiProvider.url.keyOnly": "Changing the address needs the API key again.",
     "aiProvider.url.pauses": "Changing the address needs the API key again, and pauses AI review in {$names} until an organization admin confirms the new address.",
     "aiProvider.chip.timeout": "Timeout {$n} s",
+    "aiProvider.chip.contextWindow": "Context window {$n} tokens",
     "aiProvider.chip.temperature": "Temperature {$t}",
     "aiProvider.pause.title": "Pause AI review in {$names}?",
     "aiProvider.pause.was": "{$names} confirmed sending code to {$host} ({$models}).",

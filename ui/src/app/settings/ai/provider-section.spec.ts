@@ -1298,6 +1298,7 @@ describe('ProviderSection: the connection options', () => {
       { text: 'JSON mode on', set: false },
       { text: 'max_tokens', set: false },
       { text: 'Timeout 60 s', set: false },
+      { text: 'Context window 1,000,000 tokens', set: false },
       { text: 'No temperature', set: false },
     ]);
     expect(textOf(root, '#ai-options > summary')).toContain('Connection options');
@@ -1328,6 +1329,7 @@ describe('ProviderSection: the connection options', () => {
       { text: 'api-key (Azure)', set: true },
       { text: 'JSON mode off', set: true },
       { text: 'Timeout 120 s', set: true },
+      { text: 'Context window 1,000,000 tokens', set: false },
       { text: 'Temperature 0.7', set: true },
     ]);
     TestBed.resetTestingModule();
@@ -1335,6 +1337,7 @@ describe('ProviderSection: the connection options', () => {
     const anthropic = await render({ settings: ANTHROPIC });
     expect(chips(anthropic.root)).toEqual([
       { text: 'Timeout 60 s', set: false },
+      { text: 'Context window 1,000,000 tokens', set: false },
       { text: 'No temperature', set: false },
     ]);
   });
@@ -1393,6 +1396,18 @@ describe('ProviderSection: the connection options', () => {
       },
     });
     expect(field(root, 'ai-context-window').value).toBe('32,000');
+  });
+
+  it('lists a set context window among the chips while the fold is closed', async () => {
+    setup();
+    const { root } = await render({
+      settings: {
+        ...CONFIGURED,
+        provider: { ...CONFIGURED.provider, contextWindowTokens: 32_000 },
+      },
+    });
+    expect(openOptions(root).open).toBe(false);
+    expect(chips(root)).toContainEqual({ text: 'Context window 32,000 tokens', set: true });
   });
 
   it('a value outside 8,000–10,000,000 is refused before saving', async () => {

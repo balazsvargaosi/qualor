@@ -45,6 +45,7 @@ import {
   changesOf,
   CONTEXT_WINDOW_MAX,
   CONTEXT_WINDOW_MIN,
+  DEFAULT_CONTEXT_WINDOW,
   DEFAULT_TIMEOUT,
   defaultOutputLimitField,
   type Draft,
@@ -397,6 +398,16 @@ export class ProviderSection {
     chips.push({
       text: $localize`:@@aiProvider.chip.timeout:Timeout ${n}:n: s`,
       set: seconds !== DEFAULT_TIMEOUT,
+    });
+    const windowTokens =
+      d.contextWindow.trim() === ''
+        ? DEFAULT_CONTEXT_WINDOW
+        : parseWhole(d.contextWindow, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX);
+    const tokens =
+      windowTokens === null ? d.contextWindow.trim() : formatWhole(windowTokens, this.locale);
+    chips.push({
+      text: $localize`:@@aiProvider.chip.contextWindow:Context window ${tokens}:n: tokens`,
+      set: windowTokens !== DEFAULT_CONTEXT_WINDOW,
     });
     const temperature = d.kind === 'openai' && d.temperatureSet ? d.temperature.trim() : '';
     chips.push(
