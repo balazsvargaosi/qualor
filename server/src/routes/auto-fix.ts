@@ -102,7 +102,7 @@ export const autoFixRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
           problems: [409],
           problemDescriptions: {
             403: 'FEATURE_NOT_LICENSED (switching it on, from off, needs the enterprise feature llm.auto-fix), FORBIDDEN or INSUFFICIENT_SCOPE',
-            409: 'AI_DISABLED (switching it on, from off, needs the AI assistant configured and the organisation enabled with fix suggestions)',
+            409: 'AI_DISABLED (switching it on, from off, needs the AI provider configured, in an organisation that may use AI with Suggest a fix on)',
           },
         },
       },

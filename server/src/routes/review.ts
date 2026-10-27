@@ -353,7 +353,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
           problems: [409],
           problemDescriptions: {
             403: 'FORBIDDEN or INSUFFICIENT_SCOPE',
-            409: 'AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host, model or set of models than the provider configured now; nothing is stored)',
+            409: 'AI_DISABLED (switching it on needs the AI provider configured, in an organisation that may use AI), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host, model or set of models than the provider configured now; nothing is stored)',
             422: 'VALIDATION_FAILED, or PROJECT_NOT_IN_ORGANIZATION (a project id belongs to another organisation; errors[] names it)',
           },
         },
@@ -413,7 +413,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
           if (provider === null || !organizationSettings(settings, organizationId).enabled) {
             throw conflict(
               'AI_DISABLED',
-              'AI review needs the AI assistant configured and enabled for this organisation',
+              'AI review needs the AI provider configured, in an organisation that may use AI',
             );
           }
           const acknowledged = body.acknowledgeDataSharing;

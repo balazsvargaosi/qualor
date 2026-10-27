@@ -555,7 +555,10 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         await configure(over, provider);
         const res = await putReview(onBody());
         expect(res.statusCode, res.body).toBe(409);
-        expect(res.json()).toMatchObject({ code: 'AI_DISABLED' });
+        expect(res.json()).toMatchObject({
+          code: 'AI_DISABLED',
+          title: 'AI review needs the AI provider configured, in an organisation that may use AI',
+        });
         expect(await storedReview()).toEqual(DEFAULT_REVIEW);
       }
       // The organisation absent from the map.
