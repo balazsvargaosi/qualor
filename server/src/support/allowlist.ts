@@ -83,6 +83,7 @@ export const SUPPORT_SETTINGS_ALLOWLIST: Readonly<
     'provider.maxTokensField': 'value',
     'provider.temperature': 'value',
     'provider.timeoutSeconds': 'value',
+    'provider.contextWindowTokens': 'value',
     'organizations.*.enabled': 'value',
     'organizations.*.features': 'value',
     'organizations.*.autoFix': 'value',

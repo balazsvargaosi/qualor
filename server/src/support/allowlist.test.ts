@@ -243,6 +243,7 @@ describe('the settings allowlist copies whole subtrees only of known shape (Ruli
     'llm:provider.maxTokensField',
     'llm:provider.temperature',
     'llm:provider.timeoutSeconds',
+    'llm:provider.contextWindowTokens',
     'llm:organizations.*.enabled',
     'llm:excludePaths',
     'llm:storePrompts',
