@@ -11,6 +11,7 @@ import { SCM_CIRCUIT_FAILURES, SCM_CIRCUIT_OPEN_MS, type CircuitBreaker } from '
 import { parseInternalHosts } from '../scm/url';
 import {
   createLlmRuntime,
+  createModelRuntimes,
   jsonbTextBytes,
   LLM_AFTER_STOP_SECONDS,
   LLM_RESULT_MAX_BYTES,
@@ -602,6 +603,18 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     const c = await ask('explain');
     await runLlmJobs(h, deps);
     expect(await row(c.id)).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('runs an explain while the reviews’ circuit is open: the two circuits are apart (R40)', async () => {
+    const runtimes = createModelRuntimes();
+    for (let i = 0; i < SCM_CIRCUIT_FAILURES; i += 1) {
+      runtimes.reviewCircuit.failure(fake.openAiBaseUrl);
+    }
+    expect(runtimes.reviewCircuit.tryPass(fake.openAiBaseUrl)).toBe(false);
+    const { id } = await ask('explain');
+    await runLlmJobs(h, llmJobDeps(h, { runtime: runtimes.llm }));
+    expect(await row(id)).toMatchObject({ status: 'succeeded' });
+    expect(fake.requests).toHaveLength(1);
   });
 
   it('scrubs the API key from an answer before storing it', async () => {
