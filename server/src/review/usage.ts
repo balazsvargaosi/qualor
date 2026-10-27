@@ -396,8 +396,8 @@ interface Outcome {
  * `converse`, recorded as a row of `deps.feature` whether it succeeds or fails. The provider's
  * circuit is asked first (open: `CircuitOpenError`, nothing sent and no row) and told how the call
  * went. A review, or the answer to a reply, takes no slot of the organisation's `llm` requests: it
- * shares the circuit with that queue and nothing else, so it never holds explain, triage or fix
- * behind it, and they never hold it. The provider's key is taken out of what the model said before
+ * has a circuit of its own (R40, `reviewCircuitDeps`), shared with reviews and replies and not with
+ * the explain, triage and fix queue, so it never holds them behind it, and they never hold it. The provider's key is taken out of what the model said before
  * it is returned or stored. A failure is thrown after it is recorded; a key that cannot be read is
  * thrown as the provider refusing it. A call that `deps.signal` gives up is cut at once and thrown
  * as `LlmCallAborted`, with no row: the provider gave no answer and failed at nothing, so the call

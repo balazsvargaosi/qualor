@@ -293,8 +293,8 @@ class ReviewJob {
 }
 
 /**
- * The `ai-review` queue's handler (R21): main.ts runs it on a worker of its own, with the `llm`
- * worker's circuit. A payload that does not parse never will: the job completes. A review's job
+ * The `ai-review` queue's handler (R21): main.ts runs it on a worker of its own, with the reviews'
+ * own circuit (R40, `reviewCircuitDeps`), not the `llm` worker's. A payload that does not parse never will: the job completes. A review's job
  * fails into its retry only for an error before its run started, which left the run as it was, and
  * never on its last try; once the run is running, an error ends it `failed: internal` and the job
  * completes, so a review is never run twice.
