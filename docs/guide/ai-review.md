@@ -780,7 +780,8 @@ upload into one record per file, which takes seconds. Qualor deletes the copy at
   switch AI review off or leave the project out of **Projects to review**. It does the same when an
   instance admin stops allowing the organisation to use AI, excludes the project from AI, removes
   the provider or changes it (until an organisation admin confirms again), and when the project is
-  unmapped from its repository or its SCM connection is deleted.
+  unmapped from its repository or its SCM connection is deleted. When a project is mapped to
+  another repository or connection, the copies made before the change go at once.
 - **After 14 days.** A daily job deletes every snapshot that is **more than 14 days old**, whatever
   its state, and catches the copies the rules above missed. A snapshot the server refused (a damaged
   upload) is deleted after one day.

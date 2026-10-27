@@ -205,3 +205,27 @@ export async function purgeInactiveSnapshots(
     if (n < PURGE_BATCH) return deleted;
   }
 }
+
+/**
+ * Deletes the snapshots of one project made before `createdBefore`: it was mapped to another
+ * repository or connection, and the copies of the old one must go at once. Same batches and row
+ * skipping as `purgeInactiveSnapshots`. Answers how many were deleted.
+ */
+export async function purgeProjectSnapshots(
+  db: Db,
+  projectId: string,
+  createdBefore: Date,
+): Promise<number> {
+  let deleted = 0;
+  for (;;) {
+    const result = await db.execute(sql`
+      DELETE FROM review_snapshots WHERE id IN (
+        SELECT id FROM review_snapshots
+         WHERE project_id = ${projectId} AND created_at < ${createdBefore.toISOString()}::timestamptz
+         LIMIT ${PURGE_BATCH}
+         FOR UPDATE SKIP LOCKED)`);
+    const n = result.rowCount ?? 0;
+    deleted += n;
+    if (n < PURGE_BATCH) return deleted;
+  }
+}

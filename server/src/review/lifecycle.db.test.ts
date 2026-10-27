@@ -470,6 +470,13 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
         .from(reviewSnapshots)
         .where(eq(reviewSnapshots.projectId, project.id))
     ).length;
+  const snapshotIds = async (project: IngestProject): Promise<string[]> =>
+    (
+      await h.ctx.db
+        .select({ id: reviewSnapshots.id })
+        .from(reviewSnapshots)
+        .where(eq(reviewSnapshots.projectId, project.id))
+    ).map((row) => row.id);
   /** Every project's snapshots at once, in the order a1, a2, a3, b1. */
   const counts = async () => [
     await snapshotCount(a1),
@@ -489,7 +496,7 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
         and(
           eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE),
           eq(jobs.status, 'queued'),
-          sql`jsonb_exists(${jobs.payload}, 'purgeOrganizationId')`,
+          sql`(jsonb_exists(${jobs.payload}, 'purgeOrganizationId') OR jsonb_exists(${jobs.payload}, 'purgeProjectId'))`,
         ),
       );
   /** The analysis worker's `review-snapshot` jobs: the unpacks and the purges. */
@@ -675,17 +682,29 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
       call('PATCH', `/projects/${project.id}`, h.orgAdmin, payload);
     const other = await connect(orgA);
     try {
-      // Still mapped, or never mapped: AI review covers the same projects as before.
+      // Neither a rename nor a project that was never mapped changes what AI review covers.
       for (const [project, payload] of [
         [a1, { name: 'Renamed' }],
-        [a1, { scmProjectRef: '77' }],
-        [a1, { scmConnectionId: other }],
         [a3, { scmConnectionId: null }],
       ] as const) {
         const res = await patch(project, payload);
         expect(res.statusCode, JSON.stringify(payload) + res.body).toBe(200);
       }
       expect(await purgeJobs()).toEqual([]);
+
+      // Mapped to another repository or connection: the copies of the old one go (R41).
+      for (const payload of [{ scmProjectRef: '77' }, { scmConnectionId: other }]) {
+        await h.ctx.db.delete(jobs).where(eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE));
+        const res = await patch(a1, payload);
+        expect(res.statusCode, JSON.stringify(payload) + res.body).toBe(200);
+        expect(await purgeJobs()).toEqual([
+          {
+            payload: { purgeProjectId: a1.id, createdBefore: expect.any(String) },
+            key: 'review-snapshot:purge',
+          },
+        ]);
+      }
+      await h.ctx.db.delete(jobs).where(eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE));
 
       // The mapping goes: the route queues the purge of the organisation and deletes nothing.
       const res = await patch(a1, { scmConnectionId: null });
@@ -699,6 +718,30 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
       expect(await counts()).toEqual([0, 1, 0, 1]);
     } finally {
       await mapTo(a1, connectionA);
+      await h.ctx.db
+        .update(projects)
+        .set({ scmProjectRef: String(a1.key.length) })
+        .where(eq(projects.id, a1.id));
+    }
+  });
+
+  it('a remap deletes the snapshots made before it and keeps one uploaded after it (Review Focus 5)', async () => {
+    await seedAll();
+    await h.ctx.db.delete(jobs).where(eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE));
+    try {
+      const res = await call('PATCH', `/projects/${a1.id}`, h.orgAdmin, { scmProjectRef: '77' });
+      expect(res.statusCode, res.body).toBe(200);
+      // A new analysis stores its snapshot after the remap, before the job runs.
+      const s2 = await snapshotOf(a1);
+      await runSnapshotJobs();
+      expect(await snapshotIds(a1)).toEqual([s2]);
+      // a2, a3 and b1 are untouched (seedAll gave each one snapshot).
+      expect(await counts()).toEqual([1, 1, 1, 1]);
+    } finally {
+      await h.ctx.db
+        .update(projects)
+        .set({ scmProjectRef: String(a1.key.length) })
+        .where(eq(projects.id, a1.id));
     }
   });
 

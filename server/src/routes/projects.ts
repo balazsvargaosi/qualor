@@ -57,7 +57,7 @@ import { headlineMeasures } from '../measures/read';
 import { containsPattern } from '../issues/query';
 import { PROJECT_KEY_PATTERN } from '../patterns';
 import { projectForUser, type ProjectRow } from '../projects/access';
-import { queueSnapshotPurge } from '../review/jobs';
+import { queueRemapPurge, queueSnapshotPurge } from '../review/jobs';
 import { projectAiReview } from '../review/settings';
 import { forgetForeignMergeRequestUrls } from '../scm/connections';
 import { projectAutoFixSchema } from './auto-fix';
@@ -595,6 +595,15 @@ export const projectRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
           // its merge requests once this commits.
           if (saved.scmConnectionId === null && locked.scmConnectionId !== null) {
             await queueSnapshotPurge(tx, saved.organizationId);
+          }
+          // Mapped to another repository or connection: the copies of the old one go (R41).
+          if (
+            locked.scmConnectionId !== null &&
+            saved.scmConnectionId !== null &&
+            (saved.scmConnectionId !== locked.scmConnectionId ||
+              saved.scmProjectRef !== locked.scmProjectRef)
+          ) {
+            await queueRemapPurge(tx, saved.id);
           }
           // rbac-audit.md §8: only the fields whose value changed.
           const fieldChanges = PROJECT_CHANGE_FIELDS.filter(

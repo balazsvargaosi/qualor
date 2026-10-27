@@ -1,11 +1,11 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import { z } from 'zod';
 import type { Db, Executor } from '../db/client';
 import { reviewSnapshots } from '../db/schema';
 import { enqueue } from '../queue/queue';
 import type { JobHandlers } from '../queue/worker';
-import { purgeInactiveSnapshots } from './lifecycle';
+import { purgeInactiveSnapshots, purgeProjectSnapshots } from './lifecycle';
 import { REVIEW_SNAPSHOT_QUEUE, unpackSnapshot, type SnapshotLimits } from './snapshot-store';
 
 type Logger = Pick<FastifyBaseLogger, 'info' | 'warn'>;
@@ -18,6 +18,12 @@ const unpackPayload = z.object({
 
 /** The purge of the snapshots of projects without AI review (6I-3, R17): one organisation's, or all. */
 const purgePayload = z.object({ purgeOrganizationId: z.uuid().nullable() });
+
+/** The purge of one remapped project's older snapshots (R41). */
+const remapPayload = z.object({
+  purgeProjectId: z.uuid(),
+  createdBefore: z.iso.datetime({ offset: true }),
+});
 
 /** The purges run one at a time; each looks at the settings as they are when it runs. */
 const PURGE_KEY = 'review-snapshot:purge';
@@ -40,6 +46,25 @@ export async function queueSnapshotPurge(
 }
 
 /**
+ * Queues the deletion of the snapshots of `projectId` made before this transaction's `now()`: the
+ * project was mapped to another repository or connection, and AI review must not read the old
+ * one's code. A snapshot uploaded after the remap is newer, so it stays.
+ */
+export async function queueRemapPurge(tx: Executor, projectId: string): Promise<void> {
+  const { rows } = await tx.execute<{ now: Date | string }>(sql`SELECT now() AS now`);
+  const now = rows[0]?.now;
+  if (now === undefined) throw new Error('SELECT now() answered nothing');
+  await enqueue(tx, {
+    queue: REVIEW_SNAPSHOT_QUEUE,
+    payload: {
+      purgeProjectId: projectId,
+      createdBefore: new Date(now).toISOString(),
+    } satisfies z.infer<typeof remapPayload>,
+    concurrencyKey: PURGE_KEY,
+  });
+}
+
+/**
  * The queue that unpacks the uploaded review snapshots (6I-2) and purges those of the projects
  * AI review no longer covers (6I-3); main.ts runs it on the analysis worker. Unpacking never
  * throws for what the scanner sent: a snapshot it refuses is `rejected`, with the reason logged (it
@@ -53,6 +78,19 @@ export function reviewSnapshotHandlers(deps: {
 }): JobHandlers {
   return {
     [REVIEW_SNAPSHOT_QUEUE]: async (job) => {
+      const remap = remapPayload.safeParse(job.payload);
+      if (remap.success) {
+        const projectId = remap.data.purgeProjectId;
+        const deleted = await purgeProjectSnapshots(
+          deps.db,
+          projectId,
+          new Date(remap.data.createdBefore),
+        );
+        if (deleted > 0) {
+          deps.logger.info({ projectId, deleted }, 'review snapshots of a remapped project purged');
+        }
+        return;
+      }
       const purge = purgePayload.safeParse(job.payload);
       if (purge.success) {
         const organizationId = purge.data.purgeOrganizationId;

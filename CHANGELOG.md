@@ -15,9 +15,9 @@ All notable changes to Qualor are listed here, newest first. The format follows
   Instance admins can cap the tokens per organisation and day in **Settings → AI provider**. For
   the merge requests of the chosen projects, the scanner uploads a copy of the repository with its
   secrets masked. The server deletes the copy when the merge request is merged or closed (within an
-  hour), at once when AI review stops covering the project (switched off, the project left out or
-  unmapped, the provider removed or changed), when a newer analysis replaces it, and after 14 days
-  at most. The server gets `QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES` and
+  hour), at once when AI review stops covering the project (switched off, the project left out,
+  unmapped or mapped to another repository, the provider removed or changed), when a newer
+  analysis replaces it, and after 14 days at most. The server gets `QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES` and
   `QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES`. See [the guide](docs/guide/ai-review.md). The API
   gains `GET` and `PUT /api/v0/organizations/{id}/ai/review`, `GET /api/v0/projects/review-context`
   and `POST /api/v0/analyses/{id}/review-snapshot`, and project objects gain `aiReview`.
