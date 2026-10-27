@@ -766,6 +766,34 @@ describe('the answer job (6I-4)', () => {
       expect(mr.answers(threadId)).toEqual([]);
     });
 
+    it('a reply no call of which fits the model’s context window ends failed: provider_error, and its log line says it was the window', async () => {
+      const { mr, threadId } = await replied('window-full');
+      // A long round: nine notes of nearly the longest, more than a window of 8 000 tokens holds
+      // beside the room for the answer.
+      let last = 0;
+      for (let i = 0; i < 9; i += 1) last = mr.reply(threadId, `${'x'.repeat(1_900)} ${i}`);
+      await mr.decorate();
+      const row = await rowOfNote(mr.branchId, last);
+      await h.ctx.db.execute(
+        sql`UPDATE instance_settings
+               SET value = jsonb_set(value, '{provider,contextWindowTokens}', '8000')
+             WHERE key = 'llm'`,
+      );
+      const told: unknown[][] = [];
+      const logger = {
+        info: (...args: unknown[]) => void told.push(args),
+        warn: () => undefined,
+        error: () => undefined,
+      };
+      await answer({ logger });
+      expect(await rowById(row.id)).toMatchObject({ status: 'failed', reason: 'provider_error' });
+      expect(mr.answers(threadId)).toEqual([]);
+      expect(told).toContainEqual([
+        { replyId: row.id, reason: 'provider_error', detail: 'window_full' },
+        'AI reply failed',
+      ]);
+    });
+
     it('a connection that cannot be made ends the row failed: internal, with nothing asked of the provider or the model', async () => {
       const { d, mr, row, threadId } = await replied('unusable');
       d.clearRequests();

@@ -1754,6 +1754,19 @@ describe('the answer to a reply', () => {
       expect(none.decision).toEqual({ failed: 'provider_error' });
     });
 
+    it('is a provider error that says it was the window when no call fits the context window', async () => {
+      const full = await converse([says('other', 'keep')], inputOf(), {
+        contextWindowTokens: 1_000,
+      });
+      expect(full.sent).toHaveLength(0);
+      expect(full.decision).toEqual({ failed: 'provider_error', detail: 'window_full' });
+      // A failure of the provider says nothing of the window.
+      const refused = await converse([
+        new LlmError('refused_key', 'The key was refused', { status: 401 }),
+      ]);
+      expect(refused.decision).toEqual({ failed: 'provider_error' });
+    });
+
     it('decides nothing while the provider’s circuit is open: it waits, which is no failure', async () => {
       const open = await converse([new CircuitOpenError()]);
       expect(open.decision).toEqual({ circuitOpen: true });

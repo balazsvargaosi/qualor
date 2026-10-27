@@ -464,6 +464,13 @@ class ReplyJob extends JobSteps {
       return null;
     }
     if ('failed' in decided) {
+      // The row has no detail column: the log says the window was the reason.
+      if (decided.detail !== undefined) {
+        this.deps.logger.info(
+          { replyId: row.id, reason: decided.failed, detail: decided.detail },
+          'AI reply failed',
+        );
+      }
       // A day without room for it skips it: a later day's decoration offers it again.
       await this.end(
         row,

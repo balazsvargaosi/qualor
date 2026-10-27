@@ -121,10 +121,20 @@ export async function endRun(
 export const errorClass = (err: unknown): string =>
   err instanceof Error ? err.constructor.name : typeof err;
 
-/** The log line of a run's end, once it is committed: its id, status and reason only. */
+/**
+ * The log line of a run's end, once it is committed: its id, status and reason, and its detail
+ * when it has one. The detail is a fixed token (`too_large`, `window_too_small`, `window_full`,
+ * `snapshot_deleted`, or the reason review is inactive), never free text.
+ */
 export function logRunEnd(logger: Logger, runId: string, end: RunEnd): void {
+  const detail = end.status === 'superseded' ? null : (end.detail ?? null);
   logger.info(
-    { runId, status: end.status, reason: end.status === 'superseded' ? null : end.reason },
+    {
+      runId,
+      status: end.status,
+      reason: end.status === 'superseded' ? null : end.reason,
+      ...(detail === null ? {} : { detail }),
+    },
     'AI review run ended',
   );
 }

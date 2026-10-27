@@ -515,7 +515,7 @@ function judged(
 ): JudgedFinding {
   const priorId = found.priorId ?? null;
   const given = [...new Set(found.sources)].filter((id) => sources.has(id));
-  const first = given.length > 0 ? sources.get(given[0]!) : undefined;
+  const first = given.length > 0 ? sources.get(given.at(0) ?? '') : undefined;
   // Under a small window the judge is shown cut bodies, and one kept "as it was given" carries the
   // cut text: the body it was cut from is restored. A body the judge wrote itself is kept.
   const cut =

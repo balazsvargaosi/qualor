@@ -93,7 +93,11 @@ export interface ReplyUsage {
  */
 export type DecidedReply =
   | { verdict: ReplyVerdict; answer: string; readCode: boolean; usage: ReplyUsage }
-  | { failed: 'bad_answer' | 'provider_error' | 'provider_no_tools' | 'budget_spent' }
+  | {
+      failed: 'bad_answer' | 'provider_error' | 'provider_no_tools' | 'budget_spent';
+      /** `window_full`: a `provider_error` because no call fit the model's context window. */
+      detail?: 'window_full';
+    }
   | { stopped: true }
   | { circuitOpen: true };
 
@@ -442,7 +446,9 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
     if (result.circuitOpen === true) return { circuitOpen: true };
     // The model's context window had no room for a call of the answer: the provider would have
     // refused it, and a reply's row has no other reason for it.
-    return { failed: result.reason === 'window_full' ? 'provider_error' : result.reason };
+    return result.reason === 'window_full'
+      ? { failed: 'provider_error', detail: 'window_full' }
+      : { failed: result.reason };
   }
   // Checked again: a conversation that gave an answer back is not believed without it.
   const judged = judge(result.text);
