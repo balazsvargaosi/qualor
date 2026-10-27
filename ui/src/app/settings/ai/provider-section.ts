@@ -320,6 +320,8 @@ export class ProviderSection {
   private readonly removing = signal(false);
   /** The draft has taken settings once: later settings keep its edits. */
   private adopted = false;
+  /** Counts the Tests started and dropped: the answer of one a save or removal overtook is dropped. */
+  private testRun = 0;
   /** The admin chose the API, or the output limit parameter, here: the address presets neither. */
   private apiChosen = false;
   private maxTokensFieldChosen = false;
@@ -723,6 +725,7 @@ export class ProviderSection {
     this.saving.set(true);
     this.saveError.set(null);
     this.errors.set({});
+    this.dropTest();
     try {
       const request = this.saveProvider()({ provider: null, pricing: null });
       this.emptyKey();
@@ -738,28 +741,43 @@ export class ProviderSection {
     );
   }
 
+  /** Test again: a Test of the saved provider, unless one or a save is on its way. */
+  async test(): Promise<void> {
+    if (this.testing() || this.saving()) return;
+    await this.runTest();
+  }
+
   /**
    * Sends a fixed prompt holding no repository data to each model of the saved provider (llm.md
    * §16), and lists what it found; the server keeps it as the last Test. A hint that a model takes
-   * tools only through Responses opens the connection options, where that is chosen.
+   * tools only through Responses opens the connection options, where that is chosen. It takes the
+   * place of a Test on its way, whose answer is then dropped.
    */
-  async test(): Promise<void> {
-    if (this.testing() || this.saving()) return;
+  private async runTest(): Promise<void> {
+    this.dropTest();
+    const run = this.testRun;
     this.testing.set(true);
-    this.testError.set(null);
-    this.visitTest.set(null);
     try {
       const answer = await ok(this.api.client.POST('/api/v0/system/llm/test'));
+      if (run !== this.testRun) return;
       this.visitTest.set({ answer, at: new Date() });
       if (answer.models.some((m) => m.hint?.code === 'USE_RESPONSES_API')) {
         this.optionsOpen.set(true);
       }
       this.tested.emit();
     } catch (err) {
-      this.testError.set(problemMessage(err));
+      if (run === this.testRun) this.testError.set(problemMessage(err));
     } finally {
-      this.testing.set(false);
+      if (run === this.testRun) this.testing.set(false);
     }
+  }
+
+  /** Forgets this visit's Test, and drops the answer of one on its way: the provider changes. */
+  private dropTest(): void {
+    this.testRun++;
+    this.testing.set(false);
+    this.visitTest.set(null);
+    this.testError.set(null);
   }
 
   /**
@@ -770,8 +788,7 @@ export class ProviderSection {
     const sent = this.draft();
     this.saving.set(true);
     this.saveError.set(null);
-    this.visitTest.set(null);
-    this.testError.set(null);
+    this.dropTest();
     let saved: LlmSettings;
     try {
       const provider = change.provider && { ...change.provider, ...this.takeKey() };
@@ -788,7 +805,7 @@ export class ProviderSection {
     this.saving.set(false);
     this.showSaved(saved, sent);
     this.savedAt.set(new Date());
-    await this.test();
+    await this.runTest();
   }
 
   /** The key part of the provider: the key typed, its removal, none for none stored, else kept. */
@@ -957,8 +974,6 @@ export class ProviderSection {
     this.draft.set(next);
     this.base.set(next);
     this.replacing.set(false);
-    this.visitTest.set(null);
-    this.testError.set(null);
     this.optionsOpen.set(false);
     this.apiChosen = false;
     this.maxTokensFieldChosen = false;

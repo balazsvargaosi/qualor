@@ -1723,6 +1723,33 @@ describe('ProviderSection: Save and test', () => {
     expect(lines(root)).toHaveLength(2);
   });
 
+  it('drops the answer of a Test that a save overtook, and shows the save’s own Test', async () => {
+    const server = setup();
+    const held: ((reply: FakeReply) => void)[] = [];
+    server.on('POST', '/api/v0/system/llm/test', () => {
+      // The first Test waits; the one after the save answers at once.
+      if (testsRun(server).length === 1) return new Promise<FakeReply>((r) => held.push(r));
+      return { body: OK_ANSWER };
+    });
+    const { fixture, root, tested } = await render();
+    await press(fixture, root, 'Test again');
+    expect(textOf(root, '#ai-test-status')).toBe('Testing…');
+    await fill(fixture, root, '#ai-model', 'qwen3-coder');
+    await saveAndTest(fixture, root);
+    expect(puts(server)).toHaveLength(1);
+    expect(testsRun(server)).toHaveLength(2);
+    expect(lines(root)).toEqual(['qwen2.5-coder: connected in 812 ms · can call tools']);
+    // The first answer comes last, about the provider before the save: it is not shown.
+    held[0]!({
+      body: answer(line('standard', 'qwen2.5-coder', failed('PROVIDER_TIMEOUT'))),
+    });
+    await settle(fixture);
+    expect(lines(root)).toEqual(['qwen2.5-coder: connected in 812 ms · can call tools']);
+    expect(root.querySelector('#ai-test-failed')).toBeNull();
+    expect(root.querySelector('#ai-test-status')?.textContent).not.toContain('Testing');
+    expect(tested()).toBe(1);
+  });
+
   it('says the Test could not run when its request fails', async () => {
     const server = setup();
     server.on('POST', '/api/v0/system/llm/test', { status: 500, body: problem(500, 'INTERNAL') });
