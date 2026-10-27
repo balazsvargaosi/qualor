@@ -385,11 +385,11 @@ async function reconcileRun(
  * so nothing would ever end them and the merge request's summary would say the review is in
  * progress for good. After every reap of the review worker (main.ts, every 30 seconds), each is
  * ended here, never through a job: a running one `failed: internal`, a waiting one past its
- * deadline `skipped: no_snapshot` (given a job instead when its snapshot is ready), and a waiting one before its deadline gets a job at the
- * deadline. Each end is decorated (run-ends.ts). Decided by whether a job is there, never by the
- * run's age: a long review keeps its job running, its lease extended by the worker. A run whose
- * transaction fails is said once (its id and the error's class) and left to the next sweep; the
- * runs after it are swept all the same.
+ * deadline `skipped: no_snapshot` (given a job instead when its snapshot is ready), and a waiting
+ * one before its deadline gets a job at the deadline. Each end is decorated (run-ends.ts). Decided
+ * by whether a job is there, never by the run's age: a long review keeps its job running, its
+ * lease extended by the worker. A run whose transaction fails is said once (its id and the error's
+ * class) and left to the next sweep; the runs after it are swept all the same.
  */
 export async function reconcileStuckReviewRuns(db: Db, logger: SweepLogger): Promise<ReviewSweep> {
   const stuck = await db
