@@ -22,6 +22,7 @@ import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { formatDate } from '../shared/date-time.pipe';
 import { closeModal, openAfterRender } from '../shared/dialog';
+import { keepEdits } from '../shared/drafts';
 import { keepFocus } from '../shared/focus';
 import { isChecked } from '../shared/forms';
 import { Icon } from '../shared/icon';
@@ -1003,7 +1004,7 @@ export class AiReviewPage implements LeaveGuarded {
     if (this.scope() === sent.scope) this.scope.set(saved.scope);
     if (this.selected() === sent.selected) this.selected.set([...saved.projectIds]);
     this.budgets.set(
-      savedWhereUnchanged(this.budgets(), sent.budgets, budgetsDraftOf(saved.budgets, this.locale)),
+      keepEdits(this.budgets(), sent.budgets, budgetsDraftOf(saved.budgets, this.locale)),
     );
     this.budgetErrors.set({});
   }
@@ -1176,15 +1177,6 @@ export class AiReviewPage implements LeaveGuarded {
       amount,
     );
   }
-}
-
-/** `now`, with each field that still holds what was sent replaced by the saved one. */
-function savedWhereUnchanged<T extends object>(now: T, sent: T, saved: T): T {
-  const merged = { ...now };
-  for (const key of Object.keys(now) as (keyof T)[]) {
-    if (now[key] === sent[key]) merged[key] = saved[key];
-  }
-  return merged;
 }
 
 function closeDialog(ref: ElementRef<HTMLDialogElement> | undefined): void {

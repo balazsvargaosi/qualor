@@ -23,6 +23,7 @@ import type { Organization, ResponseBody } from '../../api/types';
 import { SessionStore } from '../../auth/session';
 import { formatDateTime } from '../../shared/date-time.pipe';
 import { closeModal, openAfterRender } from '../../shared/dialog';
+import { keepEdits } from '../../shared/drafts';
 import { keepFocus } from '../../shared/focus';
 import { inputValue, isChecked } from '../../shared/forms';
 import { Icon } from '../../shared/icon';
@@ -963,7 +964,7 @@ export class ProviderSection {
   private adopt(settings: LlmSettings): void {
     const next = draftOf(settings, this.locale);
     const before = this.base();
-    this.draft.update((now) => (this.adopted ? mergeDraft(now, before, next) : next));
+    this.draft.update((now) => (this.adopted ? keepEdits(now, before, next) : next));
     this.base.set(next);
     this.adopted = true;
   }
@@ -974,7 +975,7 @@ export class ProviderSection {
    */
   private showSaved(saved: LlmSettings, sent: Draft): void {
     const next = draftOf(saved, this.locale);
-    this.draft.update((now) => mergeDraft(now, sent, next));
+    this.draft.update((now) => keepEdits(now, sent, next));
     this.base.set(next);
     this.replacing.set(false);
     this.errors.set({});
@@ -1127,15 +1128,6 @@ function draftOf(settings: LlmSettings | null, locale: string): Draft {
     temperature: (p?.temperature ?? null) === null ? '' : String(p?.temperature),
     removeKey: false,
   };
-}
-
-/** `now`, with each field that still holds what `from` had replaced by `to`'s. */
-function mergeDraft(now: Draft, from: Draft, to: Draft): Draft {
-  const merged = { ...now };
-  for (const key of Object.keys(now) as (keyof Draft)[]) {
-    if (now[key] === from[key]) (merged as Record<keyof Draft, unknown>)[key] = to[key];
-  }
-  return merged;
 }
 
 /**
