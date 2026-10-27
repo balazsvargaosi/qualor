@@ -1662,7 +1662,7 @@ describe('ProviderSection: Save and test', () => {
     expect(tones(root)).toEqual(['bad']);
     const alert = root.querySelector('#ai-test-failed')!;
     expect(alert.getAttribute('role')).toBe('alert');
-    expect(alert.textContent?.trim()).toBe('The test failed for 1 of 1 models.');
+    expect(alert.textContent?.trim()).toBe('The test failed for the model.');
     expect(alert.closest('[role="status"]')).toBeNull();
     expect(root.textContent).not.toContain('server text');
   });

@@ -272,9 +272,18 @@
       </table>
     </div>
 
-    @if (countText(); as count) {
+    @if (count(); as count) {
       <div class="orgs-foot">
-        <span class="orgs-count" role="status">{{ count }}</span>
+        <span class="orgs-count" role="status">
+          @if (count.kind === 'noMatch') {
+            {{ count.text }}
+          } @else {
+            <ng-container i18n="@@aiProvider.orgs.count">{count.total, plural,
+              =1 {1 organization}
+              other {{{ count.shownText }} of {{ count.totalText }} organizations}
+            }</ng-container>
+          }
+        </span>
         @if (moreText(); as more) {
           <button type="button" class="btn" (click)="showMore()">{{ more }}</button>
         }

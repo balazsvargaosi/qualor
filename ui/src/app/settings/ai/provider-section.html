@@ -720,8 +720,13 @@
             }
           </div>
           @if (!testing()) {
-            @if (testView()?.failedText; as failed) {
-              <p id="ai-test-failed" class="alert alert-error" role="alert">{{ failed }}</p>
+            @if (testView()?.failed; as failed) {
+              <p id="ai-test-failed" class="alert alert-error" role="alert">
+                <ng-container i18n="@@ai.test.modelsFailed">{failed.total, plural,
+                  =1 {The test failed for the model.}
+                  other {The test failed for {{ failed.count }} of {{ failed.total }} models.}
+                }</ng-container>
+              </p>
             }
           }
           @if (testError(); as message) {

@@ -1033,10 +1033,8 @@ export class ProviderSection {
         const icon: IconName = tone === 'ok' ? 'check' : tone === 'bad' ? 'cross' : 'minus';
         return { tier: m.tier, tone, icon, ...withModel(m.line) };
       }),
-      failedText:
-        failed === 0
-          ? null
-          : $localize`:@@ai.test.modelsFailed:The test failed for ${failed}:failed: of ${total}:total: models.`,
+      // How many models failed of how many, which the template words as a plural of the total.
+      failed: failed === 0 ? null : { count: failed, total },
       responsesHint,
     };
   }

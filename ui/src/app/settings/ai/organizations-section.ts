@@ -80,6 +80,11 @@ interface Row {
   openLabel: string;
 }
 
+/** The count line: how many the filter finds and how many of them are shown, or that it finds none. */
+type Count =
+  | { kind: 'shown'; total: number; totalText: string; shownText: string }
+  | { kind: 'noMatch'; text: string };
+
 /**
  * `q-ai-organizations-section` (spec §3.4 M-I5, §7.3 rows 8–10, §7.4): the instance's AI provider
  * page's organisations, for instance admins. A table of every organisation the page read, sorted
@@ -232,19 +237,24 @@ export class OrganizationsSection {
       .map((o) => this.rowOf(o, settings, autoFix, o.id === editing));
   });
   /**
-   * "{shown} of {total} organizations", or that the filter finds none. It counts what the filter
-   * and the page show, never the row held for its editor: closing it changes no count, so this
-   * line never speaks over the status.
+   * The count line: how many the page shows of those the filter finds, which the template words
+   * as a plural of the total ("25 of 120 organizations", "1 organization"); that the filter finds
+   * none; or nothing. It counts what the filter and the page show, never the row held for its
+   * editor: closing it changes no count, so this line never speaks over the status.
    */
-  protected readonly countText = computed(() => {
+  protected readonly count = computed<Count | null>(() => {
     const total = this.matching().length;
     if (total === 0) {
       return this.filter().trim() === ''
-        ? ''
-        : $localize`:@@aiProvider.orgs.noMatch:No organization matches.`;
+        ? null
+        : { kind: 'noMatch', text: $localize`:@@aiProvider.orgs.noMatch:No organization matches.` };
     }
-    const shown = formatWhole(this.shownCount(), this.locale);
-    return $localize`:@@aiProvider.orgs.count:${shown}:shown: of ${formatWhole(total, this.locale)}:total: organizations`;
+    return {
+      kind: 'shown',
+      total,
+      totalText: formatWhole(total, this.locale),
+      shownText: formatWhole(this.shownCount(), this.locale),
+    };
   });
   /** "Show 25 more", or fewer for the last ones; null when every one found is shown. */
   protected readonly moreText = computed(() => {

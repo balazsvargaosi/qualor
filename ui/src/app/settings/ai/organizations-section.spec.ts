@@ -844,7 +844,7 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     type(root, 'ai-orgs-filter', 'research');
     await settle(fixture);
     expect(rows(root).map(nameOf)).toEqual(['Acme', 'Research']);
-    expect(count(root)).toBe('1 of 1 organizations');
+    expect(count(root)).toBe('1 organization');
     type(root, 'ai-orgs-filter', 'nothing like it');
     await settle(fixture);
     expect(rows(root).map(nameOf)).toEqual(['Acme']);
