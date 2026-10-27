@@ -14,6 +14,7 @@ import {
 import {
   CONTEXT_WINDOW_MAX_TOKENS,
   CONTEXT_WINDOW_MIN_TOKENS,
+  outputLimitFieldFor,
   ownModel,
   pricingFor,
   WORKSPACE_ID_PATTERN,
@@ -24,7 +25,7 @@ import { llmBaseUrlProblem } from '../../server/src/llm/url';
 import { scrubTurn } from '../../server/src/review/key-scrub';
 import { modelFor, type ModelTier } from '../../server/src/review/model-tiers';
 import { converseOverTools } from '../../server/src/review/tool-conversation';
-import { REVIEW_CALL_MIN_TIMEOUT_SECONDS } from '../../server/src/review/usage';
+import { REVIEW_CALL_MIN_TIMEOUT_SECONDS, reviewStreamLimits } from '../../server/src/review/usage';
 import { normalBaseUrl, parseInternalHosts } from '../../server/src/scm/url';
 import { hostOf, isNonPublicAddress } from '../../server/src/webhooks/url';
 import {
@@ -54,7 +55,13 @@ import {
  * (`chat_completions`, the default, is what the OpenAI-compatible servers serve). A model with a
  * context window smaller than 1 000 000 tokens takes it in `QUALOR_LIVE_REVIEW_CONTEXT_WINDOW`
  * (8 000 to 10 000 000), as the AI provider's Context window: no call sends more than it less the
- * room for the answer.
+ * room for the answer. The calls are streamed as the server streams a review's. A cached input
+ * price is optional for each model (`..._PRICE_CACHED_IN`, `..._STRONG_PRICE_CACHED_IN`,
+ * `..._FAST_PRICE_CACHED_IN`; empty is the input price), and a cost is the server's own
+ * (`costOf`). `QUALOR_LIVE_REVIEW_AUTH=api-key` sends the key of an OpenAI-compatible provider in
+ * an `api-key` header (Azure OpenAI). `QUALOR_LIVE_REVIEW_MAX_USD` (above 0, up to 1000, and only
+ * with the prices of every model the calls go to) stops the run before the next review once the
+ * cost so far has reached it.
  *
  * The provider is whatever the person sets in the environment. The host they type is the one they
  * mean to call, so it is allowed whatever its address is (a local model, a gateway on the company
@@ -71,6 +78,8 @@ const API_KEY = /^[\x21-\x7e]{1,4096}$/;
 /** The settings' bound for a price, USD for a million tokens (pricingSchema). */
 const MAX_PRICE = 10_000;
 const MAX_RUNS = 5;
+/** The most USD `QUALOR_LIVE_REVIEW_MAX_USD` may name. */
+const MAX_COST_CAP_USD = 1000;
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -87,6 +96,11 @@ export interface LiveOptions {
   api: ProviderApi;
   /** The key the provider is called with; never printed. */
   apiKey: string | null;
+  /**
+   * The header the key goes in (`QUALOR_LIVE_REVIEW_AUTH`), as the AI settings choose it: `bearer`
+   * or `api-key` (Azure OpenAI). An OpenAI-compatible provider only; Anthropic has its own header.
+   */
+  auth: 'bearer' | 'api-key';
   /**
    * The workspace an organisation-wide Anthropic key that is not scoped to one names in every
    * request (`anthropic-workspace-id`); null: none. An OpenAI-compatible server has none.
@@ -116,6 +130,11 @@ export interface LiveOptions {
    * tier; null: 1 000 000, as the AI settings read an empty one.
    */
   contextWindowTokens: number | null;
+  /**
+   * USD (`QUALOR_LIVE_REVIEW_MAX_USD`, above 0 and up to 1000): no review starts once the cost so
+   * far has reached it. It needs prices for every model the calls go to; null: no cap.
+   */
+  maxCostUsd: number | null;
 }
 
 /** The project `review-live` exists (vitest.config.ts) only with both variables set. */
@@ -133,14 +152,18 @@ function price(env: Env, name: string): number | null {
   return value;
 }
 
-/** The prices of a model from `<prefix>_IN` and `<prefix>_OUT`: a cost needs both. */
+/**
+ * The prices of a model from `<prefix>_IN` and `<prefix>_OUT`: a cost needs both.
+ * `<prefix>_CACHED_IN` is the price of a cached read, optional: left empty, a read costs the input
+ * price, as the AI settings count it. It is checked even beside no input and output price.
+ */
 function pricePair(env: Env, prefix: string): PricePair | null {
   const input = price(env, `${prefix}_IN`);
   const output = price(env, `${prefix}_OUT`);
+  const cached = price(env, `${prefix}_CACHED_IN`);
   return input === null || output === null
     ? null
-    : // No cached input price: the evaluation counts all of a call's input at the input price.
-      { inputUsdPerMTok: input, outputUsdPerMTok: output, cachedInputUsdPerMTok: null };
+    : { inputUsdPerMTok: input, outputUsdPerMTok: output, cachedInputUsdPerMTok: cached };
 }
 
 /** The model of a tier from its variable; null when it is not set or is empty. */
@@ -176,6 +199,11 @@ export function readLiveEnv(env: Env): LiveOptions {
   if (knownApi === undefined) {
     throw new Error(`QUALOR_LIVE_REVIEW_API must be ${PROVIDER_APIS.join(' or ')}`);
   }
+  const rawAuth = env.QUALOR_LIVE_REVIEW_AUTH ?? '';
+  const auth = rawAuth === '' ? 'bearer' : rawAuth;
+  if (auth !== 'bearer' && auth !== 'api-key') {
+    throw new Error('QUALOR_LIVE_REVIEW_AUTH must be bearer or api-key');
+  }
   const workspace = env.QUALOR_LIVE_REVIEW_WORKSPACE_ID ?? '';
   if (workspace !== '' && !WORKSPACE_ID_PATTERN.test(workspace)) {
     throw new Error(
@@ -199,6 +227,33 @@ export function readLiveEnv(env: Env): LiveOptions {
       `QUALOR_LIVE_REVIEW_CONTEXT_WINDOW must be a whole number of tokens from ${CONTEXT_WINDOW_MIN_TOKENS} to ${CONTEXT_WINDOW_MAX_TOKENS}`,
     );
   }
+  const rawCap = env.QUALOR_LIVE_REVIEW_MAX_USD ?? '';
+  const maxCostUsd = rawCap === '' ? null : Number(rawCap);
+  if (maxCostUsd !== null && !(maxCostUsd > 0 && maxCostUsd <= MAX_COST_CAP_USD)) {
+    throw new Error(
+      `QUALOR_LIVE_REVIEW_MAX_USD must be a number of USD above 0 and up to ${MAX_COST_CAP_USD}`,
+    );
+  }
+  const strongModel = tierModel(env, 'QUALOR_LIVE_REVIEW_STRONG_MODEL');
+  const fastModel = tierModel(env, 'QUALOR_LIVE_REVIEW_FAST_MODEL');
+  const prices = pricePair(env, 'QUALOR_LIVE_REVIEW_PRICE');
+  const strongPrices = pricePair(env, 'QUALOR_LIVE_REVIEW_STRONG_PRICE');
+  const fastPrices = pricePair(env, 'QUALOR_LIVE_REVIEW_FAST_PRICE');
+  if (maxCostUsd !== null) {
+    // A cap is checked against the cost, which is known only when every call has prices.
+    const missing = [
+      prices === null ? 'QUALOR_LIVE_REVIEW_PRICE_IN and _OUT' : null,
+      strongModel !== null && strongModel !== model && strongPrices === null
+        ? 'QUALOR_LIVE_REVIEW_STRONG_PRICE_IN and _OUT (the strong tier has a model of its own)'
+        : null,
+      fastModel !== null && fastModel !== model && fastPrices === null
+        ? 'QUALOR_LIVE_REVIEW_FAST_PRICE_IN and _OUT (the fast tier has a model of its own)'
+        : null,
+    ].filter((name) => name !== null);
+    if (missing.length > 0) {
+      throw new Error(`QUALOR_LIVE_REVIEW_MAX_USD needs the prices: set ${missing.join('; ')}`);
+    }
+  }
   const names = (env.QUALOR_LIVE_REVIEW_CASES ?? '')
     .split(',')
     .map((name) => name.trim())
@@ -209,33 +264,18 @@ export function readLiveEnv(env: Env): LiveOptions {
     kind: known,
     api: known === 'anthropic' ? 'chat_completions' : knownApi,
     apiKey: key === '' ? null : key,
+    auth: known === 'anthropic' ? 'bearer' : auth,
     workspaceId: known === 'anthropic' && workspace !== '' ? workspace : null,
     runs,
     cases: names.length === 0 ? null : names,
-    strongModel: tierModel(env, 'QUALOR_LIVE_REVIEW_STRONG_MODEL'),
-    fastModel: tierModel(env, 'QUALOR_LIVE_REVIEW_FAST_MODEL'),
-    prices: pricePair(env, 'QUALOR_LIVE_REVIEW_PRICE'),
-    strongPrices: pricePair(env, 'QUALOR_LIVE_REVIEW_STRONG_PRICE'),
-    fastPrices: pricePair(env, 'QUALOR_LIVE_REVIEW_FAST_PRICE'),
+    strongModel,
+    fastModel,
+    prices,
+    strongPrices,
+    fastPrices,
     contextWindowTokens: window,
+    maxCostUsd,
   };
-}
-
-/**
- * The field that limits the answer an OpenAI-compatible server needs, as the AI settings page
- * chooses it for a base URL: OpenAI's and Azure OpenAI's current models refuse `max_tokens`, and
- * vLLM, Ollama and the others want it. (Anthropic's adapter has its own and ignores this.)
- */
-function outputLimitField(url: string): ProviderConfig['maxTokensField'] {
-  let host: string;
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return 'max_tokens';
-  }
-  return host === 'api.openai.com' || host.endsWith('.openai.azure.com')
-    ? 'max_completion_tokens'
-    : 'max_tokens';
 }
 
 /**
@@ -255,7 +295,7 @@ function nearby(url: URL): boolean {
  * and for plain http to a host that is not nearby: the key would cross the network in clear.
  */
 export function providerOf(
-  o: Pick<LiveOptions, 'url' | 'model' | 'kind' | 'api' | 'workspaceId'>,
+  o: Pick<LiveOptions, 'url' | 'model' | 'kind' | 'api' | 'auth' | 'workspaceId'>,
 ): {
   config: ProviderConfig;
   http: ProviderHttpOptions;
@@ -281,15 +321,20 @@ export function providerOf(
       api: o.api,
       baseUrl,
       model: o.model,
-      auth: 'bearer',
+      auth: o.auth,
       // The review's calls carry tools, and a conversation with tools asks for its JSON in the prompt.
       jsonMode: 'none',
-      maxTokensField: outputLimitField(baseUrl),
+      maxTokensField: outputLimitFieldFor(baseUrl),
       temperature: null,
       workspaceId: o.workspaceId,
       timeoutSeconds: CALL_TIMEOUT_SECONDS,
     },
-    http: { internalHosts, version: 'review-live' },
+    // Streamed as the server streams a review's calls (reviewSender).
+    http: {
+      internalHosts,
+      version: 'review-live',
+      stream: reviewStreamLimits(CALL_TIMEOUT_SECONDS),
+    },
   };
 }
 
@@ -331,10 +376,11 @@ export async function runLive(
   /** The call to the model of `tier`. */
   const sendTo =
     (tier: ModelTier) =>
-    async (conversation: LlmConversation): Promise<LlmTurn> => {
+    async (conversation: LlmConversation, timed: (turn: LlmTurn, ms: number) => void) => {
+      const started = performance.now();
       try {
         // What the model said is used without the provider's key, as the job's sender returns it.
-        return scrubTurn(
+        const turn = scrubTurn(
           await converse(
             { ...config, model: modelFor(models, tier) },
             o.apiKey,
@@ -343,12 +389,17 @@ export async function runLive(
           ),
           o.apiKey,
         );
+        timed(turn, performance.now() - started);
+        return turn;
       } catch (err) {
         if (err instanceof LlmError) failures[err.failure] = (failures[err.failure] ?? 0) + 1;
         throw err;
       }
     };
-  const senders: Record<ModelTier, (conversation: LlmConversation) => Promise<LlmTurn>> = {
+  const senders: Record<
+    ModelTier,
+    (conversation: LlmConversation, timed: (turn: LlmTurn, ms: number) => void) => Promise<LlmTurn>
+  > = {
     strong: sendTo('strong'),
     standard: sendTo('standard'),
     fast: sendTo('fast'),
@@ -356,9 +407,10 @@ export async function runLive(
   const report = await runEval(cases, {
     runs: o.runs,
     prices: (tier) => pricingFor(pricing, models, tier),
+    maxCostUsd: o.maxCostUsd,
     progress,
     contextWindowTokens: o.contextWindowTokens,
-    pipelineFor: ({ reader, policy }) => ({
+    pipelineFor: ({ reader, policy, recordCall }) => ({
       providerKey: o.apiKey,
       converse: (role, user, nonce, tokenBudget, accept, modelTier) =>
         converseOverTools(
@@ -366,7 +418,17 @@ export async function runLive(
           {
             reader,
             policy,
-            send: senders[modelTier],
+            send: (conversation) =>
+              senders[modelTier](conversation, (turn, ms) =>
+                recordCall({
+                  role,
+                  ms,
+                  inputTokens: turn.usage.inputTokens ?? 0,
+                  outputTokens: turn.usage.outputTokens ?? 0,
+                  cacheReadTokens: turn.usage.cacheReadTokens ?? 0,
+                  cacheWriteTokens: turn.usage.cacheWriteTokens ?? 0,
+                }),
+              ),
             shouldStop: () => Promise.resolve(false),
             contextWindowTokens: o.contextWindowTokens,
           },

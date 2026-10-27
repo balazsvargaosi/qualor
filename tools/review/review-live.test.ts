@@ -6,6 +6,7 @@ import {
   type LlmResponder,
 } from '../../server/test/fake-llm';
 import { reviewResponder, reviewRoleOf } from '../../server/test/review';
+import { REVIEW_CALL_MIN_TIMEOUT_SECONDS, reviewStreamLimits } from '../../server/src/review/usage';
 import { liveEnabled, providerOf, readLiveEnv, runLive, type LiveOptions } from './review-live';
 
 /**
@@ -34,6 +35,7 @@ describe('liveEnabled and readLiveEnv', () => {
       kind: 'openai',
       api: 'chat_completions',
       apiKey: null,
+      auth: 'bearer',
       workspaceId: null,
       runs: 1,
       cases: null,
@@ -43,6 +45,7 @@ describe('liveEnabled and readLiveEnv', () => {
       strongPrices: null,
       fastPrices: null,
       contextWindowTokens: null,
+      maxCostUsd: null,
     });
   });
 
@@ -65,6 +68,11 @@ describe('liveEnabled and readLiveEnv', () => {
         QUALOR_LIVE_REVIEW_FAST_PRICE_IN: '0.25',
         QUALOR_LIVE_REVIEW_FAST_PRICE_OUT: '1.25',
         QUALOR_LIVE_REVIEW_CONTEXT_WINDOW: '32000',
+        QUALOR_LIVE_REVIEW_PRICE_CACHED_IN: '0.4',
+        QUALOR_LIVE_REVIEW_STRONG_PRICE_CACHED_IN: '1.5',
+        QUALOR_LIVE_REVIEW_FAST_PRICE_CACHED_IN: '',
+        QUALOR_LIVE_REVIEW_AUTH: 'api-key',
+        QUALOR_LIVE_REVIEW_MAX_USD: '12.5',
       }),
     ).toEqual({
       url: 'https://llm.invalid',
@@ -73,15 +81,19 @@ describe('liveEnabled and readLiveEnv', () => {
       // Anthropic has one API: the variable is for an OpenAI-compatible provider.
       api: 'chat_completions',
       apiKey: KEY,
+      // Anthropic has its own key header: the variable is for an OpenAI-compatible provider.
+      auth: 'bearer',
       workspaceId: 'wrkspc_01AbCdEf',
       runs: 5,
       cases: ['ts-off-by-one', 'go-map-race'],
       strongModel: 'big',
       fastModel: 'small',
-      prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15.5, cachedInputUsdPerMTok: null },
-      strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+      // Fictional prices; an empty cached price is none: the input price.
+      prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15.5, cachedInputUsdPerMTok: 0.4 },
+      strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 1.5 },
       fastPrices: { inputUsdPerMTok: 0.25, outputUsdPerMTok: 1.25, cachedInputUsdPerMTok: null },
       contextWindowTokens: 32_000,
+      maxCostUsd: 12.5,
     });
   });
 
@@ -145,6 +157,70 @@ describe('liveEnabled and readLiveEnv', () => {
     ).toEqual({ inputUsdPerMTok: 0, outputUsdPerMTok: 0, cachedInputUsdPerMTok: null });
   });
 
+  it('reads the cached input price of each model, and none from an empty or missing variable', () => {
+    const priced = { QUALOR_LIVE_REVIEW_PRICE_IN: '3', QUALOR_LIVE_REVIEW_PRICE_OUT: '15' };
+    expect(readLiveEnv({ ...base, ...priced }).prices?.cachedInputUsdPerMTok).toBeNull();
+    expect(
+      readLiveEnv({ ...base, ...priced, QUALOR_LIVE_REVIEW_PRICE_CACHED_IN: '' }).prices
+        ?.cachedInputUsdPerMTok,
+    ).toBeNull();
+    expect(
+      readLiveEnv({ ...base, ...priced, QUALOR_LIVE_REVIEW_PRICE_CACHED_IN: '0' }).prices
+        ?.cachedInputUsdPerMTok,
+    ).toBe(0);
+    for (const tier of ['STRONG', 'FAST']) {
+      const env = {
+        ...base,
+        [`QUALOR_LIVE_REVIEW_${tier}_PRICE_IN`]: '5',
+        [`QUALOR_LIVE_REVIEW_${tier}_PRICE_OUT`]: '9',
+        [`QUALOR_LIVE_REVIEW_${tier}_PRICE_CACHED_IN`]: '0.5',
+      };
+      const key = tier === 'STRONG' ? 'strongPrices' : 'fastPrices';
+      expect(readLiveEnv(env)[key]?.cachedInputUsdPerMTok, tier).toBe(0.5);
+    }
+  });
+
+  it('reads the key header of an OpenAI-compatible provider, bearer unless api-key is named', () => {
+    expect(readLiveEnv(base).auth).toBe('bearer');
+    expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_AUTH: '' }).auth).toBe('bearer');
+    expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_AUTH: 'bearer' }).auth).toBe('bearer');
+    expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_AUTH: 'api-key' }).auth).toBe('api-key');
+    expect(() => readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_AUTH: 'basic' })).toThrow(
+      'QUALOR_LIVE_REVIEW_AUTH must be bearer or api-key',
+    );
+  });
+
+  it('refuses QUALOR_LIVE_REVIEW_MAX_USD without prices, or out of range', () => {
+    const priced = { QUALOR_LIVE_REVIEW_PRICE_IN: '3', QUALOR_LIVE_REVIEW_PRICE_OUT: '15' };
+    const capOf = (cap: string, more: Record<string, string> = priced) =>
+      readLiveEnv({ ...base, ...more, QUALOR_LIVE_REVIEW_MAX_USD: cap }).maxCostUsd;
+    expect(capOf('0.01')).toBe(0.01);
+    expect(capOf('1000')).toBe(1000);
+    expect(capOf('', {})).toBeNull();
+    for (const cap of ['0', '-1', '1000.01', '1e4', 'much', 'NaN', 'Infinity']) {
+      expect(() => capOf(cap), cap).toThrow('QUALOR_LIVE_REVIEW_MAX_USD');
+    }
+    // No prices at all, or no pair, for the model the calls go to.
+    expect(() => capOf('5', {})).toThrow('QUALOR_LIVE_REVIEW_PRICE_IN');
+    expect(() => capOf('5', { QUALOR_LIVE_REVIEW_PRICE_IN: '3' })).toThrow(
+      'QUALOR_LIVE_REVIEW_PRICE_IN',
+    );
+    // A tier with a model of its own needs its prices too; one on the model does not.
+    const tiered = { ...priced, QUALOR_LIVE_REVIEW_STRONG_MODEL: 'big' };
+    expect(() => capOf('5', tiered)).toThrow('QUALOR_LIVE_REVIEW_STRONG_PRICE_IN');
+    expect(
+      capOf('5', {
+        ...tiered,
+        QUALOR_LIVE_REVIEW_STRONG_PRICE_IN: '9',
+        QUALOR_LIVE_REVIEW_STRONG_PRICE_OUT: '9',
+      }),
+    ).toBe(5);
+    expect(() => capOf('5', { ...priced, QUALOR_LIVE_REVIEW_FAST_MODEL: 'small' })).toThrow(
+      'QUALOR_LIVE_REVIEW_FAST_PRICE_IN',
+    );
+    expect(capOf('5', { ...priced, QUALOR_LIVE_REVIEW_FAST_MODEL: 'm' })).toBe(5);
+  });
+
   it('reads the prices of a tier only with both of them', () => {
     for (const tier of ['STRONG', 'FAST']) {
       const only = (side: 'IN' | 'OUT') => ({ [`QUALOR_LIVE_REVIEW_${tier}_PRICE_${side}`]: '5' });
@@ -174,6 +250,9 @@ describe('liveEnabled and readLiveEnv', () => {
     ['QUALOR_LIVE_REVIEW_STRONG_PRICE_OUT', 'dear'],
     ['QUALOR_LIVE_REVIEW_FAST_PRICE_IN', '10001'],
     ['QUALOR_LIVE_REVIEW_FAST_PRICE_OUT', '-0.5'],
+    ['QUALOR_LIVE_REVIEW_PRICE_CACHED_IN', '-1'],
+    ['QUALOR_LIVE_REVIEW_STRONG_PRICE_CACHED_IN', 'cheap'],
+    ['QUALOR_LIVE_REVIEW_FAST_PRICE_CACHED_IN', '10001'],
     ['QUALOR_LIVE_REVIEW_API_KEY', 'a key with spaces'],
     ['QUALOR_LIVE_REVIEW_WORKSPACE_ID', 'workspace_01AbCd'],
     ['QUALOR_LIVE_REVIEW_WORKSPACE_ID', 'wrkspc_'],
@@ -208,7 +287,8 @@ describe('providerOf', () => {
     kind: LiveOptions['kind'] = 'openai',
     workspaceId: string | null = null,
     api: LiveOptions['api'] = 'chat_completions',
-  ) => providerOf({ url, model: 'm', kind, api, workspaceId });
+    auth: LiveOptions['auth'] = 'bearer',
+  ) => providerOf({ url, model: 'm', kind, api, auth, workspaceId });
 
   it('settles a call as the AI settings would store it', () => {
     expect(of('http://localhost:11434/v1/').config).toEqual({
@@ -235,6 +315,15 @@ describe('providerOf', () => {
       kind: 'openai',
       api: 'responses',
     });
+  });
+
+  it('names the key header in the settings of a call, and streams the calls as the server does', () => {
+    expect(
+      of('https://x.invalid/v1', 'openai', null, 'chat_completions', 'api-key').config,
+    ).toMatchObject({ auth: 'api-key' });
+    expect(of('https://x.invalid/v1').http.stream).toEqual(
+      reviewStreamLimits(REVIEW_CALL_MIN_TIMEOUT_SECONDS),
+    );
   });
 
   it('names the workspace of an Anthropic key in the settings of a call', () => {
@@ -340,6 +429,7 @@ describe('runLive against the fake LLM', () => {
     kind: 'openai',
     api: 'chat_completions',
     apiKey: fake.apiKey,
+    auth: 'bearer',
     workspaceId: null,
     runs: 1,
     cases: ['ts-off-by-one'],
@@ -349,6 +439,7 @@ describe('runLive against the fake LLM', () => {
     strongPrices: null,
     fastPrices: null,
     contextWindowTokens: null,
+    maxCostUsd: null,
     ...over,
   });
 
@@ -445,7 +536,7 @@ describe('runLive against the fake LLM', () => {
     // What the calls spent is counted, and aggregates are all that is printed.
     expect(report.tokens.input).toBe(1_000 * fake.requests.length);
     expect(text).toContain('model: fake-model (openai)');
-    expect(text).toContain('1 cases (0 clean), 1 run each, 1 reviews');
+    expect(text).toContain('1 case (0 clean), 1 run each, 1 review');
     expect(text).not.toContain(fake.apiKey);
     for (const forbidden of ['MODEL-', 'cartTotal', 'items.length', 'src/cart.ts']) {
       expect(text, forbidden).not.toContain(forbidden);
@@ -475,6 +566,52 @@ describe('runLive against the fake LLM', () => {
     const second = fake.requests[1];
     expect(second?.body).toContain('my key is');
     for (const request of fake.requests) expect(request.body).not.toContain(fake.apiKey);
+  });
+
+  it('streams its calls as the server does, and measures each one', async () => {
+    enqueueAnswers();
+
+    const { report, text } = await runLive(options());
+
+    expect(fake.requests.length).toBeGreaterThan(0);
+    for (const request of fake.requests) {
+      expect((request.json as { stream?: unknown }).stream, request.path).toBe(true);
+    }
+    // Each call is told to the evaluation, with its latency and its input.
+    expect(report.calls).toBe(fake.requests.length);
+    expect(report.callLatencyMs).not.toBeNull();
+    expect(report.maxCallInputTokens).toBeGreaterThan(0);
+    expect(text).toContain(`model calls: ${fake.requests.length}; per call: median`);
+  });
+
+  it('sends the key in an api-key header with QUALOR_LIVE_REVIEW_AUTH=api-key', async () => {
+    enqueueAnswers();
+
+    const { report } = await runLive(options({ auth: 'api-key' }));
+
+    expect(report.total).toMatchObject({ problems: 1, found: 1 });
+    expect(fake.requests.length).toBeGreaterThan(0);
+    for (const request of fake.requests) {
+      expect(request.headers['api-key']).toBe(fake.apiKey);
+      expect(request.headers.authorization).toBeUndefined();
+    }
+  });
+
+  it('stops before the next review at the cost cap, and says so', async () => {
+    enqueueAnswers();
+    enqueueAnswers();
+
+    const { report, text } = await runLive(
+      options({
+        runs: 2,
+        prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
+        // Far below the cost of one review: reached after the first.
+        maxCostUsd: 0.000001,
+      }),
+    );
+
+    expect(report).toMatchObject({ reviews: 1, stoppedAtCostCap: true });
+    expect(text).toContain('stopped at the cost cap after 1 of 2 reviews');
   });
 
   it('reviews through the Messages API of an Anthropic provider, with its key header', async () => {

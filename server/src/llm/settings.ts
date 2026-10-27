@@ -190,6 +190,24 @@ export function ownModel(
   return model === null || model === provider.model ? null : model;
 }
 
+/**
+ * The output limit parameter an OpenAI-compatible base URL needs (llm.md §2.2): OpenAI's and Azure
+ * OpenAI's current models refuse `max_tokens`; vLLM, Ollama and the others want it. The AI
+ * settings page chooses by the same rule (`defaultOutputLimitField`), pinned equal by
+ * tools/ui/output-limit.test.ts; Anthropic's adapter has its own and ignores it.
+ */
+export function outputLimitFieldFor(baseUrl: string): 'max_tokens' | 'max_completion_tokens' {
+  let host: string;
+  try {
+    host = new URL(baseUrl.trim()).hostname.toLowerCase();
+  } catch {
+    return 'max_tokens';
+  }
+  return host === 'api.openai.com' || host.endsWith('.openai.azure.com')
+    ? 'max_completion_tokens'
+    : 'max_tokens';
+}
+
 /** An `excludePaths` entry: a picomatch glob relative to the repository root. */
 export const globSchema = z
   .string()

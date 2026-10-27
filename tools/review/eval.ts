@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { MAX_SNAPSHOT_PATCH_BYTES } from '@qualor/shared';
 import { diffHeaderLine, DiffSplitter } from '../../cli/src/git/diff';
 import { AI_CATEGORIES, type AiCategory } from '../../server/src/db/schema';
+import { costOf } from '../../server/src/llm/job';
 import type { PricePair } from '../../server/src/llm/settings';
+import type { WrapUpReason } from '../../server/src/review/conversation';
 import { buildReviewContext, SCOPE_MARGIN } from '../../server/src/review/context';
 import { planFindings, type PlannedFinding } from '../../server/src/review/findings';
 import { renderFinding } from '../../server/src/review/findings-render';
@@ -18,6 +20,7 @@ import {
   runReviewPipeline,
   type PipelineDeps,
 } from '../../server/src/review/pipeline';
+import type { ReviewRole } from '../../server/src/review/prompts';
 import { DEFAULT_REVIEW_BUDGETS } from '../../server/src/review/schema';
 import {
   linesOf,
@@ -343,6 +346,18 @@ export function loadCases(dir: string): EvalCase[] {
 
 // ─── Reviewing a case ────────────────────────────────────────────────────────
 
+/** One call to the model, as the reviewer measured it: how long it took, and what it used. */
+export interface CallRecord {
+  role: ReviewRole;
+  /** Milliseconds from sending the call to its answer. */
+  ms: number;
+  /** Every prompt token of the call, the cached ones among them. */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
 /** What a reviewer of one case is given besides the data of its conversations. */
 export interface CaseRun {
   readonly evalCase: EvalCase;
@@ -350,6 +365,8 @@ export interface CaseRun {
   readonly reader: SnapshotReader;
   /** The tools' policy and budget, shared by every conversation of the review. */
   readonly policy: ToolPolicy;
+  /** Told of each call to the model, for the report's call lines; a reviewer that skips it has none. */
+  readonly recordCall: (call: CallRecord) => void;
 }
 
 /** The prices of the calls that go to the model of a tier; null: that model has none. */
@@ -366,9 +383,17 @@ export interface EvalDeps {
   runs?: number;
   /**
    * USD for a million tokens: one pair for every call, or the pair of the model of each tier when
-   * the tiers have models of their own. The report has a cost only when every call has prices.
+   * the tiers have models of their own. The report has a cost only when every call has prices. A
+   * conversation costs what the server records for its calls (`costOf`): cached reads and writes
+   * at their prices.
    */
   prices?: PricePair | PricesOf | null;
+  /**
+   * USD: before each review, the evaluation stops once the cost so far has reached it (the review
+   * that would start past it does not start; one running finishes). Null, left out, or no cost
+   * known (no prices): no cap.
+   */
+  maxCostUsd?: number | null;
   /**
    * The model's context window, in tokens, which the first messages are sized within as the job
    * sizes them (`reviewLimits`); null or left out: DEFAULT_CONTEXT_WINDOW_TOKENS. `pipelineFor`'s
@@ -417,19 +442,58 @@ function pricesOf(prices: EvalDeps['prices']): PricesOf | null {
   return typeof prices === 'function' ? prices : () => prices;
 }
 
-/** The cost so far with one more call; unknown once a call has no prices. */
+/** The cost so far with one more conversation, as the server prices it; unknown without prices. */
 function withCall(
   costUsd: number | null,
   prices: PricePair | null,
-  tokens: { inputTokens: number; outputTokens: number },
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  },
 ): number | null {
-  if (costUsd === null || prices === null) return null;
-  return (
-    costUsd +
-    (tokens.inputTokens * prices.inputUsdPerMTok + tokens.outputTokens * prices.outputUsdPerMTok) /
-      1_000_000
-  );
+  const micro = costOf(prices, usage);
+  return costUsd === null || micro === null ? null : costUsd + micro / 1_000_000;
 }
+
+/** The stages the tokens are counted by: the specialists, the judge, and the verification. */
+type Stage = 'specialists' | 'judge' | 'verification';
+const STAGES: readonly Stage[] = ['specialists', 'judge', 'verification'];
+const stageOf = (role: ReviewRole): Stage =>
+  role === 'judge' ? 'judge' : role === 'verify' ? 'verification' : 'specialists';
+
+/** What the reviews measure besides their findings, summed over every review of the evaluation. */
+interface Measures {
+  /** Milliseconds of each call the reviewer recorded. */
+  callMs: number[];
+  maxCallInputTokens: number;
+  verification: { run: number; starved: number; confirmed: number; needsValidation: number };
+  wrapUps: Record<WrapUpReason, number> & {
+    byRole: Partial<Record<ReviewRole, Record<WrapUpReason, number>>>;
+  };
+  stageTokens: Record<Stage, number>;
+  cache: { read: number; write: number; byStage: Record<Stage, { read: number; write: number }> };
+  listsShortened: number;
+}
+
+const newMeasures = (): Measures => ({
+  callMs: [],
+  maxCallInputTokens: 0,
+  verification: { run: 0, starved: 0, confirmed: 0, needsValidation: 0 },
+  wrapUps: { budget: 0, turns: 0, window: 0, byRole: {} },
+  stageTokens: { specialists: 0, judge: 0, verification: 0 },
+  cache: {
+    read: 0,
+    write: 0,
+    byStage: {
+      specialists: { read: 0, write: 0 },
+      judge: { read: 0, write: 0 },
+      verification: { read: 0, write: 0 },
+    },
+  },
+  listsShortened: 0,
+});
 
 /** The merge request's meta: the case's words, and no earlier review. */
 const metaOf = (c: EvalCase) => ({
@@ -484,7 +548,12 @@ class CaseSkipped extends Error {
  * is not reviewed: it fails with the detail the job gives it (`too_large`, `window_too_small`), and
  * no call is made. A review the window failed fails as `window_full`.
  */
-async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null): Promise<Review> {
+async function reviewCase(
+  c: EvalCase,
+  deps: EvalDeps,
+  priceOf: PricesOf | null,
+  measures: Measures,
+): Promise<Review> {
   const reader = memorySnapshotReader({
     meta: metaOf(c),
     changes: c.changes,
@@ -521,17 +590,41 @@ async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null)
       if (!(err instanceof CaseSkipped)) throw err;
       return { kind: 'failed', reason: err.detail, ...spent };
     }
-    const pipeline = deps.pipelineFor({ evalCase: c, reader, policy });
+    const pipeline = deps.pipelineFor({
+      evalCase: c,
+      reader,
+      policy,
+      recordCall: (call) => {
+        measures.callMs.push(call.ms);
+        measures.maxCallInputTokens = Math.max(measures.maxCallInputTokens, call.inputTokens);
+      },
+    });
     const outcome = await runReviewPipeline(
       context,
       REVIEW_TOKENS,
       {
         providerKey: pipeline.providerKey,
         converse: async (role, user, nonce, tokenBudget, accept, modelTier) => {
+          const stage = stageOf(role);
+          if (role === 'verify') {
+            measures.verification.run += 1;
+            if (policy.budget.calls === 0) measures.verification.starved += 1;
+          }
           const result = await pipeline.converse(role, user, nonce, tokenBudget, accept, modelTier);
           spent.input += result.inputTokens;
           spent.output += result.outputTokens;
           spent.costUsd = withCall(spent.costUsd, priceOf?.(modelTier) ?? null, result);
+          measures.stageTokens[stage] += result.inputTokens + result.outputTokens;
+          measures.cache.read += result.cacheReadTokens;
+          measures.cache.write += result.cacheWriteTokens;
+          measures.cache.byStage[stage].read += result.cacheReadTokens;
+          measures.cache.byStage[stage].write += result.cacheWriteTokens;
+          if (result.kind === 'answer' && result.wrappedUp !== null) {
+            const { wrapUps } = measures;
+            wrapUps[result.wrappedUp] += 1;
+            const own = (wrapUps.byRole[role] ??= { budget: 0, turns: 0, window: 0 });
+            own[result.wrappedUp] += 1;
+          }
           return result;
         },
       },
@@ -541,6 +634,11 @@ async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null)
     if (outcome.kind !== 'reviewed') {
       const reason = outcome.kind === 'failed' ? (outcome.detail ?? outcome.reason) : outcome.kind;
       return { kind: 'failed', reason, ...spent };
+    }
+    if (outcome.notes.includes('lists_shortened')) measures.listsShortened += 1;
+    for (const finding of outcome.findings) {
+      if (finding.verification === 'confirmed') measures.verification.confirmed += 1;
+      if (finding.verification === 'needs_validation') measures.verification.needsValidation += 1;
     }
     const found: Found[] = [];
     for (const planned of planFindings(context, outcome).creates) {
@@ -648,14 +746,66 @@ export interface EvalReport {
   costUsd: number | null;
   /** Milliseconds a review took; null without reviews. */
   latencyMs: { min: number; median: number; max: number } | null;
+  /** Calls to the model the reviewer recorded. */
+  calls: number;
+  /** Milliseconds a call took, p95 by nearest rank; null without calls. */
+  callLatencyMs: { median: number; p95: number; max: number } | null;
+  /** The most input tokens one call sent. */
+  maxCallInputTokens: number;
+  /**
+   * The verifications (one conversation each): how many ran, how they ended among the findings
+   * the reviews kept, and how many began with no tool calls left in the review's budget.
+   */
+  verification: {
+    run: number;
+    confirmed: number;
+    needsValidation: number;
+    rejectedOrUnread: number;
+    starved: number;
+  };
+  /** Conversations that wrapped up, by why and by role. */
+  wrapUps: {
+    budget: number;
+    turns: number;
+    window: number;
+    byRole: Partial<Record<ReviewRole, { budget: number; turns: number; window: number }>>;
+  };
+  /** Input and output tokens of the conversations of each stage. */
+  stageTokens: { specialists: number; judge: number; verification: number };
+  /** Prompt-cache reads and writes, in all and by stage; hitRate = read / every input token. */
+  cache: {
+    read: number;
+    write: number;
+    hitRate: number | null;
+    byStage: Record<Stage, { read: number; write: number }>;
+  };
+  /** Reviews that shortened the lists of the first message (the note `lists_shortened`). */
+  listsShortened: number;
+  /** The evaluation stopped before its last review: the cost had reached the cap. */
+  stoppedAtCostCap: boolean;
+}
+
+/** The median of sorted values: the mean of the middle two when their count is even. */
+function medianOf(sorted: readonly number[]): number {
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? (sorted[mid] ?? 0)
+    : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
 }
 
 function spread(values: readonly number[]): EvalReport['latencyMs'] {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
+  return { min: sorted[0] ?? 0, median: medianOf(sorted), max: sorted[sorted.length - 1] ?? 0 };
+}
+
+/** Median, p95 (nearest rank: the value at ceil(0.95 n)) and max of the latencies of the calls. */
+function callSpread(values: readonly number[]): EvalReport['callLatencyMs'] {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
   return {
-    min: sorted[0] ?? 0,
-    median: sorted[Math.floor((sorted.length - 1) / 2)] ?? 0,
+    median: medianOf(sorted),
+    p95: sorted[Math.ceil(0.95 * sorted.length) - 1] ?? 0,
     max: sorted[sorted.length - 1] ?? 0,
   };
 }
@@ -681,14 +831,31 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
     tokens: { input: 0, output: 0 },
     costUsd: null,
     latencyMs: null,
+    calls: 0,
+    callLatencyMs: null,
+    maxCallInputTokens: 0,
+    verification: { run: 0, confirmed: 0, needsValidation: 0, rejectedOrUnread: 0, starved: 0 },
+    wrapUps: { budget: 0, turns: 0, window: 0, byRole: {} },
+    stageTokens: { specialists: 0, judge: 0, verification: 0 },
+    cache: { read: 0, write: 0, hitRate: null, byStage: newMeasures().cache.byStage },
+    listsShortened: 0,
+    stoppedAtCostCap: false,
   };
+  const measures = newMeasures();
+  const planned = report.reviews;
   const latencies: number[] = [];
   let costUsd: number | null = priceOf === null ? null : 0;
   let done = 0;
-  for (let run = 0; run < runs; run += 1) {
+  const cap = deps.maxCostUsd ?? null;
+  stopped: for (let run = 0; run < runs; run += 1) {
     for (const c of cases) {
+      // The cap is checked before a review starts: the one running finishes.
+      if (cap !== null && costUsd !== null && costUsd >= cap) {
+        report.stoppedAtCostCap = true;
+        break stopped;
+      }
       const started = now();
-      const review = await reviewCase(c, deps, priceOf);
+      const review = await reviewCase(c, deps, priceOf, measures);
       latencies.push(now() - started);
       report.tokens.input += review.input;
       report.tokens.output += review.output;
@@ -700,11 +867,31 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
       addTally(report.total, score);
       addTally((report.languages[c.language] ??= emptyTally()), score);
       done += 1;
-      deps.progress?.(done, report.reviews, { ...report.tokens });
+      deps.progress?.(done, planned, { ...report.tokens });
     }
   }
+  // Reviews made: fewer than cases times runs when the cost cap stopped the evaluation.
+  report.reviews = done;
   report.latencyMs = spread(latencies);
   report.costUsd = costUsd;
+  report.calls = measures.callMs.length;
+  report.callLatencyMs = callSpread(measures.callMs);
+  report.maxCallInputTokens = measures.maxCallInputTokens;
+  const { run: verified, confirmed, needsValidation, starved } = measures.verification;
+  report.verification = {
+    run: verified,
+    confirmed,
+    needsValidation,
+    rejectedOrUnread: verified - confirmed - needsValidation,
+    starved,
+  };
+  report.wrapUps = measures.wrapUps;
+  report.stageTokens = measures.stageTokens;
+  report.cache = {
+    ...measures.cache,
+    hitRate: report.tokens.input === 0 ? null : measures.cache.read / report.tokens.input,
+  };
+  report.listsShortened = measures.listsShortened;
   return report;
 }
 
@@ -751,9 +938,22 @@ export function formatReport(report: EvalReport): string {
   const failedCount = failed.reduce((sum, [, n]) => sum + n, 0);
   const failedWhy = failed.map(([reason, n]) => `${reason} ${n}`).join(', ');
   const latency = report.latencyMs;
+  const callLatency = report.callLatencyMs;
+  const { verification, wrapUps, stageTokens, cache } = report;
+  const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const byRole = Object.entries(wrapUps.byRole)
+    .map(([role, n]) => [role, (n?.budget ?? 0) + (n?.turns ?? 0) + (n?.window ?? 0)] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([role, n]) => `${role} ${n}`)
+    .join(', ');
+  const stage = (name: Stage): string =>
+    `${name} ${count(cache.byStage[name].read)}/${count(cache.byStage[name].write)}`;
   const lines = [
     'AI review evaluation',
-    `${report.cases} cases (${report.clean} clean), ${report.runs} run${report.runs === 1 ? '' : 's'} each, ${report.reviews} reviews`,
+    `${plural(report.cases, 'case')} (${report.clean} clean), ${plural(report.runs, 'run')} each, ${plural(report.reviews, 'review')}`,
+    ...(report.stoppedAtCostCap
+      ? [`stopped at the cost cap after ${report.reviews} of ${report.cases * report.runs} reviews`]
+      : []),
     ...(failedCount === 0 ? [] : [`failed reviews: ${failedCount} (${failedWhy})`]),
     '',
     ...table,
@@ -766,6 +966,16 @@ export function formatReport(report: EvalReport): string {
       : [
           `latency per review: min ${seconds(latency.min)}, median ${seconds(latency.median)}, max ${seconds(latency.max)}`,
         ]),
+    ...(callLatency === null
+      ? []
+      : [
+          `model calls: ${report.calls}; per call: median ${seconds(callLatency.median)}, p95 ${seconds(callLatency.p95)}, max ${seconds(callLatency.max)}; largest input ${count(report.maxCallInputTokens)} tokens`,
+        ]),
+    `verification: ${verification.run} run (${verification.confirmed} confirmed, ${verification.needsValidation} needs validation, ${verification.rejectedOrUnread} rejected or unread), ${verification.starved} begun with no tool calls left`,
+    `wrap-ups: ${wrapUps.budget} at the token budget, ${wrapUps.turns} at the turn limit, ${wrapUps.window} at the context window${byRole === '' ? '' : ` (${byRole})`}`,
+    `tokens by stage: specialists ${count(stageTokens.specialists)}, judge ${count(stageTokens.judge)}, verification ${count(stageTokens.verification)}`,
+    `cache: ${count(cache.read)} read, ${count(cache.write)} written (hit rate ${cache.hitRate === null ? '-' : (100 * cache.hitRate).toFixed(1)} % of input); ${STAGES.map(stage).join(', ')}`,
+    `reviews with shortened lists: ${report.listsShortened}`,
     '',
     `recall: seeded problems with a finding on their lines, or within ${TOLERANCE} lines of them`,
     'category: of those, the problems with a finding of their category',

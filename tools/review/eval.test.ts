@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AiCategory } from '../../server/src/db/schema';
 import type { PricePair } from '../../server/src/llm/settings';
 import type { ConversationResult } from '../../server/src/review/conversation';
+import type { ReviewRole } from '../../server/src/review/prompts';
 import type { ModelTier } from '../../server/src/review/model-tiers';
 import type { PipelineDeps } from '../../server/src/review/pipeline';
 import type { SnapshotReader } from '../../server/src/review/snapshot-reader';
@@ -14,6 +15,8 @@ import {
   formatReport,
   loadCases,
   runEval,
+  type CallRecord,
+  type CaseRun,
   type EvalCase,
   type EvalDeps,
   type EvalReport,
@@ -49,7 +52,13 @@ interface Said {
   suggestion?: { startLine: number; endLine: number; lines: string[] } | null;
 }
 
-const answer = (text: string, tokens: [number, number] = [1_000, 100]): ConversationResult => ({
+type Answered = Extract<ConversationResult, { kind: 'answer' }>;
+
+const answer = (
+  text: string,
+  tokens: [number, number] = [1_000, 100],
+  over: Partial<Answered> = {},
+): Answered => ({
   kind: 'answer',
   text,
   wrappedUp: null,
@@ -59,6 +68,7 @@ const answer = (text: string, tokens: [number, number] = [1_000, 100]): Conversa
   cacheWriteTokens: 0,
   turns: 1,
   toolCalls: 0,
+  ...over,
 });
 
 interface Script {
@@ -70,6 +80,14 @@ interface Script {
   judge?: (c: EvalCase) => ConversationResult;
   /** The tokens each call reports. */
   tokens?: [number, number];
+  /** What else a conversation of a role reports: its wrap-up, its cache counts. */
+  shape?: (role: ReviewRole) => Partial<Answered>;
+  /** The calls to the model a conversation of a role made, told to the evaluation as they are. */
+  calls?: (role: ReviewRole) => Omit<CallRecord, 'role'>[];
+  /** Runs when a conversation begins, before it answers. */
+  before?: (role: ReviewRole, run: CaseRun) => void;
+  /** The verdicts of the verifications, in the order they are asked; 'confirmed' once spent. */
+  verdicts?: string[];
 }
 
 /**
@@ -81,10 +99,14 @@ interface Script {
 function scripted(script: Script): { deps: EvalDeps; roles: string[]; tiers: ModelTier[] } {
   const roles: string[] = [];
   const tiers: ModelTier[] = [];
-  const pipelineFor: EvalDeps['pipelineFor'] = ({ evalCase }) => {
+  const pipelineFor: EvalDeps['pipelineFor'] = (run) => {
+    const { evalCase } = run;
     const converse: PipelineDeps['converse'] = (role, _user, _nonce, _budget, _accept, tier) => {
       roles.push(role);
       tiers.push(tier);
+      script.before?.(role, run);
+      for (const call of script.calls?.(role) ?? []) run.recordCall({ role, ...call });
+      const said = (text: string) => answer(text, script.tokens, script.shape?.(role));
       if (role === 'judge') {
         if (script.judge !== undefined) return Promise.resolve(script.judge(evalCase));
         const findings = script.said(evalCase).map((said) => ({
@@ -101,13 +123,16 @@ function scripted(script: Script): { deps: EvalDeps; roles: string[]; tiers: Mod
         }));
         const summary = script.summary ?? { verdict: 'Reviewed.', walkthrough: [] };
         const report = { findings, dropped: [], prior: [], summary };
-        return Promise.resolve(answer(JSON.stringify(report), script.tokens));
+        return Promise.resolve(said(JSON.stringify(report)));
       }
       if (role === 'verify') {
-        const verdict = { verdict: 'confirmed', reason: 'The code shows it.' };
-        return Promise.resolve(answer(JSON.stringify(verdict), script.tokens));
+        const verdict = {
+          verdict: script.verdicts?.shift() ?? 'confirmed',
+          reason: 'The code shows it.',
+        };
+        return Promise.resolve(said(JSON.stringify(verdict)));
       }
-      return Promise.resolve(answer('{"findings":[]}', script.tokens));
+      return Promise.resolve(said('{"findings":[]}'));
     };
     return { converse, providerKey: null };
   };
@@ -940,6 +965,223 @@ describe('runEval scores', () => {
     expect(report.latencyMs).toEqual({ min: 100, median: 200, max: 300 });
   });
 
+  describe('what the evaluation measures besides the findings', () => {
+    /** Two security findings the verification is asked about, on the added lines of a case. */
+    const twoSecurity = (): Said[] => [
+      { category: 'security', path: SOURCE, line: 10, endLine: 10, title: 'First hole' },
+      { category: 'security', path: SOURCE, line: 14, endLine: 14, title: 'Second hole' },
+    ];
+    const countOf = (roles: readonly string[], pick: (role: string) => boolean) =>
+      roles.filter(pick).length;
+    const isSpecialist = (role: string) => role !== 'judge' && role !== 'verify';
+    const record = (ms: number, inputTokens = 10) => ({
+      ms,
+      inputTokens,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+
+    it('the median of an even count is the mean of the middle two', async () => {
+      // 6I-3 Task 14 (2): the latencies 1, 2, 3 and 4 have the median 2.5, not 2.
+      const queue = [1, 2, 3, 4];
+      const { deps } = scripted({
+        said: () => [],
+        // Two calls to each conversation, until the four are told.
+        calls: () => queue.splice(0, 2).map((ms) => record(ms)),
+      });
+
+      const report = await runEval([synthetic({ id: 'one' })], deps);
+
+      expect(report.calls).toBe(4);
+      expect(report.callLatencyMs).toEqual({ median: 2.5, p95: 4, max: 4 });
+    });
+
+    it("reports each call's latency and the largest input of one call", async () => {
+      // Twenty calls of 1 to 20 ms: the p95 by nearest rank is the 19th of them.
+      let next = 0;
+      const { deps } = scripted({
+        said: () => [],
+        calls: () =>
+          Array.from({ length: 10 }, () => (next += 1))
+            .filter((ms) => ms <= 20)
+            .map((ms) => record(ms, ms === 7 ? 77_777 : ms * 1_000)),
+      });
+
+      const report = await runEval([synthetic({ id: 'one' })], deps);
+
+      expect(report.calls).toBe(20);
+      expect(report.callLatencyMs).toEqual({ median: 10.5, p95: 19, max: 20 });
+      expect(report.maxCallInputTokens).toBe(77_777);
+    });
+
+    it('has no call latency when the reviewer records no call', async () => {
+      const { deps } = nothing();
+      const report = await runEval([synthetic({ id: 'one' })], deps);
+      expect(report).toMatchObject({ calls: 0, callLatencyMs: null, maxCallInputTokens: 0 });
+    });
+
+    it('counts the verifications, their verdicts, and those begun with no tool calls left', async () => {
+      const cases = ['a', 'b'].map((id) => synthetic({ id }));
+      const { deps, roles } = scripted({
+        said: twoSecurity,
+        // In the order the verifications are asked: a's two, then b's two.
+        verdicts: ['confirmed', 'needs_validation', 'rejected', 'confirmed'],
+        // The tool calls of review b are spent by the time its verifications begin.
+        before: (role, run) => {
+          if (role === 'judge' && run.evalCase.id === 'b') run.policy.budget.calls = 0;
+        },
+      });
+
+      const report = await runEval(cases, deps);
+
+      expect(roles.filter((role) => role === 'verify')).toHaveLength(4);
+      expect(report.verification).toEqual({
+        run: 4,
+        confirmed: 2,
+        needsValidation: 1,
+        rejectedOrUnread: 1,
+        starved: 2,
+      });
+    });
+
+    it('counts wrap-ups by why and by role, and the tokens of each stage', async () => {
+      // The judge wraps up at the window, the specialists by turns at the budget and at the turn limit.
+      const wrapped: [string, 'budget' | 'turns' | 'window'][] = [];
+      let specialists = 0;
+      const { deps, roles } = scripted({
+        said: twoSecurity,
+        tokens: [2_000, 500],
+        shape: (role) => {
+          if (role === 'verify') return { wrappedUp: null };
+          const why = role === 'judge' ? 'window' : specialists++ % 2 === 0 ? 'budget' : 'turns';
+          wrapped.push([role, why]);
+          return { wrappedUp: why };
+        },
+      });
+
+      const report = await runEval(
+        ['a', 'b'].map((id) => synthetic({ id })),
+        deps,
+      );
+
+      const expectedBy: Record<string, { budget: number; turns: number; window: number }> = {};
+      for (const [role, why] of wrapped) {
+        expectedBy[role] ??= { budget: 0, turns: 0, window: 0 };
+        expectedBy[role][why] += 1;
+      }
+      const total = (why: 'budget' | 'turns' | 'window') =>
+        wrapped.filter(([, w]) => w === why).length;
+      expect(total('budget')).toBeGreaterThan(0);
+      expect(total('turns')).toBeGreaterThan(0);
+      expect(report.wrapUps).toEqual({
+        budget: total('budget'),
+        turns: total('turns'),
+        window: 2,
+        byRole: expectedBy,
+      });
+      expect(report.stageTokens).toEqual({
+        specialists: 2_500 * countOf(roles, isSpecialist),
+        judge: 2_500 * countOf(roles, (r) => r === 'judge'),
+        verification: 2_500 * countOf(roles, (r) => r === 'verify'),
+      });
+    });
+
+    it('counts cache reads and writes by stage, and the hit rate', async () => {
+      // Task 16's counts: a call's input holds the cached tokens.
+      const { deps, roles } = scripted({
+        said: twoSecurity,
+        tokens: [1_000, 100],
+        shape: (role) =>
+          role === 'judge'
+            ? { cacheReadTokens: 600, cacheWriteTokens: 100 }
+            : role === 'verify'
+              ? { cacheReadTokens: 10, cacheWriteTokens: 0 }
+              : { cacheReadTokens: 300, cacheWriteTokens: 50 },
+      });
+
+      const report = await runEval([synthetic({ id: 'one' })], deps);
+
+      const specialists = countOf(roles, isSpecialist);
+      const verifies = countOf(roles, (role) => role === 'verify');
+      expect(report.cache.byStage).toEqual({
+        specialists: { read: 300 * specialists, write: 50 * specialists },
+        judge: { read: 600, write: 100 },
+        verification: { read: 10 * verifies, write: 0 },
+      });
+      const read = 300 * specialists + 600 + 10 * verifies;
+      expect(report.cache.read).toBe(read);
+      expect(report.cache.write).toBe(50 * specialists + 100);
+      expect(report.cache.hitRate).toBeCloseTo(read / report.tokens.input, 12);
+    });
+
+    it('has no hit rate when nothing was sent', async () => {
+      const report = await runEval([], nothing().deps);
+      expect(report.cache).toMatchObject({ read: 0, write: 0, hitRate: null });
+    });
+
+    it('prices cached reads at the cached price, and at the input price without one', async () => {
+      const shape = () => ({ cacheReadTokens: 8_000, cacheWriteTokens: 1_000 });
+      const cached = scripted({ said: () => [], tokens: [10_000, 1_000], shape });
+      const plain = scripted({ said: () => [], tokens: [10_000, 1_000], shape });
+      const one = synthetic({ id: 'one' });
+
+      const withCached = await runEval([one], {
+        ...cached.deps,
+        // A fictional triple.
+        prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: 0.4 },
+      });
+      const without = await runEval([one], {
+        ...plain.deps,
+        prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
+      });
+
+      // Per call: 1 000 uncached at 3, 1 000 written at 3 x 1.25, 8 000 read, and 1 000 out at 15.
+      const perCall = (readPrice: number) =>
+        1_000 * 3 + 1_000 * 3 * 1.25 + 8_000 * readPrice + 1_000 * 15;
+      expect(withCached.costUsd).toBeCloseTo((cached.roles.length * perCall(0.4)) / 1e6, 9);
+      expect(without.costUsd).toBeCloseTo((plain.roles.length * perCall(3)) / 1e6, 9);
+    });
+
+    it('stops before the next review once the cost reaches the cap, and says so', async () => {
+      const cases = ['a', 'b', 'c'].map((id) => synthetic({ id }));
+      const prices = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null };
+      const fresh = () => scripted({ said: () => [], tokens: [2_000, 500] }).deps;
+      const first = (await runEval(cases.slice(0, 1), { ...fresh(), prices })).costUsd ?? 0;
+      expect(first).toBeGreaterThan(0);
+
+      const told: number[] = [];
+      const capped = await runEval(cases, {
+        ...fresh(),
+        prices,
+        // Exactly the cost of one review: reached after the first.
+        maxCostUsd: first,
+        progress: (done, total) => told.push(done, total),
+      });
+
+      expect(capped).toMatchObject({ reviews: 1, stoppedAtCostCap: true });
+      expect(capped.costUsd).toBeCloseTo(first, 12);
+      // The progress counts toward the reviews that were planned.
+      expect(told).toEqual([1, 3]);
+      expect(formatReport(capped)).toContain('stopped at the cost cap after 1 of 3 reviews');
+
+      // A cap above the whole cost, no cap, and a cap with no prices stop nothing.
+      for (const over of [
+        { maxCostUsd: first * 10, prices },
+        { maxCostUsd: null, prices },
+        { maxCostUsd: first },
+      ]) {
+        const all = await runEval(cases, { ...fresh(), ...over });
+        expect(all, JSON.stringify(over)).toMatchObject({ reviews: 3, stoppedAtCostCap: false });
+      }
+    });
+
+    it('counts no shortened lists for a review whose lists fit', async () => {
+      const report = await runEval([synthetic({ id: 'one' })], nothing().deps);
+      expect(report.listsShortened).toBe(0);
+    });
+  });
+
   it('reviews every case as many times as it is asked to, and scores each review', async () => {
     const cases = [synthetic({ id: 'one', expected: [problem(10)] }), synthetic({ id: 'two' })];
     const { deps, roles } = scripted({
@@ -1085,6 +1327,32 @@ describe('the report', () => {
     tokens: { input: 1_234_567, output: 89_000 },
     costUsd: 4.3281,
     latencyMs: { min: 4_100, median: 6_250, max: 12_000 },
+    calls: 310,
+    callLatencyMs: { median: 2_500, p95: 21_000, max: 48_400 },
+    maxCallInputTokens: 187_654,
+    verification: { run: 9, confirmed: 5, needsValidation: 1, rejectedOrUnread: 3, starved: 2 },
+    wrapUps: {
+      budget: 3,
+      turns: 1,
+      window: 0,
+      byRole: {
+        judge: { budget: 1, turns: 1, window: 0 },
+        security: { budget: 2, turns: 0, window: 0 },
+      },
+    },
+    stageTokens: { specialists: 900_000, judge: 300_000, verification: 40_000 },
+    cache: {
+      read: 700_000,
+      write: 120_000,
+      hitRate: 0.5669,
+      byStage: {
+        specialists: { read: 500_000, write: 80_000 },
+        judge: { read: 150_000, write: 30_000 },
+        verification: { read: 50_000, write: 10_000 },
+      },
+    },
+    listsShortened: 2,
+    stoppedAtCostCap: false,
   };
 
   /** The cells of the table row that starts with `label`. */
@@ -1129,11 +1397,49 @@ describe('the report', () => {
   it('prints the cases, the failed reviews, the tokens, the cost and the latency', () => {
     const text = formatReport(REPORT);
     expect(text).toContain('14 cases (4 clean), 2 runs each, 28 reviews');
+    expect(text).not.toContain('stopped at the cost cap');
     expect(text).toContain('failed reviews: 3 (bad_answer 1, provider_error 2)');
     expect(text).toContain('findings on clean cases: 4');
     expect(text).toContain('tokens: 1,234,567 in, 89,000 out');
     expect(text).toContain('cost: $4.3281');
     expect(text).toContain('latency per review: min 4.1 s, median 6.3 s, max 12.0 s');
+  });
+
+  it('prints the singular for one case, one run and one review', () => {
+    const text = formatReport({ ...REPORT, cases: 1, clean: 0, runs: 1, reviews: 1 });
+    expect(text).toContain('1 case (0 clean), 1 run each, 1 review\n');
+  });
+
+  it('prints the calls, the verification, the wrap-ups, the stage tokens and the cache', () => {
+    const lines = formatReport(REPORT).split('\n');
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        'model calls: 310; per call: median 2.5 s, p95 21.0 s, max 48.4 s; largest input 187,654 tokens',
+        'verification: 9 run (5 confirmed, 1 needs validation, 3 rejected or unread), 2 begun with no tool calls left',
+        'wrap-ups: 3 at the token budget, 1 at the turn limit, 0 at the context window (judge 2, security 2)',
+        'tokens by stage: specialists 900,000, judge 300,000, verification 40,000',
+        'cache: 700,000 read, 120,000 written (hit rate 56.7 % of input); specialists 500,000/80,000, judge 150,000/30,000, verification 50,000/10,000',
+        'reviews with shortened lists: 2',
+      ]),
+    );
+  });
+
+  it('prints no wrap-up roles when none wrapped up, and no call line without calls', () => {
+    const text = formatReport({
+      ...REPORT,
+      calls: 0,
+      callLatencyMs: null,
+      wrapUps: { budget: 0, turns: 0, window: 0, byRole: {} },
+    });
+    expect(text).toContain(
+      'wrap-ups: 0 at the token budget, 0 at the turn limit, 0 at the context window\n',
+    );
+    expect(text).not.toContain('model calls');
+  });
+
+  it('says when the cost cap stopped the evaluation', () => {
+    const text = formatReport({ ...REPORT, reviews: 9, stoppedAtCostCap: true });
+    expect(text).toContain('stopped at the cost cap after 9 of 28 reviews');
   });
 
   it('prints no cost without prices, no failures when none failed, no latency without reviews', () => {

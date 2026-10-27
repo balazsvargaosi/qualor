@@ -494,6 +494,51 @@ describe('converseOverTools', () => {
     expect(sent[1]?.messages.at(-1)).toEqual({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
   });
 
+  it("a conversation over the tools stops at the loop's 16 turns", async () => {
+    // 6I-3 Task 14 (3): a model that calls a tool every turn is asked to wrap up after its 16th
+    // turn, and its 17th call (the wrap-up) answers.
+    expect(CONVERSATION_LIMITS.maxTurns).toBe(16);
+    const reader = memorySnapshot();
+    const policy = newToolPolicy({
+      excludePaths: [],
+      masked: new MaskedFiles(reader, { masker }),
+      masker,
+    });
+    const sent: LlmConversation[] = [];
+    const result = await converseOverTools(callOf('security'), {
+      reader,
+      policy,
+      send: (conversation) => {
+        sent.push(conversation);
+        return Promise.resolve(
+          sent.length <= CONVERSATION_LIMITS.maxTurns
+            ? turn({
+                finishReason: 'tool',
+                toolCalls: [{ id: `call-${sent.length}`, name: 'list_files', arguments: {} }],
+              })
+            : turn({ text: '{"ok":true}' }),
+        );
+      },
+      shouldStop: () => Promise.resolve(false),
+    });
+    expect(sent).toHaveLength(CONVERSATION_LIMITS.maxTurns + 1);
+    expect(sent[CONVERSATION_LIMITS.maxTurns - 1]?.messages.at(-1)).not.toEqual({
+      role: 'user',
+      text: CONVERSATION_TEXTS.wrapUp,
+    });
+    expect(sent[CONVERSATION_LIMITS.maxTurns]?.messages.at(-1)).toEqual({
+      role: 'user',
+      text: CONVERSATION_TEXTS.wrapUp,
+    });
+    expect(result).toMatchObject({
+      kind: 'answer',
+      text: '{"ok":true}',
+      wrappedUp: 'turns',
+      turns: CONVERSATION_LIMITS.maxTurns + 1,
+      toolCalls: CONVERSATION_LIMITS.maxTurns,
+    });
+  });
+
   it('serves the reply role with its own prompt and output limit over the review tools', async () => {
     const reader = memorySnapshot();
     const policy = newToolPolicy({

@@ -7,7 +7,9 @@ import { liveEnabled, readLiveEnv, runLive } from './review-live';
  * when `QUALOR_LIVE_REVIEW_URL` and `QUALOR_LIVE_REVIEW_MODEL` are set, and only `pnpm review:live`
  * runs it, by hand. It sends the synthetic cases of fixtures/review-eval to that provider, with the
  * key of `QUALOR_LIVE_REVIEW_API_KEY` if there is one, and prints aggregates only. It writes to
- * stdout itself: vitest's reporters leave out the console of a test that passes.
+ * stdout itself: vitest's reporters leave out the console of a test that passes. The cost cap
+ * `QUALOR_LIVE_REVIEW_MAX_USD` is read with the other variables (readLiveEnv), and a run it stops
+ * early still passes: the reviews made are the report's.
  */
 describe.skipIf(!liveEnabled(process.env))(
   'live: the AI review of the evaluation set against a real provider',
