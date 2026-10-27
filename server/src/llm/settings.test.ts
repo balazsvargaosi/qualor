@@ -443,6 +443,12 @@ describe('dearestTokenPrice', () => {
     ...pair,
     cachedInputUsdPerMTok: cached,
   });
+  /** A standard pair alone: no tier has prices of its own. */
+  const alone = (pair: typeof standard, cached: number | null = null) => ({
+    ...stored(pair, cached),
+    strong: null,
+    fast: null,
+  });
   const pricing = {
     ...stored(standard, 0.4),
     strong: stored(strong, 2),
@@ -481,7 +487,7 @@ describe('dearestTokenPrice', () => {
       [2, 2.5],
     ] as const) {
       const pair = { inputUsdPerMTok: input, outputUsdPerMTok: output };
-      expect(dearestTokenPrice(stored(pair, input), withModels(null, null))).toBe(
+      expect(dearestTokenPrice(alone(pair, input), withModels(null, null))).toBe(
         Math.max(input, output),
       );
     }
@@ -489,14 +495,14 @@ describe('dearestTokenPrice', () => {
 
   it('is 1.25 times the input price when the output price is below that, for a cache write', () => {
     const pair = { inputUsdPerMTok: 20, outputUsdPerMTok: 10 };
-    expect(dearestTokenPrice(stored(pair), withModels(null, null))).toBe(25);
+    expect(dearestTokenPrice(alone(pair), withModels(null, null))).toBe(25);
     expect(CACHE_WRITE_PRICE_FACTOR).toBe(1.25);
   });
 
   it('is the cached input price when that is above the others', () => {
-    expect(dearestTokenPrice(stored(standard, 40), withModels(null, null))).toBe(40);
+    expect(dearestTokenPrice(alone(standard, 40), withModels(null, null))).toBe(40);
     // And not when there is none.
-    expect(dearestTokenPrice(stored(standard, null), withModels(null, null))).toBe(15);
+    expect(dearestTokenPrice(alone(standard), withModels(null, null))).toBe(15);
   });
 
   it('counts the standard model even when every other tier is cheaper', () => {
