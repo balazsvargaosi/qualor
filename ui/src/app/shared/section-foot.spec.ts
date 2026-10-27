@@ -84,6 +84,19 @@ describe('SectionFoot', () => {
     await show({ kind: 'refused', fields: [{ id: 'ai-budget-tokens', label: 'Tokens per day' }] });
     expect(text(status())).toBe('1 field needs attention: Tokens per day');
 
+    // The locale's own commas, each right after its field.
+    await show({
+      kind: 'refused',
+      fields: [
+        { id: 'ai-budget-explain', label: 'Explanations per day' },
+        { id: 'ai-budget-tokens', label: 'Tokens per day' },
+        { id: 'ai-budget-cost', label: 'Cost per day' },
+      ],
+    });
+    expect(text(status())).toBe(
+      '3 fields need attention: Explanations per day, Tokens per day, and Cost per day',
+    );
+
     await show({ kind: 'error', text: 'The server could not be reached.' });
     expect(text(status())).toBe('The server could not be reached.');
     expect(status().classList).toContain('bad');

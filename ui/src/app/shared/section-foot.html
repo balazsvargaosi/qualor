@@ -29,13 +29,15 @@
             other {{{ count() }} fields need attention:}
           }</ng-container
           >&ngsp;
+          <!-- The words between the links are the locale's own (", ", " and "), spaces and all:
+               an element of their own keeps the template's line breaks out of them. -->
           @for (part of refusal(); track $index) {
             @if (part.field; as field) {
               <a [href]="'#' + field.id" (click)="focusField(field.id, $event)">{{
                 field.label
               }}</a>
             } @else {
-              {{ part.words }}
+              <ng-container>{{ part.words }}</ng-container>
             }
           }
         </span>
