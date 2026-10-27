@@ -380,9 +380,9 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
     await section.getByLabel('At most per analysis').fill('5');
     const foot = section.locator('.foot-status');
     await expect(foot).toHaveText('3 unsaved changes');
-    // Save turns primary; its colours fade in (0.15s), which axe must not measure halfway.
+    // Save turns primary: with reduced motion its colours change at once, for axe to measure.
     const save = section.getByRole('button', { name: 'Save fix suggestions' });
-    await expect(save).toHaveCSS('background-color', 'rgb(31, 95, 191)');
+    await expect(save).toContainClass('btn-primary');
     await expectAccessible(page);
     await save.click();
     await expect(foot).toHaveText(/^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/);

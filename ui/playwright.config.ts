@@ -28,6 +28,12 @@ import {
 const PORT = Number(process.env.QUALOR_E2E_PORT ?? '4280');
 const baseURL = `http://127.0.0.1:${PORT}`;
 const chrome = { ...devices['Desktop Chrome'], locale: 'en-US', timezoneId: 'UTC' };
+/**
+ * The tests' browser: with reduced motion, styles.css shortens every transition, so axe never
+ * measures a colour halfway through its fade (0.15s) and no test waits for one. The screenshots
+ * keep the motion people see.
+ */
+const tests = { ...chrome, reducedMotion: 'reduce' as const };
 
 export default defineConfig({
   testDir: './e2e',
@@ -51,7 +57,7 @@ export default defineConfig({
       testMatch: /.*\.spec\.ts/,
       testIgnore: /(enterprise|sso|compliance|portfolio|business)\.spec\.ts/,
       dependencies: ['setup'],
-      use: { ...chrome, storageState: STORAGE_STATE },
+      use: { ...tests, storageState: STORAGE_STATE },
     },
     // Plan 4C: the enterprise screens, on the licensed server (audit-log) and its session; plan
     // 4D adds single sign-on and SCIM (sso.spec.ts, features sso and scim), 4E-1 compliance reports
@@ -67,14 +73,14 @@ export default defineConfig({
       name: 'enterprise',
       testMatch: /(enterprise|sso|compliance|portfolio)\.spec\.ts/,
       dependencies: ['enterprise-setup'],
-      use: { ...chrome, baseURL: ENTERPRISE_URL, storageState: ENTERPRISE_STORAGE_STATE },
+      use: { ...tests, baseURL: ENTERPRISE_URL, storageState: ENTERPRISE_STORAGE_STATE },
     },
     // Plan 5D: the enterprise server's database under a Business key, after the enterprise tests.
     {
       name: 'business',
       testMatch: /business\.spec\.ts/,
       dependencies: ['enterprise'],
-      use: { ...chrome, baseURL: BUSINESS_URL, storageState: ENTERPRISE_STORAGE_STATE },
+      use: { ...tests, baseURL: BUSINESS_URL, storageState: ENTERPRISE_STORAGE_STATE },
     },
     {
       name: 'screenshots',

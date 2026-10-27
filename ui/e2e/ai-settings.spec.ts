@@ -13,10 +13,6 @@ import { PAYMENTS } from './seed-data';
  * cancelled, and Default's AI review stays off, as `ai.spec.ts` expects.
  */
 
-// Colours fade in (0.15s): axe must never measure one halfway (styles.css shortens every
-// transition for reduced motion).
-test.use({ reducedMotion: 'reduce' });
-
 /** A section's foot after its save: "Saved at 2:05 PM UTC." */
 const SAVED = /^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/;
 
