@@ -6,7 +6,12 @@ import {
   type Quality,
   type Severity,
 } from '@qualor/shared';
-import { AI_SECTION_MAX_BYTES, aiSummarySection, type ReviewSummaryState } from '../review/render';
+import {
+  AI_SECTION_MAX_BYTES,
+  aiSummarySection,
+  inlineProse,
+  type ReviewSummaryState,
+} from '../review/render';
 import type { CommitState } from './gitlab/client';
 import {
   codeSpan,
@@ -392,7 +397,7 @@ function issueItem(issue: IssueLine, index: number): string[] {
   else if (where !== null) parts.push(where);
   // A trailing backslash is a CommonMark hard break: the message goes on its own line on GitLab
   // and in a GitHub check run, where a single line break renders as a space.
-  return [`${parts.join(' · ')}\\`, `   ${codeSpan(issue.message, MAX_MESSAGE_CHARS)}`];
+  return [`${parts.join(' · ')}\\`, `   ${inlineProse(issue.message, MAX_MESSAGE_CHARS)}`];
 }
 
 /**
@@ -550,7 +555,7 @@ export function inlineBody(input: InlineInput): string {
         ruleKeyMarkdown(input.ruleKey, input.helpUri),
       ].join(' · '),
       '',
-      codeSpan(input.message, MAX_MESSAGE_CHARS),
+      inlineProse(input.message, MAX_MESSAGE_CHARS),
       ...(link === null ? [] : ['', link]),
     ],
     INLINE_MAX_BYTES,

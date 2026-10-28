@@ -252,7 +252,7 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
       ].join('\n'),
     );
     expect(body).toContain(
-      '2. 🟠 **Medium** · maintainability · ` eslint:no-console ` · `` src/`x`.ts ``\\\n   ` plain `',
+      '2. 🟠 **Medium** · maintainability · ` eslint:no-console ` · `` src/`x`.ts ``\\\n   plain',
     );
     expect(body).toContain('3. 🟠 **Medium** · reliability · ` r `\\\n   ` /merge `');
     expect(body).toContain(
@@ -514,6 +514,72 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
     expect(html).not.toContain('\\');
   });
 
+  const SQL_MESSAGE =
+    'Data from the HTTP request reaches the text of an SQL query. Pass it as a bound parameter (`query(text, values)`) instead of building the query string from it.';
+  const SQL_PROSE =
+    'Data from the HTTP request reaches the text of an SQL query. Pass it as a bound parameter (` query(text, values) `) instead of building the query string from it.';
+
+  it('reads an analyzer message as prose, its code in spans, in the summary and the inline note', () => {
+    for (const vocabulary of ['gitlab', 'github'] as const) {
+      const body = summary({
+        vocabulary,
+        topIssues: [
+          {
+            id: ISSUE,
+            severity: 'high',
+            quality: 'security',
+            ruleKey: 'qualor:js/sql-injection',
+            path: 'src/a.ts',
+            line: 3,
+            message: SQL_MESSAGE,
+            url: null,
+          },
+        ],
+        topIssuesTotal: 1,
+      });
+      expect(body, vocabulary).toContain(`\\\n   ${SQL_PROSE}\n`);
+      expect(body, vocabulary).not.toContain('`` Data');
+    }
+    const note = inlineBody({
+      issueId: ISSUE,
+      severity: 'high',
+      quality: 'security',
+      ruleKey: 'qualor:js/sql-injection',
+      message: SQL_MESSAGE,
+      url: null,
+    });
+    expect(note.split('\n')[3]).toBe(SQL_PROSE);
+  });
+
+  it('keeps mentions, references, HTML and links in a message inert', () => {
+    const message = '@team #12 <img src=x> [x](y)';
+    const input = {
+      issueId: ISSUE,
+      severity: 'high' as const,
+      quality: 'security' as const,
+      ruleKey: 'k',
+      message,
+      url: null,
+    };
+    const lines = [
+      inlineBody(input).split('\n')[3]!,
+      ...(['gitlab', 'github'] as const).map((vocabulary) =>
+        summary({
+          vocabulary,
+          topIssues: [{ ...input, id: ISSUE, path: null, line: null }],
+          topIssuesTotal: 1,
+        })
+          .split('\n')
+          .find((l) => l.startsWith('   '))!,
+      ),
+    ];
+    for (const line of lines) {
+      // Every word that holds a mark is in a span of its own; nothing is left outside but words.
+      expect(line.trim()).toBe('` @team ` ` #12 ` ` <img ` ` src=x> ` ` [x](y) `');
+      expect(checkProse(line.trim())).toBe(true);
+    }
+  });
+
   it('labels a licence finding with its licensing quality (6M §6)', () => {
     const message =
       "gpl-pkg 2.1.0 is licensed GPL-3.0-only, which the organisation's licence policy forbids (Strong copyleft).";
@@ -530,7 +596,7 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
       "<!-- qualor:issue 01920000-0000-7000-8000-000000000001 -->
       **High** · licensing · \` license:forbidden \`
 
-      \` gpl-pkg 2.1.0 is licensed GPL-3.0-only, which the organisation's licence policy forbids (Strong copyleft). \`
+      gpl-pkg \` 2.1.0 \` is licensed \` GPL-3.0-only \`, which the organisation's licence policy forbids (Strong copyleft).
 
       [View in Qualor](https://q.example/i)"
     `);
@@ -553,7 +619,7 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
       .toMatchInlineSnapshot(`
       [
         "1. 🔴 **High** · licensing · \` license:forbidden \` · \` web/package-lock.json:21 \`\\",
-        "   \` gpl-pkg 2.1.0 is licensed GPL-3.0-only, which the organisation's licence policy forbids (Strong copyleft). \`",
+        "   gpl-pkg \` 2.1.0 \` is licensed \` GPL-3.0-only \`, which the organisation's licence policy forbids (Strong copyleft).",
       ]
     `);
   });
@@ -664,7 +730,7 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
         `<!-- qualor:issue ${ISSUE} -->`,
         '**Medium** · maintainability · ` eslint:no-console `',
         '',
-        '` Unexpected console statement. `',
+        'Unexpected console statement.',
         '',
         '[View in Qualor](https://q.example/i)',
       ].join('\n'),
@@ -740,6 +806,16 @@ function checkBody(body: string, maxBytes: number): void {
     if (aiSection > 0 && index >= aiSection) break;
     expect(line, line).not.toMatch(/^\s*\//);
     if (index === 0) continue; // the marker, checked by markerOf above
+    // An analyzer's message is the prose that `safeProse` writes: the line after
+    // an issue's hard break in the summary, the first line after the header of an inline note.
+    const isMessage =
+      maxBytes === SUMMARY_MAX_BYTES
+        ? line.startsWith('   ') && lines[index - 1]?.endsWith('\\') === true
+        : index === 3 && lines[1]?.startsWith('**') === true;
+    if (isMessage) {
+      expect(checkProse(line.trimStart()), line).toBe(true);
+      continue;
+    }
     let markdown = outsideCodeSpans(line).replace(OWN_LINK, ' ');
     markdown = markdown.replace(/^#{3,4} /, ''); // the fixed headings
     expect(markdown, line).toMatch(
@@ -1066,7 +1142,7 @@ describe('rule documentation links in comments', () => {
       topIssuesTotal: 1,
     });
     expect(body).toContain(
-      `1. 🟠 **Medium** · maintainability · [\` eslint:no-console \`](${DOCS})\\\n   \` plain \``,
+      `1. 🟠 **Medium** · maintainability · [\` eslint:no-console \`](${DOCS})\\\n   plain`,
     );
     const html = marked.parse(body, { async: false, gfm: true, breaks: false });
     expect(html).toContain(`<a href="${DOCS}"><code>eslint:no-console</code></a><br>`);
