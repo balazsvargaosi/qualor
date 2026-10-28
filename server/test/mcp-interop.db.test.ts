@@ -187,10 +187,12 @@ describe('MCP SDK client against Qualor (spec §10 interoperability)', () => {
       expect(projects.isError ?? false).toBe(false);
       expect(JSON.stringify(projects.content)).toContain('shop');
 
-      // 4. The access token expires; the next call refreshes on the 401 and succeeds.
+      // 4. The access token expires; the next call refreshes on the 401 and succeeds. It expired
+      // seconds ago: the server reads its own clock, and a database clock ahead of it (a Docker VM
+      // drifts by hundreds of milliseconds) would keep a token that expires at the database's now.
       await ctx.db
         .update(oauthTokens)
-        .set({ expiresAt: sql`now()` })
+        .set({ expiresAt: sql`now() - interval '5 seconds'` })
         .where(eq(oauthTokens.kind, 'access'));
       calls.length = 0;
       const again = await client.callTool({ name: 'qualor_projects', arguments: {} });
