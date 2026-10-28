@@ -76,12 +76,25 @@ export function diffDigest(
 ): string {
   const paths = new Set(reviewed.map((change) => change.path));
   const hash = createHash('sha256');
-  const byPath = (a: SnapshotChange, b: SnapshotChange) =>
-    a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  const byPath = (a: SnapshotChange, b: SnapshotChange) => {
+    if (a.path === b.path) return 0;
+    return a.path < b.path ? -1 : 1;
+  };
   for (const change of changes.filter((c) => paths.has(c.path)).sort(byPath)) {
     hash.update(`${JSON.stringify([change.path, change.status, change.patch])}\n`);
   }
   return hash.digest('hex');
+}
+
+/** Why a merge request does not fit the review's budget: too large for Tokens per review, or for the window alone. */
+function tooLargeDetail(
+  shape: Parameters<typeof reviewFits>[0],
+  perReview: number,
+  window: number,
+): 'too_large' | 'window_too_small' | null {
+  // Too large for Tokens per review is said first: a larger window alone would not do.
+  if (!reviewFits(shape, perReview, Number.POSITIVE_INFINITY)) return 'too_large';
+  return reviewFits(shape, perReview, window) ? null : 'window_too_small';
 }
 
 /**
@@ -120,13 +133,7 @@ export async function runContext(
     if (seen.digest === previous) throw new SkipReview('unchanged');
     if (budget <= 0) throw new SkipReview('budget_spent');
     if (!reviewFits(shape, budget, window)) {
-      // Too large for Tokens per review is said first: a larger window alone would not do.
-      const detail = !reviewFits(shape, o.perReview, Number.POSITIVE_INFINITY)
-        ? 'too_large'
-        : !reviewFits(shape, o.perReview, window)
-          ? 'window_too_small'
-          : null;
-      throw new SkipReview('budget_spent', detail);
+      throw new SkipReview('budget_spent', tooLargeDetail(shape, o.perReview, window));
     }
     return reviewLimits(shape, budget, window);
   };

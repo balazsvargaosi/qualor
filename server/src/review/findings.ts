@@ -354,15 +354,55 @@ export function planFindings(
   const scope = reviewScope(context.reviewed);
   const changes = changesByPath(context.reviewed);
   const renamedFrom = renamesOf(context.reviewed);
-  const drop = (finding: JudgedFinding, why: DropReason) => plan.dropped.push({ finding, why });
 
   // The ids the judge named, in the findings given and in the ones the review dropped itself: an
   // open prior finding named stays open whatever becomes of the finding that names it. An id that is
   // no prior finding's names nothing.
   const named = new Set([...outcome.namedPriorIds, ...outcome.findings.map((f) => f.priorId)]);
 
+  const candidates = candidatesOf(outcome.findings, changes, plan);
+  const matches = matchPriors(
+    candidates.map((c) => c.finding),
+    context.prior,
+    renamedFrom,
+  );
+  const raisedAgain = new Set<string>();
+  for (const [index, { finding, change }] of candidates.entries()) {
+    const prior = matches[index] ?? null;
+    if (prior !== null && prior.status !== 'open') {
+      plan.dropped.push({ finding, why: 'dismissed' });
+      continue;
+    }
+    const placed = placeFinding(finding, change, scope);
+    const found: PlannedFinding = { finding, change, anchorLine: placed.anchorLine };
+    if (prior !== null) {
+      raisedAgain.add(prior.id);
+      // Where the new finding has no place on this head, the anchor and the suggestion of the old
+      // one are all there is, and they belong to the head they were made for: nothing is rewritten.
+      if (placed.anchorLine === null) plan.keeps.push(prior);
+      else plan.updates.push({ prior, found });
+    } else if (placed.inScope) {
+      plan.creates.push(found);
+    } else {
+      plan.dropped.push({ finding, why: 'out_of_scope' });
+    }
+  }
+  settlePriors(context.prior, outcome, { named, raisedAgain, changes }, plan);
+  return plan;
+}
+
+/**
+ * The findings given that can be raised: the ones of low confidence, the ones that do not start on
+ * a line of their file and the ones past the limit are dropped, in `plan`.
+ */
+function candidatesOf(
+  findings: readonly JudgedFinding[],
+  changes: ReadonlyMap<string, ReviewableChange>,
+  plan: FindingsPlan,
+): { finding: JudgedFinding; change: ReviewableChange | undefined }[] {
+  const drop = (finding: JudgedFinding, why: DropReason) => plan.dropped.push({ finding, why });
   const candidates: { finding: JudgedFinding; change: ReviewableChange | undefined }[] = [];
-  for (const given of outcome.findings) {
+  for (const given of findings) {
     if (given.confidence === 'low') {
       drop(given, 'low_confidence');
       continue;
@@ -378,47 +418,32 @@ export function planFindings(
       candidates.push({ finding, change });
     }
   }
+  return candidates;
+}
 
-  const matches = matchPriors(
-    candidates.map((c) => c.finding),
-    context.prior,
-    renamedFrom,
-  );
-  const raisedAgain = new Set<string>();
-  for (const [index, { finding, change }] of candidates.entries()) {
-    const prior = matches[index] ?? null;
-    if (prior !== null && prior.status !== 'open') {
-      drop(finding, 'dismissed');
-      continue;
-    }
-    const placed = placeFinding(finding, change, scope);
-    const found: PlannedFinding = { finding, change, anchorLine: placed.anchorLine };
-    if (prior !== null) {
-      raisedAgain.add(prior.id);
-      // Where the new finding has no place on this head, the anchor and the suggestion of the old
-      // one are all there is, and they belong to the head they were made for: nothing is rewritten.
-      if (placed.anchorLine === null) plan.keeps.push(prior);
-      else plan.updates.push({ prior, found });
-    } else if (placed.inScope) {
-      plan.creates.push(found);
-    } else {
-      drop(finding, 'out_of_scope');
-    }
-  }
-
+/** What becomes of the open earlier findings that no finding is: kept, closed, or left as they are. */
+function settlePriors(
+  priors: ReviewContext['prior'],
+  outcome: Pick<Reviewed, 'prior' | 'shownPriorIds'>,
+  known: {
+    named: ReadonlySet<string>;
+    raisedAgain: ReadonlySet<string>;
+    changes: ReadonlyMap<string, ReviewableChange>;
+  },
+  plan: FindingsPlan,
+): void {
   const verdicts = new Map<string, string>();
   for (const { id, status } of outcome.prior) if (!verdicts.has(id)) verdicts.set(id, status);
   const shown = new Set(outcome.shownPriorIds);
-  for (const prior of context.prior) {
-    if (prior.status !== 'open' || raisedAgain.has(prior.id)) continue;
+  for (const prior of priors) {
+    if (prior.status !== 'open' || known.raisedAgain.has(prior.id)) continue;
     const verdict = verdicts.get(prior.id);
-    if (named.has(prior.id) || verdict === 'present') {
+    if (known.named.has(prior.id) || verdict === 'present') {
       plan.keeps.push(prior);
     } else if (verdict === 'fixed') {
       plan.closes.push({ prior, why: 'fixed' });
-    } else if (shown.has(prior.id) && changes.get(prior.path)?.status === 'deleted') {
+    } else if (shown.has(prior.id) && known.changes.get(prior.path)?.status === 'deleted') {
       plan.closes.push({ prior, why: 'deleted' });
     }
   }
-  return plan;
 }

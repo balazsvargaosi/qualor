@@ -29,6 +29,10 @@ export interface Running {
 export type Decision =
   { kind: 'started'; running: Running } | { kind: 'ended'; end: RunEnd } | { kind: 'none' };
 
+/** The time the run's deadline is compared with: the database's, unless the deps fix one. */
+const clockOf = (deps: Pick<ReviewJobDeps, 'now'>): SQL =>
+  deps.now === undefined ? sql`now()` : sql`${deps.now().toISOString()}::timestamptz`;
+
 /**
  * Steps 1 to 5: decides, holding the run's row, whether the run starts, waits on or ends; a run
  * that ends here is decorated in the same transaction. A run that starts is reviewed.
@@ -46,8 +50,7 @@ export async function decideStart(
     .where(eq(reviewRuns.id, runId));
   if (ref === undefined) return { kind: 'none' };
   await lockBranchQueue(tx, ref.branchId);
-  const clock: SQL =
-    deps.now === undefined ? sql`now()` : sql`${deps.now().toISOString()}::timestamptz`;
+  const clock = clockOf(deps);
   const [found] = await tx
     .select({ run: reviewRuns, due: sql<boolean>`${reviewRuns.deadlineAt} <= ${clock}` })
     .from(reviewRuns)

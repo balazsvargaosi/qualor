@@ -67,8 +67,10 @@ const AT_H1 = [
 const AT_H2 = [...AT_H1.slice(0, 8), '  price - price * rate;'];
 
 /** GitLab's diff, and the snapshot's patch, of a file the merge request adds. */
-const added = (lines: readonly string[]) =>
-  `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}\n`;
+const added = (lines: readonly string[]) => {
+  const rows = lines.map((line) => `+${line}`);
+  return `@@ -0,0 +1,${lines.length} @@\n${rows.join('\n')}\n`;
+};
 
 /**
  * The snapshot the scanner sends for `head`: the one file it adds, with the lines changed since the

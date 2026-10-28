@@ -86,6 +86,12 @@ const callCost = (prices: { inputUsdPerMTok: number; outputUsdPerMTok: number })
   REVIEW_CALL_USAGE.output * prices.outputUsdPerMTok;
 const revision = (n: number) => String(n % 10).repeat(40);
 
+/** The patch of a file the merge request adds, of these lines. */
+const addedPatch = (lines: readonly string[]): string => {
+  const rows = lines.map((line) => `+${line}`);
+  return `@@ -0,0 +1,${lines.length} @@\n${rows.join('\n')}\n`;
+};
+
 const CART_LINES = [
   'export function total(items: number[]): number {',
   '  let sum = 0;',
@@ -101,7 +107,7 @@ const CHANGE: SnapshotLine[] = [
     path: 'src/cart.ts',
     oldPath: null,
     status: 'added',
-    patch: `@@ -0,0 +1,${CART_LINES.length} @@\n${CART_LINES.map((line) => `+${line}`).join('\n')}\n`,
+    patch: addedPatch(CART_LINES),
     since: null,
   },
   { type: 'file', path: 'src/cart.ts', text: CART },
@@ -131,7 +137,7 @@ const LOGIN: SnapshotLine[] = [
     path: 'src/auth/login.ts',
     oldPath: null,
     status: 'added',
-    patch: `@@ -0,0 +1,${LOGIN_LINES.length} @@\n${LOGIN_LINES.map((line) => `+${line}`).join('\n')}\n`,
+    patch: addedPatch(LOGIN_LINES),
     since: null,
   },
   { type: 'file', path: 'src/auth/login.ts', text: `${LOGIN_LINES.join('\n')}\n` },
@@ -144,7 +150,7 @@ const BIG: SnapshotLine[] = [
     path: 'src/big.ts',
     oldPath: null,
     status: 'added',
-    patch: `@@ -0,0 +1,${BIG_LINES.length} @@\n${BIG_LINES.map((line) => `+${line}`).join('\n')}\n`,
+    patch: addedPatch(BIG_LINES),
     since: null,
   },
   { type: 'file', path: 'src/big.ts', text: `${BIG_LINES.join('\n')}\n` },
