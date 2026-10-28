@@ -496,7 +496,8 @@ export async function runReplyConversation(
   input: ReplyInput,
   io: ReplyConversationIo,
 ): Promise<DecidedReply> {
-  if (!(io.tokenBudget > 0)) return { failed: 'budget_spent' };
+  // A budget that is no number is none.
+  if (Number.isNaN(io.tokenBudget) || io.tokenBudget <= 0) return { failed: 'budget_spent' };
   try {
     return await decide(input, io);
   } catch (err) {

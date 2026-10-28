@@ -130,6 +130,33 @@ export function gitlabRounds(discussions: readonly GitLabDiscussion[], o: Detect
   return rounds;
 }
 
+/** GraphQL's thread of each first comment, by the comment's node id: the first one listed. */
+function threadsByFirstComment(
+  threads: readonly GitHubReviewThread[],
+): Map<string, GitHubReviewThread> {
+  const listed = new Map<string, GitHubReviewThread>();
+  for (const thread of threads) {
+    if (thread.firstCommentNodeId !== null && !listed.has(thread.firstCommentNodeId)) {
+      listed.set(thread.firstCommentNodeId, thread);
+    }
+  }
+  return listed;
+}
+
+/** What people replied, by the id of the first comment it names. */
+function repliesByFirstComment(comments: readonly GitHubReviewComment[]): Map<number, Reply[]> {
+  const repliesByFirst = new Map<number, Reply[]>();
+  for (const comment of comments) {
+    const firstId = comment.in_reply_to_id;
+    if (typeof firstId !== 'number' || comment.user?.type !== 'User') continue;
+    const reply = { id: comment.id, author: comment.user.login, createdAt: comment.created_at };
+    const replies = repliesByFirst.get(firstId);
+    if (replies === undefined) repliesByFirst.set(firstId, [reply]);
+    else replies.push(reply);
+  }
+  return repliesByFirst;
+}
+
 /**
  * The rounds of Qualor's GitHub threads: one for each thread that is not resolved and has a new
  * reply. A thread is the App's top-level review comment with an issue marker, and its replies are
@@ -144,23 +171,8 @@ export function githubRounds(
 ): Round[] {
   const app = o.qualor.githubLogin;
   if (app === undefined) return [];
-  // GraphQL's thread of each first comment, by the comment's node id: the first one listed.
-  const listed = new Map<string, GitHubReviewThread>();
-  for (const thread of threads) {
-    if (thread.firstCommentNodeId !== null && !listed.has(thread.firstCommentNodeId)) {
-      listed.set(thread.firstCommentNodeId, thread);
-    }
-  }
-  // What people replied, by the id of the first comment it names.
-  const repliesByFirst = new Map<number, Reply[]>();
-  for (const comment of comments) {
-    const firstId = comment.in_reply_to_id;
-    if (typeof firstId !== 'number' || comment.user?.type !== 'User') continue;
-    const reply = { id: comment.id, author: comment.user.login, createdAt: comment.created_at };
-    const replies = repliesByFirst.get(firstId);
-    if (replies === undefined) repliesByFirst.set(firstId, [reply]);
-    else replies.push(reply);
-  }
+  const listed = threadsByFirstComment(threads);
+  const repliesByFirst = repliesByFirstComment(comments);
   const rounds: Round[] = [];
   for (const first of comments) {
     if (typeof first.in_reply_to_id === 'number') continue;

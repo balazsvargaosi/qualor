@@ -1442,7 +1442,8 @@ describe('the answer to a reply', () => {
       return mask(text);
     };
     try {
-      const long = `START\n${`${'x'.repeat(99)}\n`.repeat((MASK_INPUT_CHARS * 5) / 100)}END`;
+      const row = `${'x'.repeat(99)}\n`;
+      const long = `START\n${row.repeat((MASK_INPUT_CHARS * 5) / 100)}END`;
       const { sent } = await converse(
         [says('other', 'keep')],
         inputOf({ notes: [{ author: 'alice', body: long }] }),
