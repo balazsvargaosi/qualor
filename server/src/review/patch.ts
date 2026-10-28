@@ -48,6 +48,98 @@ function headerNumber(digits: string | undefined, missing: number): number | nul
   return Number.isSafeInteger(value) ? value : null;
 }
 
+/** The four numbers of a hunk header. */
+interface HunkCounts {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+}
+
+/** The numbers of a hunk header line; null when it does not parse or says what no patch can. */
+function readHunkHeader(line: string): HunkCounts | null {
+  const header = HUNK_HEADER.exec(line);
+  if (header === null) return null;
+  const oldStart = headerNumber(header[1], 0);
+  const oldCount = headerNumber(header[2], 1);
+  const newStart = headerNumber(header[3], 0);
+  const newCount = headerNumber(header[4], 1);
+  if (oldStart === null || oldCount === null || newStart === null || newCount === null) {
+    return null;
+  }
+  // Lines are numbered from 1: only a hunk with no new line is placed at 0 (`+0,0`).
+  if (newStart === 0 && newCount > 0) return null;
+  return { oldStart, oldCount, newStart, newCount };
+}
+
+/** Where a hunk's body has got to: the rows still due on each side, and the next new-side line. */
+interface HunkCursor {
+  oldLeft: number;
+  newLeft: number;
+  newLine: number;
+}
+
+/**
+ * The row a line of a hunk's body is, and the cursor moved past it; null when it is no row the
+ * header's counts allow. An added row is put in `added`.
+ */
+function readRow(body: string, cursor: HunkCursor, added: Set<number>): PatchRow | null {
+  const mark = body.charAt(0);
+  const text = body.endsWith('\r') ? body.slice(1, -1) : body.slice(1);
+  if (mark === '+') {
+    if (cursor.newLeft === 0) return null;
+    cursor.newLeft -= 1;
+    const row: PatchRow = { kind: '+', newLine: cursor.newLine, text };
+    added.add(cursor.newLine);
+    cursor.newLine += 1;
+    return row;
+  }
+  if (mark === '-') {
+    if (cursor.oldLeft === 0) return null;
+    cursor.oldLeft -= 1;
+    return {
+      kind: REMOVED_MARKER.test(text) ? 'removed-marker' : '-',
+      newLine: null,
+      text,
+    };
+  }
+  if (mark === ' ' || body === '') {
+    if (cursor.oldLeft === 0 || cursor.newLeft === 0) return null;
+    cursor.oldLeft -= 1;
+    cursor.newLeft -= 1;
+    const row: PatchRow = { kind: ' ', newLine: cursor.newLine, text };
+    cursor.newLine += 1;
+    return row;
+  }
+  return null;
+}
+
+/** The hunk whose body starts at `at`, and where the next line is; null when the body is short or wrong. */
+function readHunk(
+  lines: readonly string[],
+  at: number,
+  counts: HunkCounts,
+  added: Set<number>,
+): { hunk: PatchHunk; next: number } | null {
+  const cursor: HunkCursor = {
+    oldLeft: counts.oldCount,
+    newLeft: counts.newCount,
+    newLine: counts.newStart,
+  };
+  let next = at;
+  const rows: PatchRow[] = [];
+  while (cursor.oldLeft > 0 || cursor.newLeft > 0) {
+    const body = lines[next];
+    if (body === undefined) return null;
+    next += 1;
+    if (body.charAt(0) === '\\') continue;
+    const row = readRow(body, cursor, added);
+    if (row === null) return null;
+    rows.push(row);
+  }
+  return { hunk: { oldStart: counts.oldStart, newStart: counts.newStart, rows }, next };
+}
+
 /**
  * Reads the patch of one file (`git diff -U3`: the header lines, then hunks), numbering the rows
  * of the new side: an added or a context row has its line, a removed row none. The lines outside
@@ -67,53 +159,12 @@ export function parsePatch(patch: string): ParsedPatch | null {
     const line = lines[at] ?? '';
     at += 1;
     if (!line.startsWith('@@')) continue;
-    const header = HUNK_HEADER.exec(line);
-    if (header === null) return null;
-    const oldStart = headerNumber(header[1], 0);
-    const oldCount = headerNumber(header[2], 1);
-    const newStart = headerNumber(header[3], 0);
-    const newCount = headerNumber(header[4], 1);
-    if (oldStart === null || oldCount === null || newStart === null || newCount === null) {
-      return null;
-    }
-    // Lines are numbered from 1: only a hunk with no new line is placed at 0 (`+0,0`).
-    if (newStart === 0 && newCount > 0) return null;
-    let oldLeft = oldCount;
-    let newLeft = newCount;
-    let newLine = newStart;
-    const rows: PatchRow[] = [];
-    while (oldLeft > 0 || newLeft > 0) {
-      const body = lines[at];
-      if (body === undefined) return null;
-      at += 1;
-      const mark = body.charAt(0);
-      const text = body.endsWith('\r') ? body.slice(1, -1) : body.slice(1);
-      if (mark === '\\') continue;
-      if (mark === '+') {
-        if (newLeft === 0) return null;
-        newLeft -= 1;
-        rows.push({ kind: '+', newLine, text });
-        added.add(newLine);
-        newLine += 1;
-      } else if (mark === '-') {
-        if (oldLeft === 0) return null;
-        oldLeft -= 1;
-        rows.push({
-          kind: REMOVED_MARKER.test(text) ? 'removed-marker' : '-',
-          newLine: null,
-          text,
-        });
-      } else if (mark === ' ' || body === '') {
-        if (oldLeft === 0 || newLeft === 0) return null;
-        oldLeft -= 1;
-        newLeft -= 1;
-        rows.push({ kind: ' ', newLine, text });
-        newLine += 1;
-      } else {
-        return null;
-      }
-    }
-    hunks.push({ oldStart, newStart, rows });
+    const counts = readHunkHeader(line);
+    if (counts === null) return null;
+    const read = readHunk(lines, at, counts, added);
+    if (read === null) return null;
+    hunks.push(read.hunk);
+    at = read.next;
   }
   return { hunks, added };
 }
