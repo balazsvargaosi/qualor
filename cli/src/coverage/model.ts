@@ -16,12 +16,12 @@ export class CoverageRecord {
   readonly branches = new Map<number, BranchCounts>();
 
   hit(line: number, hits: number): void {
-    if (!validLine(line) || !(hits >= 0)) return;
+    if (!validLine(line) || Number.isNaN(hits) || hits < 0) return;
     this.lines.set(line, Math.max(this.lines.get(line) ?? 0, hits));
   }
 
   branch(line: number, total: number, covered: number): void {
-    if (!validLine(line) || !(total > 0) || !Number.isFinite(total)) return;
+    if (!validLine(line) || !Number.isFinite(total) || total <= 0) return;
     const hit = Math.min(Math.max(Number.isFinite(covered) ? covered : 0, 0), total);
     const prev = this.branches.get(line);
     this.branches.set(line, {

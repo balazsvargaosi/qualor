@@ -248,8 +248,10 @@ export function trivyJsonToSarif(output: unknown, root: string): unknown {
   for (const target of report.Results ?? []) {
     const packages = target.Packages ?? [];
     let cached: readonly string[] | null | undefined;
-    const lines = () =>
-      cached === undefined ? (cached = lockfileLines(root, target.Target)) : cached;
+    const lines = () => {
+      if (cached === undefined) cached = lockfileLines(root, target.Target);
+      return cached;
+    };
     for (const v of target.Vulnerabilities ?? []) {
       const severity = severityOf(v.Severity);
       const cwe = (v.CweIDs ?? []).filter((c) => /^CWE-\d{1,7}$/.test(c)).slice(0, MAX_IDS);

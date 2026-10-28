@@ -85,7 +85,8 @@ const SCAN_TIMEOUT_BUDGETS = 10;
 export function runBench(o: { files: number; budgetSeconds: number; keep: boolean }): BenchResult {
   if (!Number.isInteger(o.files) || o.files < 1)
     throw new Error(`--files must be a positive integer`);
-  if (!(o.budgetSeconds > 0)) throw new Error(`--budget must be a positive number of seconds`);
+  if (Number.isNaN(o.budgetSeconds) || o.budgetSeconds <= 0)
+    throw new Error(`--budget must be a positive number of seconds`);
   const work = mkdtempSync(path.join(os.tmpdir(), 'qualor-bench-'));
   try {
     const repo = path.join(work, 'repo');
