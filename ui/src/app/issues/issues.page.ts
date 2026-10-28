@@ -336,14 +336,7 @@ export class IssuesPage {
     // The band names a merge request the list is showing, and the Issues tab counts its issues.
     effect(() => {
       const id = this.branchId();
-      const view = this.branches.hasValue()
-        ? this.branches.value().find((b) => b.id === id)
-        : undefined;
-      const shown = view
-        ? branchView(view)
-        : this.extraBranch.hasValue()
-          ? this.extraBranch.value()
-          : null;
+      const shown = this.branchShown(id);
       this.project.showBranch(shown && shown.id === id && !shown.isMain ? shown : null);
     });
     inject(DestroyRef).onDestroy(() => this.project.showBranch(null));
@@ -361,6 +354,15 @@ export class IssuesPage {
       });
     });
     inject(DestroyRef).onDestroy(() => this.retryOffer.clear());
+  }
+
+  /** The branch the list shows: from the project's branch list, else the one fetched on its own. */
+  private branchShown(id: string | null) {
+    const view = this.branches.hasValue()
+      ? this.branches.value().find((b) => b.id === id)
+      : undefined;
+    if (view) return branchView(view);
+    return this.extraBranch.hasValue() ? this.extraBranch.value() : null;
   }
 
   private navigate(params: Params): Promise<boolean> {
