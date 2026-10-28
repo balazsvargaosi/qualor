@@ -137,20 +137,21 @@ function failure(
   status: number,
   over: { headers?: Record<string, string>; message?: string } = {},
 ): LlmReply {
-  const body =
-    over.message === undefined
-      ? llmShape(kind === 'anthropic' ? 'anthropic-error' : 'openai-error')
-      : kind === 'anthropic'
-        ? { type: 'error', error: { type: 'invalid_request_error', message: over.message } }
-        : {
-            error: {
-              message: over.message,
-              type: 'invalid_request_error',
-              param: null,
-              code: null,
-            },
-          };
-  return { status, ...(over.headers ? { headers: over.headers } : {}), body };
+  return {
+    status,
+    ...(over.headers ? { headers: over.headers } : {}),
+    body: failureBody(kind, over.message),
+  };
+}
+
+function failureBody(kind: Kind, message: string | undefined): unknown {
+  if (message === undefined) {
+    return llmShape(kind === 'anthropic' ? 'anthropic-error' : 'openai-error');
+  }
+  if (kind === 'anthropic') {
+    return { type: 'error', error: { type: 'invalid_request_error', message } };
+  }
+  return { error: { message, type: 'invalid_request_error', param: null, code: null } };
 }
 
 // ─── What the request says, on the wire of each kind ─────────────────────────

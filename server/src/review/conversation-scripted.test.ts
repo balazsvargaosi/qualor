@@ -23,6 +23,13 @@ const WRAP_UP = 'Token budget reached: answer now, with what you have, in the re
 const TOO_MANY = 'too many calls in one turn; this one was not run';
 const BAD_ARGUMENTS = 'the arguments were not valid JSON; call again';
 
+/** How many conversations a `JSON.stringify` spy has been asked to serialise. */
+const conversationsSerialised = (stringify: { mock: { calls: unknown[][] } }): number =>
+  stringify.mock.calls.filter(
+    ([value]) =>
+      typeof value === 'object' && value !== null && 'system' in value && 'messages' in value,
+  ).length;
+
 const TOOLS = [
   {
     name: 'read_file',
@@ -546,14 +553,7 @@ describe('runConversation with a scripted provider', () => {
 
       it('serialises the conversation only for a call whose input it has to estimate', async () => {
         const stringify = vi.spyOn(JSON, 'stringify');
-        const serialisedConversations = () =>
-          stringify.mock.calls.filter(
-            ([value]) =>
-              typeof value === 'object' &&
-              value !== null &&
-              'system' in value &&
-              'messages' in value,
-          ).length;
+        const serialisedConversations = () => conversationsSerialised(stringify);
         try {
           await runConversation(scripted(callTurn([call('c1')]), turn('done')).input);
           expect(serialisedConversations()).toBe(0);
@@ -876,11 +876,7 @@ describe('runConversation with a scripted provider', () => {
 
     it('serialises the conversation for a call that timed out or was unreadable, and for no other failure', async () => {
       const stringify = vi.spyOn(JSON, 'stringify');
-      const serialisedConversations = () =>
-        stringify.mock.calls.filter(
-          ([value]) =>
-            typeof value === 'object' && value !== null && 'system' in value && 'messages' in value,
-        ).length;
+      const serialisedConversations = () => conversationsSerialised(stringify);
       const unavailable = new LlmError('unavailable', 'The model provider could not be reached');
       try {
         await runConversation(scripted(timeout, turn('done')).input);

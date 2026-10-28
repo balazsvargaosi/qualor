@@ -384,6 +384,29 @@ export const windowGuessedInput = (sent: LlmConversation): number => windowToken
 const WRAP_UP_TOKENS = windowTokens({ role: 'user', text: CONVERSATION_TEXTS.wrapUp }) + 1;
 
 /**
+ * What a failed call comes to: the end of the conversation, or the seconds to wait before the call
+ * is tried again. An error that is none of the provider's is thrown on.
+ */
+function afterFailure(
+  err: unknown,
+  input: ConversationInput,
+  sent: LlmConversation,
+  first: boolean,
+  charge: (inputTokens: number) => void,
+  retried: { rateLimited: number; transient: number },
+): Ended | number {
+  if (err instanceof CircuitOpenError) {
+    return { kind: 'failed', reason: 'provider_error', circuitOpen: true };
+  }
+  if (err instanceof LlmCallAborted) return { kind: 'stopped' };
+  if (!(err instanceof LlmError)) throw err;
+  if (first && refusedForTools(err, input.tools)) return failed('provider_no_tools');
+  if (err.failure === 'timeout' || err.failure === 'bad_answer') charge(guessedInput(sent));
+  const wait = retryWait(err, retried);
+  return wait === null ? failed('provider_error') : wait;
+}
+
+/**
  * The model's next turn, or why there is none: the stop check is asked before every call, a
  * failed call is tried again as `retryWait` says, and the first call refused for its tools ends
  * the conversation as such. A call the provider most likely billed although it gave no turn, one
@@ -404,16 +427,9 @@ async function nextTurn(
     try {
       return { turn: await input.send(sent), sent };
     } catch (err) {
-      if (err instanceof CircuitOpenError) {
-        return { kind: 'failed', reason: 'provider_error', circuitOpen: true };
-      }
-      if (err instanceof LlmCallAborted) return { kind: 'stopped' };
-      if (!(err instanceof LlmError)) throw err;
-      if (first && refusedForTools(err, input.tools)) return failed('provider_no_tools');
-      if (err.failure === 'timeout' || err.failure === 'bad_answer') charge(guessedInput(sent));
-      const wait = retryWait(err, retried);
-      if (wait === null) return failed('provider_error');
-      await (input.sleep ?? sleepFor)(wait * 1_000, input.signal);
+      const next = afterFailure(err, input, sent, first, charge, retried);
+      if (typeof next !== 'number') return next;
+      await (input.sleep ?? sleepFor)(next * 1_000, input.signal);
     }
   }
 }
@@ -629,189 +645,257 @@ function nextCallInput(
  * not count being guessed. The token budget must be more than 0 (see `limits.tokenBudget`).
  */
 export async function runConversation(input: ConversationInput): Promise<ConversationResult> {
-  const { limits } = input;
-  const messages: LlmMessage[] = [{ role: 'user', text: input.user }];
-  // A copy of the history for each call: what `send` is given is not changed after it.
-  const conversation = (): LlmConversation => ({
-    system: input.system,
-    messages: [...messages],
-    tools: input.tools,
-    maxOutputTokens: limits.maxOutputTokens,
-    ...(limits.reasoningAllowance ? { reasoningAllowance: limits.reasoningAllowance } : {}),
-  });
-  let turns = 0;
-  let toolCalls = 0;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheWriteTokens = 0;
+  return new Talk(input).run();
+}
+
+/** The tokens of a turn as the loop counts them. */
+type Spent = { input: number; output: number };
+type WindowGuess = { nextInput: number; carried: number; grown: number };
+
+/** One conversation: the history, and what it has spent so far. */
+class Talk {
+  private readonly messages: LlmMessage[];
+  private turns = 0;
+  private toolCalls = 0;
+  private inputTokens = 0;
+  private outputTokens = 0;
+  private cacheReadTokens = 0;
+  private cacheWriteTokens = 0;
   /** Why the next turn is the wrap-up, once it is. */
-  let wrapUp: WrapUpReason | null = null;
-  let askedForShorter = false;
+  private wrapUp: WrapUpReason | null = null;
+  private askedForShorter = false;
   /** An answer was not accepted: the model is asked for it again, and runs no more tools. */
-  let askedAgain = false;
-  /** An end without an answer, with what the conversation spent. */
-  const ended = (end: Ended): ConversationResult => ({
-    ...end,
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    turns,
-    toolCalls,
+  private askedAgain = false;
+  private readonly cap: number | undefined;
+
+  constructor(private readonly input: ConversationInput) {
+    this.messages = [{ role: 'user', text: input.user }];
+    this.cap = input.limits.maxCallInputTokens;
+  }
+
+  // A copy of the history for each call: what `send` is given is not changed after it.
+  private readonly conversation = (): LlmConversation => ({
+    system: this.input.system,
+    messages: [...this.messages],
+    tools: this.input.tools,
+    maxOutputTokens: this.input.limits.maxOutputTokens,
+    ...(this.input.limits.reasoningAllowance
+      ? { reasoningAllowance: this.input.limits.reasoningAllowance }
+      : {}),
   });
-  const cap = limits.maxCallInputTokens;
+
+  private counts(): ConversationCounts {
+    return {
+      inputTokens: this.inputTokens,
+      outputTokens: this.outputTokens,
+      cacheReadTokens: this.cacheReadTokens,
+      cacheWriteTokens: this.cacheWriteTokens,
+      turns: this.turns,
+      toolCalls: this.toolCalls,
+    };
+  }
+
+  /** An end without an answer, with what the conversation spent. */
+  private ended(end: Ended): ConversationResult {
+    return { ...end, ...this.counts() };
+  }
+
   /**
    * Whether the next call, with the history as it is now, would reach the window (R46): the last
    * call sent the history up to `sentUpTo` and cost `last`; what joined it since is the model's turn,
    * as the request carries it (`carriedTokens`), and the window's guess for the rest.
    */
-  const reachesWindow = (last: { input: number; output: number }, sentUpTo: number): boolean => {
-    if (cap === undefined) return false;
-    const [first, ...rest] = messages.slice(sentUpTo);
+  private reachesWindow(last: Spent, sentUpTo: number): boolean {
+    if (this.cap === undefined) return false;
+    const [first, ...rest] = this.messages.slice(sentUpTo);
     const carried = carriedTokens(first, last.output);
-    const added = first?.role === 'assistant' ? rest : messages.slice(sentUpTo);
-    return nextCallInput(last.input, carried, windowTokens(added), conversation()) >= cap;
-  };
+    const added = first?.role === 'assistant' ? rest : this.messages.slice(sentUpTo);
+    return nextCallInput(last.input, carried, windowTokens(added), this.conversation()) >= this.cap;
+  }
+
   /**
    * The model's last turn was never sent, and the window has no room for it: it goes, with what
    * followed it, and `ask` is made on the history the last call sent (`sentUpTo`). True when that
    * fits the window.
    */
-  const askOnSentHistory = (
-    last: { input: number; output: number },
-    sentUpTo: number,
-    ask: string,
-  ): boolean => {
-    messages.length = sentUpTo;
-    messages.push({ role: 'user', text: ask });
-    return !reachesWindow(last, sentUpTo);
-  };
-
-  // The first call is the caller's to size: one that would reach the window is not made.
-  if (cap !== undefined && windowGuessedInput(conversation()) >= cap) {
-    return ended(failed('window_full'));
+  private askOnSentHistory(last: Spent, sentUpTo: number, ask: string): boolean {
+    this.messages.length = sentUpTo;
+    this.messages.push({ role: 'user', text: ask });
+    return !this.reachesWindow(last, sentUpTo);
   }
 
-  for (;;) {
-    const next = await nextTurn(input, conversation, turns === 0, (guessed) => {
-      inputTokens += guessed;
-    });
-    if (!('turn' in next)) return ended(next);
-    const { turn, sent } = next;
-    turns += 1;
-    const spent = tokensOf(turn, sent, limits.maxOutputTokens);
-    inputTokens += spent.input;
-    outputTokens += spent.output;
-    cacheReadTokens += turn.usage.cacheReadTokens ?? 0;
-    cacheWriteTokens += turn.usage.cacheWriteTokens ?? 0;
-    if (turn.finishReason === 'refusal') return ended(failed('bad_answer'));
+  /** Whether `ask`, made after the turn just taken, would leave no room in the window. */
+  private askedPastWindow(spent: Spent, sent: LlmConversation, ask: string): boolean {
+    return (
+      this.reachesWindow(spent, sent.messages.length) &&
+      !this.askOnSentHistory(spent, sent.messages.length, ask)
+    );
+  }
 
-    if (turn.toolCalls.length > 0 && wrapUp === null && !askedAgain) {
-      const ids = new Set(turn.toolCalls.map((call) => call.id));
-      if (ids.size !== turn.toolCalls.length) return ended(failed('bad_answer'));
-      // The model's turn joins the history first, then the answers to its calls.
-      const answersFrom = messages.length + 1;
-      const answered = await answerCalls(input, turn.text, turn.toolCalls, turn.replay, messages);
-      toolCalls += answered.run;
-      const grown = guessedTokens(messages.slice(answersFrom));
-      /** Whether the answers go as they are. */
-      let kept = true;
-      let window: { nextInput: number; carried: number; grown: number } | null = null;
-      if (cap !== undefined) {
-        const carried = carriedTokens(messages[answersFrom - 1], spent.output);
-        const windowGrown = windowTokens(messages.slice(answersFrom));
-        window = {
-          nextInput: nextCallInput(spent.input, carried, windowGrown, conversation()),
-          carried,
-          grown: windowGrown,
-        };
-      }
-      if (cap !== undefined && window !== null && window.nextInput + WRAP_UP_TOKENS >= cap) {
-        // The next call would reach the window with these answers: each goes as the fixed line,
-        // before it is first sent, and that call is the wrap-up (R46).
-        withholdAnswers(input, messages, answersFrom);
-        kept = false;
-        wrapUp = 'window';
-      } else {
-        wrapUp =
-          wrapUpDue(limits, inputTokens + outputTokens, spent, grown, window) ??
-          (turns >= limits.maxTurns ? 'turns' : null);
-      }
-      if (wrapUp !== null) messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
-      if (reachesWindow(spent, sent.messages.length)) {
-        // Not even the fixed lines fit beside what the model's turn wrote (a turn that wrote at
-        // length beside its calls): the turn was never sent, and it goes with its answers.
-        kept = false;
-        wrapUp = 'window';
-        if (!askOnSentHistory(spent, sent.messages.length, CONVERSATION_TEXTS.wrapUp)) {
-          for (const told of answered.withheld) told();
-          return ended(failed('window_full'));
-        }
-      }
-      for (const told of kept ? answered.sent : answered.withheld) told();
-      continue;
+  async run(): Promise<ConversationResult> {
+    // The first call is the caller's to size: one that would reach the window is not made.
+    if (this.cap !== undefined && windowGuessedInput(this.conversation()) >= this.cap) {
+      return this.ended(failed('window_full'));
     }
+    for (;;) {
+      const next = await nextTurn(this.input, this.conversation, this.turns === 0, (guessed) => {
+        this.inputTokens += guessed;
+      });
+      if (!('turn' in next)) return this.ended(next);
+      const { turn, sent } = next;
+      this.turns += 1;
+      const spent = tokensOf(turn, sent, this.input.limits.maxOutputTokens);
+      this.inputTokens += spent.input;
+      this.outputTokens += spent.output;
+      this.cacheReadTokens += turn.usage.cacheReadTokens ?? 0;
+      this.cacheWriteTokens += turn.usage.cacheWriteTokens ?? 0;
+      if (turn.finishReason === 'refusal') return this.ended(failed('bad_answer'));
+      const result = await this.settle(turn, sent, spent);
+      if (result !== null) return result;
+    }
+  }
 
+  /** The result the turn ends the conversation with, or null when the conversation goes on. */
+  private async settle(
+    turn: LlmTurn,
+    sent: LlmConversation,
+    spent: Spent,
+  ): Promise<ConversationResult | null> {
+    if (turn.toolCalls.length > 0 && this.wrapUp === null && !this.askedAgain) {
+      return this.answerTools(turn, sent, spent);
+    }
     if (turn.finishReason === 'length' && turn.toolCalls.length === 0) {
-      if (askedForShorter) return ended(failed('bad_answer'));
-      askedForShorter = true;
-      // The API refuses an assistant message with nothing in it; a turn with no message goes
-      // without its replay too.
-      if (turn.text.trim() !== '') {
-        messages.push({
-          role: 'assistant',
-          text: turn.text,
-          toolCalls: [],
-          ...replayField(turn.replay),
-        });
-      }
-      messages.push({ role: 'user', text: CONVERSATION_TEXTS.shorter });
-      // Asked for again within the window: without the answer, which was never sent, when it
-      // leaves no room.
-      if (
-        reachesWindow(spent, sent.messages.length) &&
-        !askOnSentHistory(spent, sent.messages.length, CONVERSATION_TEXTS.shorter)
-      ) {
-        return ended(failed('window_full'));
-      }
-      continue;
+      return this.askForShorter(turn, sent, spent);
     }
+    if (turn.text.trim() === '') return this.ended(failed('bad_answer'));
+    const accepted = this.input.accept?.(turn.text) ?? true;
+    if (accepted !== true) return this.askAgain(turn, sent, spent, accepted);
+    return { kind: 'answer', text: turn.text, wrappedUp: this.wrapUp, ...this.counts() };
+  }
 
-    if (turn.text.trim() === '') return ended(failed('bad_answer'));
-    const accepted = input.accept?.(turn.text) ?? true;
-    if (accepted !== true) {
-      if (askedAgain) return ended(failed('bad_answer'));
-      askedAgain = true;
-      // The calls of this turn, if any, were not run: the answer goes back as text alone, and so
-      // without its replay, which holds the calls and has no results to send beside them.
-      messages.push({
+  /** A turn of tools: its calls are run and answered, and the next turn may be the wrap-up. */
+  private async answerTools(
+    turn: LlmTurn,
+    sent: LlmConversation,
+    spent: Spent,
+  ): Promise<ConversationResult | null> {
+    const ids = new Set(turn.toolCalls.map((call) => call.id));
+    if (ids.size !== turn.toolCalls.length) return this.ended(failed('bad_answer'));
+    // The model's turn joins the history first, then the answers to its calls.
+    const answersFrom = this.messages.length + 1;
+    const answered = await answerCalls(
+      this.input,
+      turn.text,
+      turn.toolCalls,
+      turn.replay,
+      this.messages,
+    );
+    this.toolCalls += answered.run;
+    /** Whether the answers go as they are. */
+    let kept = this.chooseWrapUp(spent, answersFrom);
+    if (this.wrapUp !== null) {
+      this.messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
+    }
+    if (this.reachesWindow(spent, sent.messages.length)) {
+      // Not even the fixed lines fit beside what the model's turn wrote (a turn that wrote at
+      // length beside its calls): the turn was never sent, and it goes with its answers.
+      kept = false;
+      this.wrapUp = 'window';
+      if (!this.askOnSentHistory(spent, sent.messages.length, CONVERSATION_TEXTS.wrapUp)) {
+        for (const told of answered.withheld) told();
+        return this.ended(failed('window_full'));
+      }
+    }
+    for (const told of kept ? answered.sent : answered.withheld) told();
+    return null;
+  }
+
+  /**
+   * Whether the next turn is the wrap-up, and why (`this.wrapUp`). The answers of a turn of tools
+   * that would make the next call reach the window go as the fixed line instead; the result says
+   * whether they go as they are.
+   */
+  private chooseWrapUp(spent: Spent, answersFrom: number): boolean {
+    const { limits } = this.input;
+    const grown = guessedTokens(this.messages.slice(answersFrom));
+    const window = this.windowGuess(spent, answersFrom);
+    if (
+      this.cap !== undefined &&
+      window !== null &&
+      window.nextInput + WRAP_UP_TOKENS >= this.cap
+    ) {
+      // The next call would reach the window with these answers: each goes as the fixed line,
+      // before it is first sent, and that call is the wrap-up (R46).
+      withholdAnswers(this.input, this.messages, answersFrom);
+      this.wrapUp = 'window';
+      return false;
+    }
+    this.wrapUp =
+      wrapUpDue(limits, this.inputTokens + this.outputTokens, spent, grown, window) ??
+      (this.turns >= limits.maxTurns ? 'turns' : null);
+    return true;
+  }
+
+  /** The window's guess for the next call after a turn of tools, null without a window. */
+  private windowGuess(spent: Spent, answersFrom: number): WindowGuess | null {
+    if (this.cap === undefined) return null;
+    const carried = carriedTokens(this.messages[answersFrom - 1], spent.output);
+    const grown = windowTokens(this.messages.slice(answersFrom));
+    return {
+      nextInput: nextCallInput(spent.input, carried, grown, this.conversation()),
+      carried,
+      grown,
+    };
+  }
+
+  /** An answer cut off at the output limit is asked for again, shorter, once. */
+  private askForShorter(
+    turn: LlmTurn,
+    sent: LlmConversation,
+    spent: Spent,
+  ): ConversationResult | null {
+    if (this.askedForShorter) return this.ended(failed('bad_answer'));
+    this.askedForShorter = true;
+    // The API refuses an assistant message with nothing in it; a turn with no message goes
+    // without its replay too.
+    if (turn.text.trim() !== '') {
+      this.messages.push({
         role: 'assistant',
         text: turn.text,
         toolCalls: [],
-        ...(turn.toolCalls.length === 0 ? replayField(turn.replay) : {}),
+        ...replayField(turn.replay),
       });
-      const said = typeof accepted === 'string' && accepted.trim() !== '';
-      const ask = said ? accepted : CONVERSATION_TEXTS.retry;
-      messages.push({ role: 'user', text: ask });
-      if (
-        reachesWindow(spent, sent.messages.length) &&
-        !askOnSentHistory(spent, sent.messages.length, ask)
-      ) {
-        return ended(failed('window_full'));
-      }
-      continue;
     }
-    return {
-      kind: 'answer',
+    this.messages.push({ role: 'user', text: CONVERSATION_TEXTS.shorter });
+    // Asked for again within the window: without the answer, which was never sent, when it
+    // leaves no room.
+    if (this.askedPastWindow(spent, sent, CONVERSATION_TEXTS.shorter)) {
+      return this.ended(failed('window_full'));
+    }
+    return null;
+  }
+
+  /** An answer the caller does not accept is asked for again once. */
+  private askAgain(
+    turn: LlmTurn,
+    sent: LlmConversation,
+    spent: Spent,
+    accepted: string | false,
+  ): ConversationResult | null {
+    if (this.askedAgain) return this.ended(failed('bad_answer'));
+    this.askedAgain = true;
+    // The calls of this turn, if any, were not run: the answer goes back as text alone, and so
+    // without its replay, which holds the calls and has no results to send beside them.
+    this.messages.push({
+      role: 'assistant',
       text: turn.text,
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheWriteTokens,
-      turns,
-      toolCalls,
-      wrappedUp: wrapUp,
-    };
+      toolCalls: [],
+      ...(turn.toolCalls.length === 0 ? replayField(turn.replay) : {}),
+    });
+    const said = typeof accepted === 'string' && accepted.trim() !== '';
+    const ask = said ? accepted : CONVERSATION_TEXTS.retry;
+    this.messages.push({ role: 'user', text: ask });
+    if (this.askedPastWindow(spent, sent, ask)) return this.ended(failed('window_full'));
+    return null;
   }
 }
