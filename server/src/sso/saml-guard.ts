@@ -246,7 +246,8 @@ function tagStreamWithinBounds(text: string): boolean {
 
 /** XML 1.0 `Char`: tab, LF, CR, U+0020 up, well-formed surrogate pairs, not U+FFFE or U+FFFF. */
 function xmlCharsOnly(xml: string): boolean {
-  for (let i = 0; i < xml.length; i += 1) {
+  let i = 0;
+  while (i < xml.length) {
     const c = xml.charCodeAt(i);
     if (c < 0x20) {
       if (c !== 0x09 && c !== 0x0a && c !== 0x0d) return false;
@@ -257,6 +258,7 @@ function xmlCharsOnly(xml: string): boolean {
     } else if ((c >= 0xdc00 && c <= 0xdfff) || c === 0xfffe || c === 0xffff) {
       return false;
     }
+    i += 1;
   }
   return true;
 }

@@ -176,17 +176,18 @@ export type StoredProvider = z.infer<typeof storedProviderSchema>;
  */
 export const MODEL_TIERS = ['standard', 'strong', 'fast'] as const;
 
+/** The part of a provider that names the models of its tiers. */
+type TierModels = Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>;
+
 /**
  * The model a tier has of its own: the strong or fast model when it is set and is not the
  * standard model. Null for the standard tier, and for a tier that uses the standard model, whether
  * it is empty or set to it: such a tier has the standard model's prices too.
  */
-export function ownModel(
-  provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
-  tier: ModelTier,
-): string | null {
-  const model =
-    tier === 'strong' ? provider.strongModel : tier === 'fast' ? provider.fastModel : null;
+export function ownModel(provider: TierModels, tier: ModelTier): string | null {
+  let model: string | null = null;
+  if (tier === 'strong') model = provider.strongModel;
+  else if (tier === 'fast') model = provider.fastModel;
   return model === null || model === provider.model ? null : model;
 }
 
@@ -326,7 +327,7 @@ export const comparedProvider = (p: StoredProvider) => ({
  */
 export function pricingFor(
   pricing: StoredPricing,
-  provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
+  provider: TierModels,
   tier: ModelTier,
 ): PricePair | null {
   if (pricing === null) return null;
@@ -359,10 +360,7 @@ export const CACHE_WRITE_PRICE_FACTOR = 1.25;
  * and no cached price is above the output price, as it is for the mainstream prices, this is the
  * dearest output price.
  */
-export function dearestTokenPrice(
-  pricing: StoredPricing,
-  provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
-): number | null {
+export function dearestTokenPrice(pricing: StoredPricing, provider: TierModels): number | null {
   const prices = MODEL_TIERS.flatMap((tier) => {
     const pair = pricingFor(pricing, provider, tier);
     return pair === null

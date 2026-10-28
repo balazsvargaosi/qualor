@@ -12,6 +12,9 @@ import { oidcDiscoveryUrl } from './urls';
 const TTL_MS = 60 * 60_000;
 /** spec §5: 60 s of clock tolerance on the ID token's times. */
 const CLOCK_TOLERANCE_S = 60;
+// openid-client names its client-authentication factories in upper case; they are plain functions.
+const clientSecretPost = client.ClientSecretPost;
+const clientSecretBasic = client.ClientSecretBasic;
 /** spec §14: 10 s for each request (ssoFetch holds its own deadline too). */
 const TIMEOUT_S = 10;
 
@@ -66,8 +69,8 @@ export async function oidcConfiguration(
   });
   const auth =
     cfg.clientAuth === 'client_secret_post'
-      ? client.ClientSecretPost(connection.clientSecret)
-      : client.ClientSecretBasic(connection.clientSecret);
+      ? clientSecretPost(connection.clientSecret)
+      : clientSecretBasic(connection.clientSecret);
   const config = await client.discovery(
     issuer,
     cfg.clientId,

@@ -1950,6 +1950,8 @@ export type ReplyReason = (typeof REPLY_REASONS)[number];
  * comment's id. The same shapes a reply can be posted to.
  */
 export const THREAD_ID = /^[0-9a-f]{1,64}$|^[0-9]{1,20}$/;
+/** That pattern as a quoted SQL literal for the CHECK. */
+const THREAD_ID_SQL = `'${THREAD_ID.source}'`;
 
 /**
  * What Qualor does with people's notes in a merge request: one row for each note it handles, a
@@ -2045,6 +2047,6 @@ export const reviewReplies = pgTable(
     ),
     check('review_replies_verdict_check', sql`verdict IN ('keep','wont_fix','false_positive')`),
     check('review_replies_answer_length', sql`char_length(answer) <= 1200`),
-    check('review_replies_thread_id_format', sql`thread_id ~ ${sql.raw(`'${THREAD_ID.source}'`)}`),
+    check('review_replies_thread_id_format', sql`thread_id ~ ${sql.raw(THREAD_ID_SQL)}`),
   ],
 );

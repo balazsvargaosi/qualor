@@ -40,6 +40,12 @@ export const storedTestSchema = z.strictObject({
 });
 export type StoredTest = z.infer<typeof storedTestSchema>;
 
+/** Code-unit order of two strings, for a sort. */
+function byteOrder(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 /**
  * The digest a Test is tied to: the provider as calls see it, with the models of its tiers
  * (`comparedProvider`), and the initialization vector of its key's envelope, which is new whenever
@@ -51,9 +57,7 @@ export type StoredTest = z.infer<typeof storedTestSchema>;
 export function testFingerprint(p: StoredProvider): string {
   const compared = { ...comparedProvider(p), keyIv: p.apiKeyEnc?.iv ?? null };
   // Keys in byte order, so that the digest does not depend on how the fields are listed.
-  const sorted = Object.fromEntries(
-    Object.entries(compared).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-  );
+  const sorted = Object.fromEntries(Object.entries(compared).sort(([a], [b]) => byteOrder(a, b)));
   return createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
 }
 
