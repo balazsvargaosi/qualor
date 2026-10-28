@@ -248,53 +248,68 @@ function spansJoinedAt(text: string, start: number): { out: string; end: number 
   }
 }
 
-/** The word of a line that begins at `at`, as prose writes it, and where the next one may begin. */
-function proseWordAt(text: string, at: number): { out: string; next: number } {
-  // The model's own span or spans, with the mark that opens before them and what is glued after.
+/**
+ * The model's own span or spans at `at`, with the mark that opens before them and what is glued
+ * after, as one word; null when there are none, or when something else is glued to them (then the
+ * whole of it is one ordinary word).
+ */
+function spansWordAt(text: string, at: number): { out: string; next: number } | null {
   const opener =
     PROSE_OPENERS.includes(text.charAt(at)) && text[at + 1] === '`' ? text.charAt(at) : '';
   const start = at + opener.length;
   const spans = text[start] === '`' ? spansJoinedAt(text, start) : null;
-  if (spans !== null) {
-    const space = text.indexOf(' ', spans.end);
-    const end = space < 0 ? text.length : space;
-    const glued = text.slice(spans.end, end);
-    // Anything else glued to them makes the whole of it one ordinary word, below.
-    if (plainAfterSpans(glued)) return { out: `${opener}${spans.out}${glued}`, next: end };
-    // A dash after them (and the plain ending or closing marks that come first) joins them to the
-    // next piece, which is read on its own, from its start.
-    const dash = glued.search(/[—–]/);
-    if (dash >= 0 && plainAfterSpans(glued.slice(0, dash))) {
-      const join = dashJoinEnd(glued, dash);
-      const head = `${opener}${spans.out}${glued.slice(0, join)}`;
-      if (join >= glued.length) return { out: head, next: end };
-      const rest = proseWordAt(text, spans.end + join);
-      return { out: `${head}${rest.out}`, next: rest.next };
-    }
+  if (spans === null) return null;
+  const space = text.indexOf(' ', spans.end);
+  const end = space < 0 ? text.length : space;
+  const glued = text.slice(spans.end, end);
+  if (plainAfterSpans(glued)) return { out: `${opener}${spans.out}${glued}`, next: end };
+  // A dash after them (and the plain ending or closing marks that come first) joins them to the
+  // next piece, which is read on its own, from its start.
+  const dash = glued.search(/[—–]/);
+  if (dash < 0 || !plainAfterSpans(glued.slice(0, dash))) return null;
+  const join = dashJoinEnd(glued, dash);
+  const head = `${opener}${spans.out}${glued.slice(0, join)}`;
+  if (join >= glued.length) return { out: head, next: end };
+  const rest = proseWordAt(text, spans.end + join);
+  return { out: `${head}${rest.out}`, next: rest.next };
+}
+
+/**
+ * An ordinary word with an em or en dash between two pieces: each piece is read on its own (the
+ * second from its start, so that a span of the model's after the dash stays one), and the dash
+ * stays plain. Null when there is no such dash. A range of hashes is no join: it stays one span.
+ */
+function dashSplitWordAt(
+  text: string,
+  at: number,
+  word: string,
+): { out: string; next: number } | null {
+  if (PROSE_RANGE.test(word)) return null;
+  for (let i = 0; i < word.length; i += 1) {
+    if (word.charAt(i) === '`') break;
+    if (i === 0) continue;
+    if (!PROSE_DASHES.has(word.charAt(i))) continue;
+    const join = dashJoinEnd(word, i);
+    if (join >= word.length) break;
+    const head = word.slice(0, i);
+    const rest = proseWordAt(text, at + join);
+    return {
+      out: `${isPlainProse(head) ? head : wordSpan(head)}${word.slice(i, join)}${rest.out}`,
+      next: rest.next,
+    };
   }
+  return null;
+}
+
+/** The word of a line that begins at `at`, as prose writes it, and where the next one may begin. */
+function proseWordAt(text: string, at: number): { out: string; next: number } {
+  const spans = spansWordAt(text, at);
+  if (spans !== null) return spans;
   const space = text.indexOf(' ', at);
   const end = space < 0 ? text.length : space;
   const word = text.slice(at, end);
   if (isPlainProse(word)) return { out: word, next: end };
-  // An em or en dash between two pieces: each piece is read on its own (the second from its start,
-  // so that a span of the model's after the dash stays one), and the dash stays plain.
-  // A range of hashes is no join: it stays one span.
-  if (!PROSE_RANGE.test(word)) {
-    for (let i = 0; i < word.length; i += 1) {
-      if (word.charAt(i) === '`') break;
-      if (i === 0) continue;
-      if (!PROSE_DASHES.has(word.charAt(i))) continue;
-      const join = dashJoinEnd(word, i);
-      if (join >= word.length) break;
-      const head = word.slice(0, i);
-      const rest = proseWordAt(text, at + join);
-      return {
-        out: `${isPlainProse(head) ? head : wordSpan(head)}${word.slice(i, join)}${rest.out}`,
-        next: rest.next,
-      };
-    }
-  }
-  return { out: wordSpan(word), next: end };
+  return dashSplitWordAt(text, at, word) ?? { out: wordSpan(word), next: end };
 }
 
 /** One line of prose, without its list marker: plain words as they are, anything else in a code span. */
