@@ -504,14 +504,12 @@ async function checkModel(
       answer.model === null || (apiKey.key !== null && answer.model.includes(apiKey.key))
         ? null
         : modelName(answer.model);
-    const code: LlmErrorCode | null =
-      answer.finishReason === 'length'
-        ? 'OUTPUT_TRUNCATED'
-        : answer.finishReason === 'refusal'
-          ? 'MODEL_REFUSED'
-          : answer.finishReason === 'tool' || parseModelJson(answer.text) === undefined
-            ? 'MALFORMED_OUTPUT'
-            : null;
+    let code: LlmErrorCode | null = null;
+    if (answer.finishReason === 'length') code = 'OUTPUT_TRUNCATED';
+    else if (answer.finishReason === 'refusal') code = 'MODEL_REFUSED';
+    else if (answer.finishReason === 'tool' || parseModelJson(answer.text) === undefined) {
+      code = 'MALFORMED_OUTPUT';
+    }
     return {
       ok: code === null,
       reportedModel,

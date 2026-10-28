@@ -261,7 +261,10 @@ export async function transitionIssuesIn(
   const rows = [...changes].map(([id, from]) => ({ id, from_status: from }));
   const applied = await writeStatus(tx, rows, to, user.id);
   const log = applied
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .sort((a, b) => {
+      if (a.id === b.id) return 0;
+      return a.id < b.id ? -1 : 1;
+    })
     .map((a) => ({
       id: uuidv7(),
       issue_id: a.id,

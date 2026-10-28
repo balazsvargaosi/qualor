@@ -255,6 +255,15 @@ function usageAnswer(settings: StoredLlmSettings, spent: ReviewUsage): Organizat
   };
 }
 
+/** llm.md §3.3: each project once, in order; the id of a project deleted since is dropped. */
+function ownProjectIds(
+  ids: readonly string[],
+  owners: ReadonlyMap<string, string>,
+  organizationId: string,
+): string[] {
+  return [...new Set(ids)].filter((id) => owners.get(id) === organizationId).sort();
+}
+
 /**
  * The answer for the organisation: `projectIds` are those of its projects that still exist, and
  * `test` is the stored last Test of the provider, fresh or not.
@@ -269,8 +278,9 @@ function organizationReview(
 ): OrganizationReview {
   const provider = reviewProvider(settings);
   const organization = organizationSettings(settings, organizationId);
-  const unavailableReason =
-    provider === null ? 'no_provider' : organization.enabled ? null : 'organization_disabled';
+  let unavailableReason: 'no_provider' | 'organization_disabled' | null = null;
+  if (provider === null) unavailableReason = 'no_provider';
+  else if (!organization.enabled) unavailableReason = 'organization_disabled';
   const review = organization.review;
   return {
     available: unavailableReason === null,
@@ -399,10 +409,10 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
             { errors: foreign },
           );
         }
-        // llm.md §3.3: each project once, in order; the id of a project deleted since is dropped.
-        const ownProjects = (ids: readonly string[]): string[] =>
-          [...new Set(ids)].filter((id) => owners.get(id) === organizationId).sort();
-        const stored: ReviewSettings = { ...current, projectIds: ownProjects(current.projectIds) };
+        const stored: ReviewSettings = {
+          ...current,
+          projectIds: ownProjectIds(current.projectIds, owners, organizationId),
+        };
         const provider = reviewProvider(settings);
         // Switching it on: from off, or confirming again when the provider's address, host or set of
         // models changed (the consent no longer names them all).
@@ -443,7 +453,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
         const next: ReviewSettings = {
           enabled: body.enabled,
           scope: body.scope,
-          projectIds: ownProjects(requested),
+          projectIds: ownProjectIds(requested, owners, organizationId),
           budgets: body.budgets,
           consent,
         };

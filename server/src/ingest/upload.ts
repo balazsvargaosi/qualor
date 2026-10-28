@@ -166,11 +166,11 @@ export async function readGzipUpload(
       }
     }
     function onGunzipError(err: unknown): void {
-      fail(
-        isZlibError(err)
-          ? problems.invalidGzip(compressed === 0 ? 'Empty body' : 'Not valid gzip data')
-          : err,
-      );
+      if (!isZlibError(err)) {
+        fail(err);
+        return;
+      }
+      fail(problems.invalidGzip(compressed === 0 ? 'Empty body' : 'Not valid gzip data'));
     }
     function onGunzipEnd(): void {
       succeed();

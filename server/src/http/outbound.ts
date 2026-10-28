@@ -177,6 +177,41 @@ interface Cleared {
   open: () => http.ClientRequest | OutboundFailed;
 }
 
+/** The addresses `host` resolves to within `connectMs`, or why it does not. */
+async function addressesOf(
+  host: string,
+  resolver: Resolver | undefined,
+  connectMs: number,
+  noun: string,
+): Promise<LookupAddress[] | OutboundFailed> {
+  const literal = isIP(host);
+  if (literal !== 0) return [{ address: host, family: literal }];
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const resolved = await Promise.race([
+      (resolver ?? systemResolver)(host),
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), connectMs);
+      }),
+    ]);
+    // A lookup still running at the connect deadline is a name that does not resolve (a
+    // single-label host the resolver keeps retrying, EAI_AGAIN after its own timeouts), not a
+    // host that is slow to connect.
+    if (resolved === 'timeout') {
+      return fail(
+        `The ${noun} host could not be resolved within ${durationText(connectMs)}`,
+        'unresolved',
+        true,
+      );
+    }
+    return resolved;
+  } catch {
+    return fail(`The ${noun} host could not be resolved`, 'unresolved', true);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * The checks before a connection, which every exchange of this module makes, and which are made
  * here only:
@@ -215,38 +250,10 @@ async function clear(
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     return fail(`The ${noun} URL is not http or https`, 'invalid_url');
   }
-  const host = hostOf(url);
-  let addresses: LookupAddress[];
-  const literal = isIP(host);
   const unresolved = fail(`The ${noun} host could not be resolved`, 'unresolved', true);
-  if (literal !== 0) {
-    addresses = [{ address: host, family: literal }];
-  } else {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      const resolved = await Promise.race([
-        (options.resolve ?? systemResolver)(host),
-        new Promise<'timeout'>((resolve) => {
-          timer = setTimeout(() => resolve('timeout'), connectMs);
-        }),
-      ]);
-      // A lookup still running at the connect deadline is a name that does not resolve (a
-      // single-label host the resolver keeps retrying, EAI_AGAIN after its own timeouts), not a
-      // host that is slow to connect.
-      if (resolved === 'timeout') {
-        return fail(
-          `The ${noun} host could not be resolved within ${durationText(connectMs)}`,
-          'unresolved',
-          true,
-        );
-      }
-      addresses = resolved;
-    } catch {
-      return unresolved;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
+  const resolved = await addressesOf(hostOf(url), options.resolve, connectMs, noun);
+  if (!Array.isArray(resolved)) return resolved;
+  const addresses = resolved;
   if (addresses.length === 0 || addresses.some((a) => isIP(a.address) === 0)) return unresolved;
   if (!options.allowInternalHosts && addresses.some((a) => isNonPublicAddress(a.address))) {
     return fail(
@@ -603,18 +610,15 @@ export async function outboundStream(
 ): Promise<OutboundStreamResult> {
   const { limits } = options;
   const { target } = options.names;
+  const timeoutText = (timer: OutboundStreamTimer): string => {
+    if (timer === 'first_byte') return `No response within ${durationText(limits.firstByteMs)}`;
+    if (timer === 'idle') return `No data from ${target} for ${durationText(limits.idleMs)}`;
+    return `The answer of ${target} was not complete within ${durationText(limits.totalMs)}`;
+  };
   const timeoutOf = (
     timer: OutboundStreamTimer,
   ): OutboundFailed & { timer: OutboundStreamTimer } => ({
-    ...fail(
-      timer === 'first_byte'
-        ? `No response within ${durationText(limits.firstByteMs)}`
-        : timer === 'idle'
-          ? `No data from ${target} for ${durationText(limits.idleMs)}`
-          : `The answer of ${target} was not complete within ${durationText(limits.totalMs)}`,
-      'timeout',
-      true,
-    ),
+    ...fail(timeoutText(timer), 'timeout', true),
     timer,
   });
   const checksTimer = limits.totalMs < limits.firstByteMs ? 'total' : 'first_byte';
