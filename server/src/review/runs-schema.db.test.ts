@@ -54,7 +54,14 @@ function reasonFor(status: ReviewRunStatus): ReviewSkipReason | ReviewFailureRea
   return null;
 }
 
-describe('review_runs and review_findings (6I-3, migration 0016_review_runs)', () => {
+/** The reasons a run in `status` may carry (null where the status takes none). */
+function reasonsAllowedFor(status: ReviewRunStatus): readonly (string | null)[] {
+  if (status === 'skipped') return REVIEW_SKIP_REASONS;
+  if (status === 'failed') return REVIEW_FAILURE_REASONS;
+  return [null];
+}
+
+describe('review_runs and review_runs and review_findings (6I-3, migration 0016_review_runs)', () => {
   let t: TestDatabase;
   let organizationId: string;
   let projectId: string;
@@ -346,12 +353,7 @@ describe('review_runs and review_findings (6I-3, migration 0016_review_runs)', (
       '',
     ];
     for (const status of REVIEW_RUN_STATUSES) {
-      const allowed: readonly (string | null)[] =
-        status === 'skipped'
-          ? REVIEW_SKIP_REASONS
-          : status === 'failed'
-            ? REVIEW_FAILURE_REASONS
-            : [null];
+      const allowed: readonly (string | null)[] = reasonsAllowedFor(status);
       for (const reason of reasons) {
         expect(
           await tryRun(analysisId, { status, reason: reason as never }),

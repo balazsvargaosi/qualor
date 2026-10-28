@@ -119,8 +119,10 @@ const FETCH_FILES = 16;
 // ─── Order, lines and hits ───────────────────────────────────────────────────
 
 /** UTF-16 units put in code point order: a surrogate (an astral character) sorts above U+FFFF. */
-const rank = (unit: number): number =>
-  unit < 0xd800 ? unit : unit < 0xe000 ? unit + 0x2000 : unit - 0x800;
+const rank = (unit: number): number => {
+  if (unit < 0xd800) return unit;
+  return unit < 0xe000 ? unit + 0x2000 : unit - 0x800;
+};
 
 /**
  * Orders strings by code point, as PostgreSQL's `"C"` collation orders UTF-8 text (JavaScript's

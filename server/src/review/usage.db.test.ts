@@ -205,12 +205,9 @@ describe('the review’s own usage (6I-3)', () => {
         .returning(),
     ).id;
     const analysisId = first(await t.db.insert(analyses).values({ projectId }).returning()).id;
-    const reason: { reason?: ReviewSkipReason | ReviewFailureReason } =
-      status === 'skipped'
-        ? { reason: 'draft' }
-        : status === 'failed'
-          ? { reason: 'internal' }
-          : {};
+    const reason: { reason?: ReviewSkipReason | ReviewFailureReason } = {};
+    if (status === 'skipped') reason.reason = 'draft';
+    else if (status === 'failed') reason.reason = 'internal';
     return first(
       await t.db
         .insert(reviewRuns)

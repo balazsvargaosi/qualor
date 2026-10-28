@@ -345,9 +345,8 @@ async function reconcileRun(
       .for('update', { skipLocked: true });
     if (locked === undefined) return 'none';
     // Under the run's lock, in a statement of its own: it sees a job queued until now.
-    const live = await tx.execute<{ live: boolean }>(
-      sql`SELECT ${liveJobOf(sql`${candidate.id}`)} AS live`,
-    );
+    const liveJob = liveJobOf(sql`${candidate.id}`);
+    const live = await tx.execute<{ live: boolean }>(sql`SELECT ${liveJob} AS live`);
     if (live.rows[0]?.live === true) return 'none';
     const { run, due } = locked;
     if (run.status === 'waiting' && !due) {
@@ -392,15 +391,12 @@ async function reconcileRun(
  * class) and left to the next sweep; the runs after it are swept all the same.
  */
 export async function reconcileStuckReviewRuns(db: Db, logger: SweepLogger): Promise<ReviewSweep> {
+  const runId = sql`${reviewRuns.id}`;
+  const noLiveJob = sql`NOT ${liveJobOf(runId)}`;
   const stuck = await db
     .select({ id: reviewRuns.id, branchId: reviewRuns.branchId })
     .from(reviewRuns)
-    .where(
-      and(
-        inArray(reviewRuns.status, ['waiting', 'running']),
-        sql`NOT ${liveJobOf(sql`${reviewRuns.id}`)}`,
-      ),
-    )
+    .where(and(inArray(reviewRuns.status, ['waiting', 'running']), noLiveJob))
     .orderBy(reviewRuns.id)
     .limit(SWEEP_BATCH);
   const swept: ReviewSweep = { ended: 0, queued: 0 };
