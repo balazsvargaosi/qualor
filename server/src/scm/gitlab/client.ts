@@ -360,20 +360,14 @@ export class GitLabClient {
     return `${this.projectPath(ref)}/merge_requests/${iid}`;
   }
 
-  /** `forbidden` is the text of a 403 ({@link GITLAB_FORBIDDEN}), which says what was refused. */
-  private async call(
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
-    path: string,
-    body?: unknown,
-    forbidden: string = GITLAB_FORBIDDEN.request,
-  ): Promise<{ status: number; headers: IncomingHttpHeaders; json: unknown }> {
+  private send(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: unknown) {
     if (this.requestCount >= this.maxRequests) {
       throw new GitLabError('budget', `More than ${this.maxRequests} GitLab requests in one job`);
     }
     this.requestCount += 1;
-    const result = await outboundRequest(
+    return outboundRequest(
       {
-        url: `${this.#connection.baseUrl}/api/v4${path}`,
+        url,
         method,
         headers: {
           'private-token': this.#connection.token,
@@ -396,6 +390,44 @@ export class GitLabClient {
         names: { noun: 'GitLab', target: 'GitLab' },
       },
     );
+  }
+
+  /**
+   * Where a moved project's 301/302/307/308 sends the next GET, or null: only the same origin,
+   * under `/api/v4/projects/`, so the token never goes elsewhere.
+   */
+  private movedProject(status: number, location: string | string[] | undefined, from: string) {
+    if (![301, 302, 307, 308].includes(status) || typeof location !== 'string' || !location) {
+      return null;
+    }
+    try {
+      const base = new URL(`${this.#connection.baseUrl}/api/v4/projects/`);
+      const target = new URL(location, from);
+      if (!new URL(from).pathname.startsWith(base.pathname)) return null;
+      if (target.origin !== base.origin || !target.pathname.startsWith(base.pathname)) return null;
+      return target.href;
+    } catch {
+      return null;
+    }
+  }
+
+  /** `forbidden` is the text of a 403 ({@link GITLAB_FORBIDDEN}), which says what was refused. */
+  private async call(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    body?: unknown,
+    forbidden: string = GITLAB_FORBIDDEN.request,
+  ): Promise<{ status: number; headers: IncomingHttpHeaders; json: unknown }> {
+    let url = `${this.#connection.baseUrl}/api/v4${path}`;
+    let result = await this.send(method, url, body);
+    if (method === 'GET' && result.kind !== 'failed') {
+      // A renamed or moved project answers 301 with its numeric id: follow once, on this GitLab only.
+      const moved = this.movedProject(result.status, result.headers.location, url);
+      if (moved) {
+        url = moved;
+        result = await this.send(method, url, body);
+      }
+    }
     if (result.kind === 'failed') {
       switch (result.cause) {
         case 'not_public':

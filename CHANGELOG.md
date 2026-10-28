@@ -12,6 +12,7 @@ All notable changes to Qualor are listed here, newest first. The format follows
 - A word that an em or en dash joins to a code span, as in `page`—and, no longer turns into one code span with the words around it. Each piece of the word is checked on its own, so a link or reference beside the dash still stays inert.
 - An analyzer's message in the summary comment and in the inline note reads as ordinary text, with its code in code spans, instead of one code block with literal backticks. Mentions, references, links and HTML in a message still stay inert.
 - GitHub's secondary rate limit no longer delays reviews posted at the same time: one installation decorates one pull request at a time, and the next waits a moment.
+- A GitLab project that was renamed or moved is followed to its new place: GitLab answers the old path with a redirect, and the connection test, replies and merge request state now follow it once on the same GitLab instead of failing with an HTTP error.
 
 ## [0.12.0] - 2026-10-28
 

@@ -189,7 +189,7 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
     expect(missing.message).toBe('The GitLab project was not found, or the token cannot see it');
   });
 
-  it('reports 429 with its Retry-After, 5xx as transient, a redirect as refused', async () => {
+  it('reports 429 with its Retry-After, 5xx as transient, a foreign redirect as refused', async () => {
     fake.inject('GET', /^\/user$/, { status: 429, headers: { 'retry-after': '7' } });
     const limited = await failure(client().currentUser());
     expect(limited).toMatchObject({ kind: 'rate_limited', retryAfterSeconds: 7, status: 429 });
@@ -814,13 +814,94 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
     expect(await client().createDiscussion('7', '12', 'x', position)).toBe('position_rejected');
   });
 
-  it("never follows a redirect and never puts GitLab's words or the token in an error", async () => {
+  it('follows a moved project once, on the same GitLab, under /api/v4/projects/ (GET only)', async () => {
+    const moved = (location: string) => ({ status: 301, headers: { location } });
+    // The old path answers 301 to the numeric id; the rest of the path and the query are kept.
+    fake.inject('GET', /^\/projects\/old%2Fname$/, moved(`${fake.url}/api/v4/projects/7`));
+    expect((await client().project('old/name')).id).toBe(7);
+    expect(fake.requests.map((r) => r.path)).toEqual(['/projects/old%2Fname', '/projects/7']);
+    expect(fake.requests[1]?.headers['private-token']).toBe(fake.token);
+    fake.clearRequests();
+    fake.inject(
+      'GET',
+      /^\/projects\/old%2Fname\/merge_requests\/12$/,
+      moved(`${fake.url}/api/v4/projects/7/merge_requests/12?x=1`),
+    );
+    expect((await client().mergeRequest('old/name', '12')).iid).toBe(12);
+    expect(fake.requests.map((r) => `${r.path}?${r.query}`)).toEqual([
+      '/projects/old%2Fname/merge_requests/12?',
+      '/projects/7/merge_requests/12?x=1',
+    ]);
+    for (const status of [302, 307, 308]) {
+      fake.clearRequests();
+      fake.inject('GET', /^\/projects\/old%2Fname$/, {
+        status,
+        headers: { location: `${fake.url}/api/v4/projects/7` },
+      });
+      expect((await client().project('old/name')).id).toBe(7);
+    }
+    // A second redirect is refused.
+    fake.clearRequests();
+    fake.inject('GET', /^\/projects\/old%2Fname$/, moved(`${fake.url}/api/v4/projects/8`));
+    fake.inject('GET', /^\/projects\/8$/, moved(`${fake.url}/api/v4/projects/7`));
+    expect(await failure(client().project('old/name'))).toMatchObject({
+      kind: 'refused',
+      message: 'GitLab answered HTTP 301',
+    });
+    expect(fake.requests).toHaveLength(2);
+  });
+
+  it('refuses a redirect to another origin or outside /api/v4/projects/, and never follows a non-GET', async () => {
+    const bad = [
+      'https://evil.example/api/v4/projects/7',
+      'http://127.0.0.1:1/api/v4/projects/7',
+      `${fake.url}/api/v4/user`,
+      `${fake.url}/api/v4/projects/../user`,
+      `${fake.url}/api/v4/projects`,
+      `${fake.url}/other/api/v4/projects/7`,
+      '//evil.example/api/v4/projects/7',
+      '',
+    ];
+    for (const location of bad) {
+      fake.clearRequests();
+      fake.inject('GET', /^\/projects\/old%2Fname$/, {
+        status: 301,
+        headers: location ? { location } : {},
+      });
+      expect(await failure(client().project('old/name')), location).toMatchObject({
+        kind: 'refused',
+        message: 'GitLab answered HTTP 301',
+      });
+      expect(fake.requests, location).toHaveLength(1);
+    }
+    fake.clearRequests();
     fake.inject('GET', /^\/user$/, {
       status: 301,
       headers: { location: `${fake.url}/api/v4/user` },
     });
     await failure(client().currentUser());
     expect(fake.requests).toHaveLength(1);
+    fake.clearRequests();
+    fake.inject('POST', /^\/projects\/7\/statuses\//, {
+      status: 307,
+      headers: { location: `${fake.url}/api/v4/projects/7/statuses/x` },
+    });
+    expect(
+      await failure(
+        client().setCommitStatus('7', 'a'.repeat(40), {
+          state: 'success',
+          name: 'qualor/app',
+          description: 'd',
+          targetUrl: null,
+          pipelineId: null,
+          ref: 'main',
+        }),
+      ),
+    ).toMatchObject({ kind: 'refused', message: 'GitLab answered HTTP 307' });
+    expect(fake.requests).toHaveLength(1);
+  });
+
+  it("never puts GitLab's words or the token in an error", async () => {
     fake.inject('GET', /^\/projects\/7$/, {
       status: 422,
       body: { message: `token ${fake.token} is <b>invalid</b>` },
