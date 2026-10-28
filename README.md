@@ -17,22 +17,22 @@ no lines-of-code licence.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/issues.png" alt="A project's issues: filters by severity and status with counts, the severity distribution, and each issue with its rule, file and line">
-      <br><sub><b>Issues</b>, filtered by severity, status, quality and rule</sub>
+      <img src="docs/screenshots/review-thread.png" alt="An AI review thread on a GitHub pull request: the finding that the last page of invoices is never exported, with a suggested change from page < pages to page <= pages">
+      <br><sub><b>AI review</b> on a pull request, with a suggested change</sub>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/issue-ai.png" alt="An issue with the code around it and the AI assistant's explanation of the finding and how to fix it">
-      <br><sub><b>An issue</b> with its code and the AI assistant</sub>
+      <img src="docs/screenshots/issue-ai-review.png" alt="The same AI finding in Qualor: the flagged code, the review's explanation and its suggested change, marked as never counting in the quality gate">
+      <br><sub><b>The finding in Qualor</b>, beside the analyzers' issues</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/gate.png" alt="A quality gate's conditions, each edited in its row, and the form to add one">
-      <br><sub><b>A quality gate</b> and its conditions</sub>
+      <img src="docs/screenshots/issues.png" alt="A project's issues: filters by severity and status with counts, the severity distribution, and each issue with its rule, file and line">
+      <br><sub><b>Issues</b>, filtered by severity, status, quality and rule</sub>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/projects.png" alt="The projects list: quality gate results, open issues, average coverage and lines of code across the organization, then each project's measures">
-      <br><sub><b>Projects</b> at a glance</sub>
+      <img src="docs/screenshots/gate.png" alt="A quality gate's conditions, each edited in its row, and the form to add one">
+      <br><sub><b>A quality gate</b> and its conditions</sub>
     </td>
   </tr>
 </table>
