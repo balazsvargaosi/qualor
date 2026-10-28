@@ -39,7 +39,9 @@ vi.mock('node:worker_threads', async () => {
     postMessage(job: FakeJob): void {
       this.emit('job', job);
     }
-    unref(): void {}
+    unref(): void {
+      // The fake thread is not on an event loop, so there is nothing to let go of.
+    }
     terminate(): Promise<number> {
       this.terminated = true;
       return Promise.resolve().then(() => {

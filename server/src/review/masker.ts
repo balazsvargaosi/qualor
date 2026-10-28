@@ -91,8 +91,10 @@ function workerEntry(): { url: URL; execArgv: string[] } {
   };
 }
 
-const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : typeof error === 'string' ? error : 'unknown error';
+const messageOf = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  return typeof error === 'string' ? error : 'unknown error';
+};
 
 /**
  * What a masker rejects with once it is closed: no text is masked after it. A masker whose signal
@@ -263,7 +265,8 @@ export class Masker {
         live.running = null;
         resolve(result);
       };
-      const job: MaskJob = { id: (this.nextId += 1), text };
+      this.nextId += 1;
+      const job: MaskJob = { id: this.nextId, text };
       live.running = { id: job.id, settle };
       live.worker.postMessage(job);
     });
@@ -317,12 +320,7 @@ export class Masker {
       resourceLimits: { maxOldGenerationSizeMb: this.heapMb },
     });
     this.started += 1;
-    let loaded: () => void = () => undefined;
-    let failed: (reason: unknown) => void = () => undefined;
-    const ready = new Promise<void>((resolve, reject) => {
-      loaded = resolve;
-      failed = reject;
-    });
+    const { promise: ready, resolve: loaded, reject: failed } = Promise.withResolvers<void>();
     // Awaited by whoever needs the worker; if nobody does, a failure is not an unhandled rejection.
     ready.catch(() => undefined);
     const startTimer = setTimeout(
