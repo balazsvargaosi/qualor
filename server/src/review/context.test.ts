@@ -104,11 +104,33 @@ async function contextOf(
   return { files, context, budget };
 }
 
+/** The text of a file of these lines, each ended by a line end. */
+const fileText = (rows: readonly string[]): string => `${rows.join('\n')}\n`;
+
+/** A file of `count` lines, `l0`, `l1`, and so on. */
+const numberedText = (count: number): string =>
+  fileText(Array.from({ length: count }, (_, i) => `l${i}`));
+
+const analyzerOn = (path: string): AnalyzerFinding => ({
+  ruleKey: 'eslint:x',
+  severity: 'low',
+  message: 'm',
+  path,
+  line: 1,
+});
+
+const reviewedBy = (context: ReviewContext, path: string): ReviewableChange => {
+  const found = context.reviewed.find((c) => c.path === path);
+  if (found === undefined) throw new Error(path);
+  return found;
+};
+
 /** A new file of these lines, as the snapshot holds it: its text and its patch. */
 function addedFile(lines: readonly string[]): { text: string; patch: string } {
+  const rows = [`@@ -0,0 +1,${lines.length} @@`, ...lines.map((line) => `+${line}`)];
   return {
     text: lines.map((line) => `${line}\n`).join(''),
-    patch: `${[`@@ -0,0 +1,${lines.length} @@`, ...lines.map((line) => `+${line}`)].join('\n')}\n`,
+    patch: fileText(rows),
   };
 }
 
@@ -244,7 +266,7 @@ describe('slices', () => {
   });
 
   it('merge windows that touch or overlap, and clip them to the file', async () => {
-    const lines = (n: number) => `${Array.from({ length: n }, (_, i) => `l${i + 1}`).join('\n')}\n`;
+    const lines = (n: number) => fileText(Array.from({ length: n }, (_, i) => `l${i + 1}`));
     // Lines 4, 6 and 10 are added.
     const patch = [
       '@@ -3,3 +3,5 @@',
@@ -283,11 +305,7 @@ describe('slices', () => {
       ],
       files: { 'a.ts': lines(12), 'b.ts': lines(8), 'e.ts': lines(10), 'far.ts': lines(100) },
     });
-    const by = (path: string): ReviewableChange => {
-      const found = context.reviewed.find((c) => c.path === path);
-      if (found === undefined) throw new Error(path);
-      return found;
-    };
+    const by = (path: string) => reviewedBy(context, path);
     // Windows with a line between them stay two; ones that overlap, or that touch (one ends at
     // the line before the next begins), are one.
     expect(headersOf(slicesOf(by('a.ts'), 1))).toEqual([
@@ -821,11 +839,11 @@ describe('the changes that are reviewed', () => {
         { path: 'gone.ts', status: 'deleted', patch: '@@ -1 +0,0 @@\n-x\n', since: [[1, 4]] },
       ],
       files: {
-        'a.ts': `${Array.from({ length: 10 }, (_, i) => `l${i}`).join('\n')}\n`,
+        'a.ts': numberedText(10),
         'b.ts': 'x\n',
         'c.ts': 'x\n',
-        'd.ts': `${Array.from({ length: 10 }, (_, i) => `l${i}`).join('\n')}\n`,
-        'e.ts': `${Array.from({ length: 10 }, (_, i) => `l${i}`).join('\n')}\n`,
+        'd.ts': numberedText(10),
+        'e.ts': numberedText(10),
       },
     });
     const since = (path: string) => context.reviewed.find((c) => c.path === path)?.since;
@@ -981,7 +999,7 @@ describe('the slice budget', () => {
     const count = 250;
     const path = (i: number) => `src/f${String(i).padStart(3, '0')}.ts`;
     const textOf = (i: number) =>
-      `${Array.from({ length: 60 }, (_, k) => `const v${i}_${k} = ${k};`).join('\n')}\n`;
+      fileText(Array.from({ length: 60 }, (_, k) => `const v${i}_${k} = ${k};`));
     const patchOf = (i: number) => `@@ -30 +30 @@\n-const old${i} = 0;\n+const v${i}_29 = 29;\n`;
     const { context } = await contextOf(
       {
@@ -1644,11 +1662,7 @@ describe('what the model is shown is masked as a whole text', () => {
       ],
       files: { 'head.txt': 'c\nd\n', 'tail.txt': 'a\nb\nc\n' },
     });
-    const by = (path: string): ReviewableChange => {
-      const found = context.reviewed.find((c) => c.path === path);
-      if (found === undefined) throw new Error(path);
-      return found;
-    };
+    const by = (path: string) => reviewedBy(context, path);
     // Removed lines come first when they were before the first line, and last when after the last.
     expect(slicesOf(by('head.txt'), 1)).toBe(
       ['@@ head.txt lines 1–1 of 2 @@', ' -a', ' -b', '1 c'].join('\n'),
@@ -1955,13 +1969,7 @@ describe('the administrator’s excluded paths', () => {
         files: { 'secrets/prod.ts': 'key\n', 'src/moved.ts': 'm\n', 'src/ok.ts': ok.text },
       }),
     );
-    const finding = (path: string): AnalyzerFinding => ({
-      ruleKey: 'eslint:x',
-      severity: 'low',
-      message: 'm',
-      path,
-      line: 1,
-    });
+    const finding = analyzerOn;
     const prior = (path: string): PriorFinding => ({
       id: path,
       category: 'logic',
@@ -2090,13 +2098,7 @@ describe('the context in the envelope', () => {
 
 describe('the context', () => {
   it('asks for the analyzer findings of the reviewed paths, after the skip rules and the exclusions', async () => {
-    const finding = (path: string): AnalyzerFinding => ({
-      ruleKey: 'eslint:x',
-      severity: 'low',
-      message: 'm',
-      path,
-      line: 1,
-    });
+    const finding = analyzerOn;
     const edit = '@@ -1 +1 @@\n-a\n+b\n';
     const loaded: (readonly string[])[] = [];
     const { context } = await contextOf(
@@ -2236,14 +2238,6 @@ describe('the context', () => {
 });
 
 describe('how much of the merge request a review shows, and where its findings belong', () => {
-  const analyzerOn = (path: string): AnalyzerFinding => ({
-    ruleKey: 'eslint:x',
-    severity: 'low',
-    message: 'm',
-    path,
-    line: 1,
-  });
-
   it('asks the review for its limits with the shape of the change, before anything is masked or cut', async () => {
     const spy = maskerOf();
     const shapes: ContextShape[] = [];

@@ -377,6 +377,101 @@ interface Candidate {
   size: number;
 }
 
+/** The paths to read, in the order of the changes and each once: the files of the changes that are reviewed. */
+function pathsToRead(changes: readonly SnapshotChange[], options: ContextOptions): string[] {
+  return [
+    ...new Set(
+      changes.flatMap((given) => {
+        const change = readChange(given);
+        return isExcluded(change, options) ||
+          skippedByName(change.path) !== null ||
+          change.status === 'deleted'
+          ? []
+          : [change.path];
+      }),
+    ),
+  ];
+}
+
+/** The reader of the files of `toRead`, CLASSIFY_BATCH at a time; the paths are asked for in that order. */
+function fileReader(
+  toRead: readonly string[],
+  files: MaskedFiles,
+): (path: string) => Promise<SnapshotFile> {
+  let read = new Map<string, SnapshotFile>();
+  let fetched = 0;
+  return async (path) => {
+    const held = read.get(path);
+    if (held !== undefined) return held;
+    // A path asked for twice (a snapshot holds a path once) whose batch has gone is read alone.
+    if (toRead.indexOf(path) < fetched) return files.reader.file(path);
+    // Reached in order, so this path opens the next batch.
+    const batch = toRead.slice(fetched, fetched + CLASSIFY_BATCH);
+    fetched += batch.length;
+    read = await files.reader.files(batch);
+    return read.get(path) ?? { kind: 'absent' };
+  };
+}
+
+/** What a change's file says of it: why it is not reviewed, or its stored text and why that is not shown. */
+type FileJudgement = { skip: SkipReason } | { stored: TextLines | null; unshown: Unshown | null };
+
+function judgeFile(change: SnapshotChange, file: SnapshotFile): FileJudgement {
+  switch (file.kind) {
+    case 'text': {
+      // The text as stored, only to read its lines: it is not masked and never shown.
+      const text = MaskedText.of(file.text, lineCountOf(file.text));
+      if (isGenerated(text)) return { skip: 'generated' };
+      if (isMinified(text)) return { skip: 'minified' };
+      return { stored: text, unshown: null };
+    }
+    case 'omitted':
+      if (file.reason === 'binary') return { skip: 'binary' };
+      return { stored: null, unshown: 'no_text' };
+    case 'absent':
+      return { stored: null, unshown: change.status === 'deleted' ? 'deleted' : 'no_text' };
+  }
+}
+
+/** The candidate of a change that is reviewed, from its stored text (if it has one) and why that is not shown. */
+function candidateOf(
+  change: SnapshotChange,
+  stored: TextLines | null,
+  shown: Unshown | null,
+): Candidate {
+  let unshown = shown;
+  const lines = stored === null ? null : stored.lineCount;
+  const facts = patchFacts(change, lines);
+  if (unshown === null && !facts.readable) unshown = 'unreadable';
+  return {
+    change: {
+      path: change.path,
+      oldPath: change.oldPath,
+      status: change.status,
+      since: lines === null ? change.since : clipSince(change.since, lines),
+      hasPatch: change.patch !== null,
+      patchUsable: change.patch !== null && facts.readable,
+      lines,
+      text: null,
+      added: facts.added,
+      removalPoints: change.status === 'deleted' ? [] : removalPointsOf(facts.removals, lines),
+      changedLines: facts.changedLines,
+      sensitive: SENSITIVE_PATH.test(change.path),
+      removed: [],
+      unshown,
+    },
+    patch: change.patch,
+    size:
+      stored === null || unshown !== null
+        ? 0
+        : sliceChars(
+            { path: change.path, added: facts.added, removed: facts.removals },
+            stored,
+            CONTEXT_MAXIMA.sliceChars,
+          ),
+  };
+}
+
 /**
  * The changes of a merge request that are reviewed, and the ones that are not, with why. Reviewed
  * is everything but the lock files, the generated and the minified files, and the changes with
@@ -397,32 +492,7 @@ async function classify(
 ): Promise<{ candidates: Candidate[]; skipped: SkippedChange[] }> {
   const candidates: Candidate[] = [];
   const skipped: SkippedChange[] = [];
-  // The files to read, in the order of the changes and each once, read CLASSIFY_BATCH at a time.
-  const toRead = [
-    ...new Set(
-      changes.flatMap((given) => {
-        const change = readChange(given);
-        return isExcluded(change, options) ||
-          skippedByName(change.path) !== null ||
-          change.status === 'deleted'
-          ? []
-          : [change.path];
-      }),
-    ),
-  ];
-  let read = new Map<string, SnapshotFile>();
-  let fetched = 0;
-  const fileOf = async (path: string): Promise<SnapshotFile> => {
-    const held = read.get(path);
-    if (held !== undefined) return held;
-    // A path asked for twice (a snapshot holds a path once) whose batch has gone is read alone.
-    if (toRead.indexOf(path) < fetched) return files.reader.file(path);
-    // Reached in order, so this path opens the next batch.
-    const batch = toRead.slice(fetched, fetched + CLASSIFY_BATCH);
-    fetched += batch.length;
-    read = await files.reader.files(batch);
-    return read.get(path) ?? { kind: 'absent' };
-  };
+  const fileOf = fileReader(pathsToRead(changes, options), files);
   for (const given of changes) {
     const change = readChange(given);
     if (isExcluded(change, options)) continue;
@@ -433,70 +503,16 @@ async function classify(
     }
     const file: SnapshotFile =
       change.status === 'deleted' ? { kind: 'absent' } : await fileOf(change.path);
-
-    let stored: TextLines | null = null;
-    let unshown: Unshown | null = null;
-    switch (file.kind) {
-      case 'text': {
-        // The text as stored, only to read its lines: it is not masked and never shown.
-        const text = MaskedText.of(file.text, lineCountOf(file.text));
-        if (isGenerated(text)) {
-          skipped.push({ path: change.path, why: 'generated' });
-          continue;
-        }
-        if (isMinified(text)) {
-          skipped.push({ path: change.path, why: 'minified' });
-          continue;
-        }
-        stored = text;
-        break;
-      }
-      case 'omitted':
-        if (file.reason === 'binary') {
-          skipped.push({ path: change.path, why: 'binary' });
-          continue;
-        }
-        unshown = 'no_text';
-        break;
-      case 'absent':
-        unshown = change.status === 'deleted' ? 'deleted' : 'no_text';
-        break;
+    const judged = judgeFile(change, file);
+    if ('skip' in judged) {
+      skipped.push({ path: change.path, why: judged.skip });
+      continue;
     }
     if (change.patch === null && file.kind !== 'text') {
       skipped.push({ path: change.path, why: 'binary' });
       continue;
     }
-
-    const lines = stored === null ? null : stored.lineCount;
-    const facts = patchFacts(change, lines);
-    if (unshown === null && !facts.readable) unshown = 'unreadable';
-    candidates.push({
-      change: {
-        path: change.path,
-        oldPath: change.oldPath,
-        status: change.status,
-        since: lines === null ? change.since : clipSince(change.since, lines),
-        hasPatch: change.patch !== null,
-        patchUsable: change.patch !== null && facts.readable,
-        lines,
-        text: null,
-        added: facts.added,
-        removalPoints: change.status === 'deleted' ? [] : removalPointsOf(facts.removals, lines),
-        changedLines: facts.changedLines,
-        sensitive: SENSITIVE_PATH.test(change.path),
-        removed: [],
-        unshown,
-      },
-      patch: change.patch,
-      size:
-        stored === null || unshown !== null
-          ? 0
-          : sliceChars(
-              { path: change.path, added: facts.added, removed: facts.removals },
-              stored,
-              CONTEXT_MAXIMA.sliceChars,
-            ),
-    });
+    candidates.push(candidateOf(change, judged.stored, judged.unshown));
   }
   return { candidates, skipped };
 }
@@ -650,7 +666,8 @@ function sliceChars(change: SliceInput, text: TextLines, limit: number): number 
 function bySlicePriority(a: ReviewableChange, b: ReviewableChange): number {
   if (a.sensitive !== b.sensitive) return a.sensitive ? -1 : 1;
   if (a.changedLines !== b.changedLines) return b.changedLines - a.changedLines;
-  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  if (a.path === b.path) return 0;
+  return a.path < b.path ? -1 : 1;
 }
 
 /** Where to read a change whose slices the model does not get: its file, when the snapshot has one. */
@@ -683,83 +700,111 @@ interface Tally {
  * that has no slices is listed, with the reason, except a deleted file: the first `maxListed`
  * (the caps' `notInSlices`) in order of importance, then the number of the others.
  */
-async function cutSlices(
-  candidates: readonly Candidate[],
-  files: MaskedFiles,
-  masker: Masker,
-  mask: Mask,
-  options: ContextOptions,
-  tally: Tally,
-  sliceChars: number,
-  maxListed: number,
-): Promise<{ slices: string; omitted: string[]; unlisted: number }> {
-  const parts: string[] = [];
-  const omitted: string[] = [];
-  let used = 0;
-  const leaveOut = (change: ReviewableChange, why: 'timeout' | 'budget') => {
-    change.unshown = why;
-    omitted.push(`${change.path}: not shown: ${WHY[why]}`);
+async function cutSlices(input: CutInput): Promise<{
+  slices: string;
+  omitted: string[];
+  unlisted: number;
+}> {
+  const cut: Cut = { parts: [], omitted: [], used: 0 };
+  const order = [...input.candidates].sort((a, b) => bySlicePriority(a.change, b.change));
+  for (const candidate of order) await cutOne(cut, candidate, input);
+  const listed = cut.omitted.slice(0, input.maxListed);
+  return {
+    slices: cut.parts.join('\n'),
+    omitted: listed,
+    unlisted: cut.omitted.length - listed.length,
   };
-  const order = [...candidates].sort((a, b) => bySlicePriority(a.change, b.change));
-  for (const { change, patch, size } of order) {
-    if (change.unshown === 'deleted') continue;
-    if (change.unshown !== null) {
-      omitted.push(toRead(change));
-      continue;
-    }
-    if (size === 0) {
-      // A patch too large to send says nothing of what changed: a file to read. One with no line
-      // in it (a rename, a mode) has nothing to show.
-      if (!change.hasPatch) omitted.push(toRead(change));
-      continue;
-    }
-    // Before the room: once the time for masking is spent, what the model is told is that the
-    // change could not be masked, whether or not it would have fitted.
-    if (masker.exhausted) {
-      leaveOut(change, 'budget');
-      continue;
-    }
-    const joiner = parts.length === 0 ? 0 : 1;
-    if (used + joiner + size > sliceChars) {
-      omitted.push(noRoom(change));
-      continue;
-    }
+}
 
-    const file = await files.file(change.path, options.budget);
-    if (file.kind === 'budget' || file.kind === 'timeout') {
-      leaveOut(change, file.kind);
-      continue;
-    }
-    if (file.kind !== 'text') {
-      // The snapshot no longer has the text it had when it was read to tell what the file is.
-      change.unshown = 'no_text';
-      omitted.push(notInSnapshot(change));
-      continue;
-    }
-    let redactions = file.redactions;
-    if (patch !== null) {
-      const facts = patchFacts({ status: change.status, patch }, change.lines);
-      const shown = await removedLines(patch, facts, mask);
-      change.removed = shown.removed;
-      redactions += shown.redactions;
-    }
-    const slice = [...sliceRows(change, file.text, CONTEXT_LINES)].join('\n');
-    if (used + joiner + slice.length > sliceChars) {
-      // What the masking put in the place of a secret is longer than the secret was. Nothing of
-      // the change is shown, so it keeps none of its removed rows and counts none of its
-      // replacements; those of its file are the next request's to report.
-      change.removed = [];
-      files.giveBack(change.path);
-      omitted.push(noRoom(change));
-      continue;
-    }
-    tally.redactions += redactions;
-    parts.push(slice);
-    used += joiner + slice.length;
-    change.text = files.keptText(change.path);
+/** What the cutting of the slices needs: the candidates, how the texts are read and masked, and the room. */
+interface CutInput {
+  candidates: readonly Candidate[];
+  files: MaskedFiles;
+  masker: Masker;
+  mask: Mask;
+  options: ContextOptions;
+  tally: Tally;
+  sliceChars: number;
+  maxListed: number;
+}
+
+/** The slices cut so far, the changes left out, and the characters the slices take. */
+interface Cut {
+  parts: string[];
+  omitted: string[];
+  used: number;
+}
+
+function leaveOut(cut: Cut, change: ReviewableChange, why: 'timeout' | 'budget'): void {
+  change.unshown = why;
+  cut.omitted.push(`${change.path}: not shown: ${WHY[why]}`);
+}
+
+/** Whether the change is settled before its file is read: it is listed, or left out, or has nothing to show. */
+function settledUnread(cut: Cut, { change, size }: Candidate, input: CutInput): boolean {
+  if (change.unshown === 'deleted') return true;
+  if (change.unshown !== null) {
+    cut.omitted.push(toRead(change));
+    return true;
   }
-  const listed = omitted.slice(0, maxListed);
-  return { slices: parts.join('\n'), omitted: listed, unlisted: omitted.length - listed.length };
+  if (size === 0) {
+    // A patch too large to send says nothing of what changed: a file to read. One with no line
+    // in it (a rename, a mode) has nothing to show.
+    if (!change.hasPatch) cut.omitted.push(toRead(change));
+    return true;
+  }
+  // Before the room: once the time for masking is spent, what the model is told is that the
+  // change could not be masked, whether or not it would have fitted.
+  if (input.masker.exhausted) {
+    leaveOut(cut, change, 'budget');
+    return true;
+  }
+  if (cut.used + joinerOf(cut) + size > input.sliceChars) {
+    cut.omitted.push(noRoom(change));
+    return true;
+  }
+  return false;
+}
+
+const joinerOf = (cut: Cut): number => (cut.parts.length === 0 ? 0 : 1);
+
+async function cutOne(cut: Cut, candidate: Candidate, input: CutInput): Promise<void> {
+  if (settledUnread(cut, candidate, input)) return;
+  const { change, patch } = candidate;
+  const { files, mask, tally } = input;
+  const joiner = joinerOf(cut);
+  const file = await files.file(change.path, input.options.budget);
+  if (file.kind === 'budget' || file.kind === 'timeout') {
+    leaveOut(cut, change, file.kind);
+    return;
+  }
+  if (file.kind !== 'text') {
+    // The snapshot no longer has the text it had when it was read to tell what the file is.
+    change.unshown = 'no_text';
+    cut.omitted.push(notInSnapshot(change));
+    return;
+  }
+  let redactions = file.redactions;
+  if (patch !== null) {
+    const facts = patchFacts({ status: change.status, patch }, change.lines);
+    const shown = await removedLines(patch, facts, mask);
+    change.removed = shown.removed;
+    redactions += shown.redactions;
+  }
+  const slice = [...sliceRows(change, file.text, CONTEXT_LINES)].join('\n');
+  if (cut.used + joiner + slice.length > input.sliceChars) {
+    // What the masking put in the place of a secret is longer than the secret was. Nothing of
+    // the change is shown, so it keeps none of its removed rows and counts none of its
+    // replacements; those of its file are the next request's to report.
+    change.removed = [];
+    files.giveBack(change.path);
+    cut.omitted.push(noRoom(change));
+    return;
+  }
+  tally.redactions += redactions;
+  cut.parts.push(slice);
+  cut.used += joiner + slice.length;
+  change.text = files.keptText(change.path);
 }
 
 // ─── The review's context ────────────────────────────────────────────────────
@@ -934,16 +979,16 @@ export async function buildReviewContext(
   const instructionsChars = heldTo(limits.instructionsChars, CONTEXT_MAXIMA.instructionsChars);
   const meta = await shownMeta(reader.meta, mask, tally, options, instructionsChars);
   const { analyzer, prior } = await shownFindings(found, findings.prior, mask, tally, options);
-  const { slices, omitted, unlisted } = await cutSlices(
+  const { slices, omitted, unlisted } = await cutSlices({
     candidates,
     files,
     masker,
     mask,
     options,
     tally,
-    heldTo(limits.sliceChars, CONTEXT_MAXIMA.sliceChars),
-    limits.lists.notInSlices,
-  );
+    sliceChars: heldTo(limits.sliceChars, CONTEXT_MAXIMA.sliceChars),
+    maxListed: limits.lists.notInSlices,
+  });
   return {
     meta,
     reviewed,
