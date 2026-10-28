@@ -23,7 +23,7 @@ import { markerOf } from '../markdown';
 import { ScmError } from '../provider';
 import type { DecorationPayload } from '../queue';
 import { statusName, summaryBody, type SummaryInput } from '../render';
-import { retryable } from '../runtime';
+import { installationSlotKey, retryable } from '../runtime';
 import {
   GITHUB_PR_NUMBER,
   GITHUB_TEXT,
@@ -501,18 +501,31 @@ export async function decorateGitHub(
     if (expected !== undefined && String(repo.id) !== expected) {
       return failed(new ScmError('refused', REPOSITORY_MISMATCH));
     }
-    const failures = new Failures();
-    // An analysis that is no longer the branch's latest leaves the threads and the summary as
-    // they are, and says nothing about them.
-    const latest =
-      branch.kind === 'merge_request' &&
-      GITHUB_PR_NUMBER.test(branch.name) &&
-      branch.lastAnalysisId === analysis.id;
-    const part = latest
-      ? await readPullRequest(deps, client, loaded, payload, `${app.slug}[bot]`, failures)
-      : NO_PULL_REQUEST;
-    const error = await writeDecoration(deps, client, loaded, part, app.slug, failures);
-    return error === null ? { kind: 'done', connectionId: connection.id } : failed(error);
+    // One decoration of an installation at a time (inside the organisation's slot): two reviews
+    // posted together draw GitHub's secondary rate limit. A busy installation is asked again soon.
+    const slot =
+      client.installationId === null
+        ? null
+        : installationSlotKey(connection.baseUrl, client.installationId);
+    if (slot !== null && !deps.runtime.installationSlots.tryTake(slot)) {
+      return { kind: 'busy', branchId: branch.id };
+    }
+    try {
+      const failures = new Failures();
+      // An analysis that is no longer the branch's latest leaves the threads and the summary as
+      // they are, and says nothing about them.
+      const latest =
+        branch.kind === 'merge_request' &&
+        GITHUB_PR_NUMBER.test(branch.name) &&
+        branch.lastAnalysisId === analysis.id;
+      const part = latest
+        ? await readPullRequest(deps, client, loaded, payload, `${app.slug}[bot]`, failures)
+        : NO_PULL_REQUEST;
+      const error = await writeDecoration(deps, client, loaded, part, app.slug, failures);
+      return error === null ? { kind: 'done', connectionId: connection.id } : failed(error);
+    } finally {
+      if (slot !== null) deps.runtime.installationSlots.release(slot);
+    }
   } catch (err) {
     if (err instanceof ScmError) return failed(err);
     throw err;

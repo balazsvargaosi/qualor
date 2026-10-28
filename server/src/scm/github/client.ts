@@ -817,6 +817,11 @@ export class GitHubClient {
     return found;
   }
 
+  /** The installation of the repository `useRepository` found, or null before it. */
+  get installationId(): number | null {
+    return this.#installationId;
+  }
+
   /**
    * github.md §4: the repository's installation (JWT) and what it grants, a token scoped to it
    * (cached), then `GET /repos/{owner}/{repo}`. The token asks for Contents (write) too where the

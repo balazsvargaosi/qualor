@@ -23,6 +23,7 @@ import { analyses, branches, reviewFindings, reviewRuns, scmConnections } from '
 import { SCM_TOKEN_AAD } from '../connections';
 import { markerOf } from '../markdown';
 import { enqueueDecoration } from '../queue';
+import { installationSlotKey } from '../runtime';
 import { statusName } from '../render';
 import { MAX_FILE_PAGES } from './decorate';
 import { NO_ANNOTATIONS_DIGEST, parseCheckRunExternalId } from './render';
@@ -1234,6 +1235,52 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     expect(runsOf(gone.repo.id)).toHaveLength(1);
     expect(reviewCommentsOf(gone.repo.id)).toEqual([]);
     expect(await queuedDecorations(h)).toEqual([]); // a 404 on the pull request is not retried
+  });
+
+  describe('one decoration at a time per installation', () => {
+    const slotKey = async (installationId: number) => {
+      const [row] = await h.ctx.db
+        .select({ baseUrl: scmConnections.baseUrl })
+        .from(scmConnections)
+        .where(eq(scmConnections.id, connectionId));
+      return installationSlotKey(row!.baseUrl, installationId);
+    };
+
+    it('answers busy while the installation is decorating, requeues the job, and runs it after', async () => {
+      const { repo, ingest } = await setup('gh/busy');
+      await ingest([3]);
+      const deps = githubDeps(h);
+      const key = await slotKey(777);
+      expect(deps.runtime.installationSlots.tryTake(key)).toBe(true);
+      await runDecorations(h, deps);
+      expect(writes()).toEqual([]); // nothing was written, nothing lost
+      expect(await queuedDecorations(h)).toHaveLength(1);
+      deps.runtime.installationSlots.release(key);
+      await runDecorations(h, deps);
+      expect(runsOf(repo.id)).toHaveLength(1);
+      expect(await queuedDecorations(h)).toEqual([]);
+      // the slot is free again after the job
+      expect(deps.runtime.installationSlots.tryTake(key)).toBe(true);
+    });
+
+    it('decorates another installation at the same time', async () => {
+      const other = nextRepo++;
+      fake.addRepository({ id: other, owner: 'acme', name: 'other-inst', installationId: 888 });
+      fake.addPull(other, {
+        number: 7,
+        title: 'x',
+        state: 'open',
+        headSha: HEAD,
+        baseSha: 'b'.repeat(40),
+        files: [{ filename: 'src/a.ts', patch: PATCH }],
+      });
+      const { ingest } = await setup('gh/other-inst', { repo: { id: other, name: 'other-inst' } });
+      await ingest([3]);
+      const deps = githubDeps(h);
+      expect(deps.runtime.installationSlots.tryTake(await slotKey(777))).toBe(true);
+      await runDecorations(h, deps);
+      expect(runsOf(other)).toHaveLength(1);
+    });
   });
 
   it('decorates only a report of its own provider', async () => {

@@ -154,12 +154,22 @@ export class OrganizationSlots {
   }
 }
 
+/**
+ * The key of an installation's slot: GitHub counts content-creating requests per installation, so
+ * two decorations of one installation must not run together (its secondary rate limit).
+ */
+export function installationSlotKey(baseUrl: string, installationId: number): string {
+  return `github:${baseUrl}|${installationId}`;
+}
+
 /** The per-process state of the decoration worker. */
 export interface ScmRuntime {
   circuit: CircuitBreaker;
   /** 4E-3b §1: the last outcome per connection, read by the support bundle. */
   health: ConnectionHealth;
   slots: OrganizationSlots;
+  /** One GitHub decoration in flight per installation (key: {@link installationSlotKey}). */
+  installationSlots: OrganizationSlots;
   /** github.md §4: installation tokens, shared by every job of the process. */
   githubTokens: InstallationTokenCache;
   /** github.md §5.3: mutations of one installation at least a second apart, per process. */
@@ -171,6 +181,7 @@ export function createScmRuntime(now: () => number = Date.now): ScmRuntime {
     circuit: new CircuitBreaker(now),
     health: new ConnectionHealth(now),
     slots: new OrganizationSlots(),
+    installationSlots: new OrganizationSlots(1),
     githubTokens: new InstallationTokenCache(now),
     githubPacer: new MutationPacer(now),
   };

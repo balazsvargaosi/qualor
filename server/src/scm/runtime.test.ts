@@ -1,6 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import { ScmError } from './provider';
-import { CircuitBreaker, ConnectionHealth, retryable } from './runtime';
+import {
+  CircuitBreaker,
+  ConnectionHealth,
+  createScmRuntime,
+  installationSlotKey,
+  retryable,
+} from './runtime';
+
+describe('one GitHub decoration at a time per installation', () => {
+  const key = installationSlotKey('https://api.github.com', 777);
+
+  it('keys a slot by the base URL and the installation', () => {
+    expect(key).toBe('github:https://api.github.com|777');
+    expect(installationSlotKey('https://ghe.example/api/v3', 777)).not.toBe(key);
+  });
+
+  it('answers busy to a second decoration of the installation until the first ends', () => {
+    const { installationSlots } = createScmRuntime();
+    expect(installationSlots.tryTake(key)).toBe(true);
+    expect(installationSlots.tryTake(key)).toBe(false);
+    installationSlots.release(key);
+    expect(installationSlots.tryTake(key)).toBe(true);
+  });
+
+  it('lets two installations decorate at once', () => {
+    const { installationSlots } = createScmRuntime();
+    expect(installationSlots.tryTake(key)).toBe(true);
+    expect(installationSlots.tryTake(installationSlotKey('https://api.github.com', 888))).toBe(
+      true,
+    );
+  });
+
+  it('leaves the organisation slots as they were (a GitLab decoration takes only those)', () => {
+    const { slots, installationSlots } = createScmRuntime();
+    expect(installationSlots.tryTake(key)).toBe(true);
+    expect(slots.tryTake('org')).toBe(true);
+    expect(slots.tryTake('org')).toBe(true);
+    expect(slots.tryTake('org')).toBe(false); // MAX_DECORATIONS_PER_ORGANIZATION, unchanged
+  });
+});
 
 describe('the circuit breaker of a connection (scm.md §4.2)', () => {
   it('opens after the threshold, then lets one probe through; the others wait for its answer', () => {
