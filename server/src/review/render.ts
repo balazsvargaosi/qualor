@@ -350,8 +350,9 @@ function promptItem(finding: Done['fixPrompt'][number], index: number): string[]
     maxChars: PROMPT_BODY_CHARS,
     maxLines: PROMPT_BODY_LINES,
   });
+  const heading = title === '' ? where : `${where} ${title}`;
   return [
-    `${index + 1}. ${title === '' ? where : `${where} ${title}`}`,
+    `${index + 1}. ${heading}`,
     ...(body === '' ? [] : body.split('\n').map((line) => (line === '' ? '' : `   ${line}`))),
   ];
 }
@@ -401,6 +402,25 @@ interface Plan {
   unplaced: number;
 }
 
+/** The block of the findings not on changed lines, `listedCount` of them listed; null when there are none. */
+function unplacedBlock(
+  items: readonly string[],
+  beyond: number,
+  listedCount: number,
+): string[] | null {
+  if (items.length + beyond === 0) return null;
+  const listed = items.slice(0, listedCount);
+  const more = beyond + items.length - listed.length;
+  const separator = listed.length > 0 && more > 0 ? [''] : [];
+  return [
+    UNPLACED,
+    '',
+    ...listed,
+    ...separator,
+    ...(more > 0 ? [`${MORE_PREFIX} ${more} more in Qualor`] : []),
+  ];
+}
+
 function doneSection(state: Done, words: Words, maxBytes: number): string[] {
   // The findings are the branch's, as they are now: only the newest analysis' section shows them.
   const current = state.latest !== false;
@@ -422,18 +442,8 @@ function doneSection(state: Done, words: Words, maxBytes: number): string[] {
     if (current) {
       blocks.push([findings]);
       if (plan.walkthrough && walkthrough.length > 0) blocks.push(walkthrough);
-      if (items.length + beyond > 0) {
-        const listed = items.slice(0, plan.unplaced);
-        const more = beyond + items.length - listed.length;
-        const separator = listed.length > 0 && more > 0 ? [''] : [];
-        blocks.push([
-          UNPLACED,
-          '',
-          ...listed,
-          ...separator,
-          ...(more > 0 ? [`${MORE_PREFIX} ${more} more in Qualor`] : []),
-        ]);
-      }
+      const unplaced = unplacedBlock(items, beyond, plan.unplaced);
+      if (unplaced !== null) blocks.push(unplaced);
     }
     if (notes !== '') blocks.push([notes]);
     if (reviewed !== null) blocks.push([reviewed]);
