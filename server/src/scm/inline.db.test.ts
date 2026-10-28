@@ -88,8 +88,22 @@ describe('the request budget (scm.md §4.3)', () => {
   });
 });
 
+/** The patch of a file the merge request adds, of `count` lines. */
+const addedDiff = (count: number): string => {
+  const rows = Array.from({ length: count }, (_, i) => `+l${i + 1}`);
+  return `@@ -0,0 +1,${count} @@\n${rows.join('\n')}\n`;
+};
+
 describe('GitLab inline discussions (scm.md §5.4)', () => {
   let h: IngestHarness;
+  /** The project's merge request branch. */
+  const branchOf = async (projectId: string) =>
+    first(
+      await h.ctx.db
+        .select({ id: branches.id })
+        .from(branches)
+        .where(and(eq(branches.projectId, projectId), eq(branches.kind, 'merge_request'))),
+    ).id;
   let fake: FakeGitLab;
   let nextGitLabProject = 200;
   let day = 1;
@@ -491,7 +505,7 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
         {
           oldPath: 'src/a.ts',
           newPath: 'src/a.ts',
-          diff: `@@ -0,0 +1,60 @@\n${Array.from({ length: 60 }, (_, i) => `+l${i + 1}`).join('\n')}\n`,
+          diff: addedDiff(60),
         },
       ],
     });
@@ -533,14 +547,6 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
       fake.requests.filter(
         (r) => r.method === 'POST' && /\/discussions\/[^/]+\/notes$/.test(r.path),
       );
-    /** The project's merge request branch. */
-    const branchOf = async (projectId: string) =>
-      first(
-        await h.ctx.db
-          .select({ id: branches.id })
-          .from(branches)
-          .where(and(eq(branches.projectId, projectId), eq(branches.kind, 'merge_request'))),
-      ).id;
     /** Another decoration of the analysis. */
     const redecorate = async (projectId: string, analysisId: string, deps = decorationDeps(h)) => {
       const branchId = await branchOf(projectId);
@@ -661,7 +667,7 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
           {
             oldPath: 'src/a.ts',
             newPath: 'src/a.ts',
-            diff: `@@ -0,0 +1,30 @@\n${Array.from({ length: 30 }, (_, i) => `+l${i + 1}`).join('\n')}\n`,
+            diff: addedDiff(30),
           },
         ],
       });
@@ -735,13 +741,6 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
     const DAY = 86_400_000;
     const daysAgo = (days: number) => new Date(Date.now() - days * DAY);
 
-    const branchOf = async (projectId: string) =>
-      first(
-        await h.ctx.db
-          .select({ id: branches.id })
-          .from(branches)
-          .where(and(eq(branches.projectId, projectId), eq(branches.kind, 'merge_request'))),
-      ).id;
     /** The issue a thread of Qualor's is for: the marker of its first note. */
     const issueOf = (thread: ReturnType<typeof threads>[number]): string => {
       const marker = thread.notes[0] === undefined ? null : markerOf(thread.notes[0].body);
@@ -774,7 +773,10 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
     const backdated = <T extends { createdAt?: string }>(note: T, days: number): T =>
       Object.assign(note, { createdAt: daysAgo(days).toISOString() });
     const requestsOf = () =>
-      fake.requests.map((r) => `${r.method} ${r.path}${r.query === '' ? '' : `?${r.query}`}`);
+      fake.requests.map((r) => {
+        const query = r.query === '' ? '' : `?${r.query}`;
+        return `${r.method} ${r.path}${query}`;
+      });
     /** The ledger's rows of the branch as [kind, note id], the oldest note first. */
     const queuedNotes = async (branchId: string) =>
       (await queuedAnswers(h.ctx.db, branchId)).rows.map((row) => [row.kind, row.noteId]);

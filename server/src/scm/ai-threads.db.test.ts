@@ -47,8 +47,10 @@ describe('GitLab decoration: AI review threads (6I-3, R16, R18)', () => {
   const PATH = 'src/cart.ts';
   /** The file the merge request adds, as the snapshot the review read holds it. */
   const LINES = Array.from({ length: 30 }, (_, i) => `export const line${i + 1} = ${i + 1};`);
-  const added = (lines: readonly string[]) =>
-    `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}\n`;
+  const added = (lines: readonly string[]) => {
+    const rows = lines.map((line) => `+${line}`);
+    return `@@ -0,0 +1,${lines.length} @@\n${rows.join('\n')}\n`;
+  };
   type Suggestion = { startLine: number; endLine: number; lines: string[] };
   /** A suggestion that applies to line 9 of LINES. */
   const LINE9: Suggestion = { startLine: 9, endLine: 9, lines: ['export const line9 = 90;'] };

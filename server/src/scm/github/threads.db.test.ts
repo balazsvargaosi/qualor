@@ -45,7 +45,8 @@ const MADE = '2026-09-26T10:00:00Z';
 
 /** The patch of a new file of `count` lines: every one is an added line. */
 function newFile(count: number): string {
-  return `@@ -0,0 +1,${count} @@\n${Array.from({ length: count }, (_, i) => `+l${i + 1}`).join('\n')}`;
+  const rows = Array.from({ length: count }, (_, i) => `+l${i + 1}`);
+  return `@@ -0,0 +1,${count} @@\n${rows.join('\n')}`;
 }
 
 /** A pacer that keeps the key of each request it paces: each is a mutation. */
@@ -85,7 +86,9 @@ function clientFor(
         options.pacer ??
         new MutationPacer(
           () => clock,
-          async (ms) => void (clock += ms),
+          async (ms) => {
+            clock += ms;
+          },
         ),
     },
   );
@@ -731,7 +734,9 @@ describe('GitHub review threads (github.md §6.4)', () => {
     let clock = 0;
     const pacer = new RecordingPacer(
       () => clock,
-      async (ms) => void (clock += ms),
+      async (ms) => {
+        clock += ms;
+      },
     );
     const tight = clientFor(fake, { maxRequests: pointing + 1, pacer });
     await tight.useRepository({ owner: 'acme', repo: s.repo.name });

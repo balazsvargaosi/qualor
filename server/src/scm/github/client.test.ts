@@ -72,7 +72,9 @@ describe('GitHub REST client (github.md §4–§6)', () => {
         tokens: new InstallationTokenCache(() => clock),
         pacer: new MutationPacer(
           () => clock,
-          async (ms) => void (clock += ms),
+          async (ms) => {
+            clock += ms;
+          },
         ),
         now: () => clock,
         ...options,
@@ -490,7 +492,9 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     await clientFor({ tokens }).useRepository(REPO); // a token, now cached
     const pacer = new SpyPacer(
       () => clock,
-      async (ms) => void (clock += ms),
+      async (ms) => {
+        clock += ms;
+      },
     );
     const client = clientFor({ tokens, pacer });
     await client.useRepository(REPO);
@@ -928,7 +932,9 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       const setup = probe.requests;
       const pacer = new SpyPacer(
         () => clock,
-        async (ms) => void (clock += ms),
+        async (ms) => {
+          clock += ms;
+        },
       );
       const client = clientFor({ tokens, pacer, maxRequests: setup + 2 });
       await client.useRepository(REPO);
@@ -1568,7 +1574,9 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       await clientFor({ tokens }).useRepository(REPO); // a token, now cached
       const pacer = new SpyPacer(
         () => clock,
-        async (ms) => void (clock += ms),
+        async (ms) => {
+          clock += ms;
+        },
       );
       const client = clientFor({ tokens, pacer });
       await client.useRepository(REPO); // reads only
