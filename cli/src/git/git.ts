@@ -160,10 +160,7 @@ export function createGit(
         failure = why;
         killTree(child.pid);
       };
-      const arm = () =>
-        setTimeout(() => {
-          kill('timeout');
-        }, timeoutMs);
+      const arm = () => setTimeout(kill, timeoutMs, 'timeout');
       let timer = arm();
       const collect = (into: Buffer[]) => (chunk: Buffer) => {
         if (failure === 'overflow') return;
@@ -174,7 +171,7 @@ export function createGit(
         }
         into.push(chunk);
       };
-      const take = (consume: (chunk: Buffer) => boolean) => (chunk: Buffer) => {
+      const take = (consume: (chunk: Buffer) => boolean, chunk: Buffer) => {
         if (failure !== null) return;
         let more: boolean;
         try {
@@ -192,7 +189,10 @@ export function createGit(
         clearTimeout(timer);
         timer = arm();
       };
-      child.stdout.on('data', stream === undefined ? collect(stdout) : take(stream));
+      child.stdout.on(
+        'data',
+        stream === undefined ? collect(stdout) : (chunk: Buffer) => take(stream, chunk),
+      );
       child.stderr.on('data', collect(stderr));
       if (options?.input !== undefined) {
         // git may stop reading before the end (a call that was stopped): no error of the call.

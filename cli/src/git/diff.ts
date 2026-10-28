@@ -112,82 +112,109 @@ export function parseUnifiedDiff(
   output: string,
   options: { deletions?: boolean } = {},
 ): Map<string, LineRange[]> {
-  const result = new Map<string, LineRange[]>();
-  let current: string | null = null;
-  let oldLeft = 0;
-  let newLeft = 0;
+  const reader = new UnifiedDiffReader(options.deletions === true);
+  for (const line of output.split('\n')) reader.line(line);
+  return reader.finish();
+}
+
+/** The state of one `parseUnifiedDiff` walk: fed a line at a time, then asked for the ranges. */
+class UnifiedDiffReader {
+  private readonly result = new Map<string, LineRange[]>();
+  private current: string | null = null;
+  private oldLeft = 0;
+  private newLeft = 0;
   /** The new-side line the next added or context line has. */
-  let newLine = 0;
-  let runStart: number | null = null;
-  let runEnd = 0;
+  private newLine = 0;
+  private runStart: number | null = null;
+  private runEnd = 0;
   /** Lines were removed since the last added or context line. */
-  let removed = false;
+  private removed = false;
+  private readonly deletions: boolean;
 
-  const record = (start: number, end: number) => {
-    if (current === null) return;
-    const list = result.get(current) ?? [];
-    list.push([start, end]);
-    result.set(current, list);
-  };
-  const flushRun = () => {
-    if (runStart === null) return;
-    record(runStart, runEnd);
-    runStart = null;
-  };
-  /** A run of removed lines ends before the line `newLine` is, or would be. */
-  const flushRemoved = () => {
-    if (removed && options.deletions === true) record(newLine, newLine);
-    removed = false;
-  };
+  constructor(deletions: boolean) {
+    this.deletions = deletions;
+  }
 
-  for (const line of output.split('\n')) {
-    if (oldLeft > 0 || newLeft > 0) {
-      if (line.startsWith('\\')) {
-        // "\ No newline at end of file": metadata about the previous line, consumes neither
-        // counter and is not itself a line, so it must not close or extend a run.
-        continue;
-      }
-      if (line.startsWith('-')) {
-        oldLeft--;
-        flushRun();
-        removed = true;
-      } else if (line.startsWith('+')) {
-        newLeft--;
-        flushRemoved();
-        if (runStart === null) runStart = newLine;
-        runEnd = newLine;
-        newLine++;
-      } else if (line.startsWith(' ')) {
-        oldLeft--;
-        newLeft--;
-        flushRemoved();
-        newLine++;
-        flushRun(); // an unchanged context line breaks contiguity; it is never "new"
-      } else {
-        flushRun();
-        flushRemoved();
-      }
-      continue;
+  line(line: string): void {
+    if (this.oldLeft > 0 || this.newLeft > 0) {
+      this.bodyLine(line);
+      return;
     }
-    flushRun(); // the previous hunk's body (if any) has ended
-    flushRemoved();
-    if (line.startsWith('diff --git ')) {
-      current = null;
-    } else if (line.startsWith('+++ ')) {
-      current = newSidePath(line.slice(4));
+    this.flushRun(); // the previous hunk's body (if any) has ended
+    this.flushRemoved();
+    this.headerLine(line);
+  }
+
+  finish(): Map<string, LineRange[]> {
+    this.flushRun();
+    this.flushRemoved();
+    for (const [p, ranges] of this.result) this.result.set(p, mergeRanges(ranges));
+    return this.result;
+  }
+
+  private record(start: number, end: number): void {
+    if (this.current === null) return;
+    const list = this.result.get(this.current) ?? [];
+    list.push([start, end]);
+    this.result.set(this.current, list);
+  }
+
+  private flushRun(): void {
+    if (this.runStart === null) return;
+    this.record(this.runStart, this.runEnd);
+    this.runStart = null;
+  }
+
+  /** A run of removed lines ends before the line `newLine` is, or would be. */
+  private flushRemoved(): void {
+    if (this.removed && this.deletions) this.record(this.newLine, this.newLine);
+    this.removed = false;
+  }
+
+  /** A line inside a hunk's body, which the header's counts say how long it is. */
+  private bodyLine(line: string): void {
+    if (line.startsWith('\\')) {
+      // "\ No newline at end of file": metadata about the previous line, consumes neither
+      // counter and is not itself a line, so it must not close or extend a run.
+      return;
+    }
+    if (line.startsWith('-')) {
+      this.oldLeft--;
+      this.flushRun();
+      this.removed = true;
+    } else if (line.startsWith('+')) {
+      this.newLeft--;
+      this.flushRemoved();
+      if (this.runStart === null) this.runStart = this.newLine;
+      this.runEnd = this.newLine;
+      this.newLine++;
+    } else if (line.startsWith(' ')) {
+      this.oldLeft--;
+      this.newLeft--;
+      this.flushRemoved();
+      this.newLine++;
+      this.flushRun(); // an unchanged context line breaks contiguity; it is never "new"
     } else {
-      const m = HUNK.exec(line);
-      if (m === null) continue;
-      oldLeft = m[1] === undefined ? 1 : Number(m[1]);
-      newLeft = m[3] === undefined ? 1 : Number(m[3]);
-      // A hunk with no new line (`+3,0`) names the line before it: what follows is the next one.
-      newLine = Number(m[2]) + (newLeft === 0 ? 1 : 0);
+      this.flushRun();
+      this.flushRemoved();
     }
   }
-  flushRun();
-  flushRemoved();
-  for (const [p, ranges] of result) result.set(p, mergeRanges(ranges));
-  return result;
+
+  /** A line outside any hunk body: a file's header or a hunk's. */
+  private headerLine(line: string): void {
+    if (line.startsWith('diff --git ')) {
+      this.current = null;
+    } else if (line.startsWith('+++ ')) {
+      this.current = newSidePath(line.slice(4));
+    } else {
+      const m = HUNK.exec(line);
+      if (m === null) return;
+      this.oldLeft = m[1] === undefined ? 1 : Number(m[1]);
+      this.newLeft = m[3] === undefined ? 1 : Number(m[3]);
+      // A hunk with no new line (`+3,0`) names the line before it: what follows is the next one.
+      this.newLine = Number(m[2]) + (this.newLeft === 0 ? 1 : 0);
+    }
+  }
 }
 
 const BINARY_DIFFER = /^Binary files (?:.+) and (.+) differ$/;
@@ -246,7 +273,9 @@ function quoteName(name: string): string {
  * on its own, as git does.
  */
 export function diffHeaderLine(from: string, to: string): string {
-  return `diff --git ${quoteName(`a/${from}`)} ${quoteName(`b/${to}`)}`;
+  const oldName = quoteName(`a/${from}`);
+  const newName = quoteName(`b/${to}`);
+  return `diff --git ${oldName} ${newName}`;
 }
 
 const DIFF_HEADER = Buffer.from('diff --git ');
