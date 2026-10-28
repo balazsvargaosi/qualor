@@ -46,11 +46,28 @@ def ok(message):
     print(f"ok   {message}", flush=True)
 
 
+def https_opener():
+    """An opener with no handler for file:, ftp: or plain http:, redirects included."""
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        urllib.request.ProxyHandler(),
+        urllib.request.HTTPSHandler(),
+        urllib.request.HTTPRedirectHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    opener.addheaders = [("User-Agent", "qualor-check-pins")]
+    return opener
+
+
+OPENER = https_opener()
+
+
 def get(url):
     if not url.startswith("https://"):
         fail(f"not https: {url}")
-    request = urllib.request.Request(url, headers={"User-Agent": "qualor-check-pins"})
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with OPENER.open(url, timeout=120) as response:
         return response.read()
 
 
