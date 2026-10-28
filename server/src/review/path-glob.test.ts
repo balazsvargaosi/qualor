@@ -101,6 +101,17 @@ describe('the path_glob language', () => {
   });
 });
 
+/** The expression for the run of stars that starts at `at`, and where the glob goes on after it. */
+function starsOf(chars: readonly string[], at: number): { source: string; next: number } {
+  let end = at;
+  while (chars[end] === '*') end += 1;
+  const segmentStart = at === 0 || chars[at - 1] === '/';
+  if (end - at >= 2 && segmentStart && chars[end] === '/') {
+    return { source: '(?:.*/)?', next: end + 1 };
+  }
+  return { source: end - at >= 2 ? '.*' : '[^/]*', next: end };
+}
+
 /**
  * The glob as a regular expression, for the small globs of a test (never for a model's: a regular
  * expression of its choosing could take exponential time). The same language as
@@ -116,16 +127,9 @@ function referenceRegExp(glob: string): RegExp {
       source += '[^/]';
       at += 1;
     } else if (char === '*') {
-      let end = at;
-      while (chars[end] === '*') end += 1;
-      const segmentStart = at === 0 || chars[at - 1] === '/';
-      if (end - at >= 2 && segmentStart && chars[end] === '/') {
-        source += '(?:.*/)?';
-        at = end + 1;
-      } else {
-        source += end - at >= 2 ? '.*' : '[^/]*';
-        at = end;
-      }
+      const stars = starsOf(chars, at);
+      source += stars.source;
+      at = stars.next;
     } else {
       source += char.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&');
       at += 1;

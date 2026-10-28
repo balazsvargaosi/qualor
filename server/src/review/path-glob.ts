@@ -74,21 +74,9 @@ export function compilePathGlob(glob: string): PathGlob {
       endRun();
       literal = false;
       wildcards += 1;
-      if (char === '?') {
-        tokens.push({ kind: 'one' });
-        at += 1;
-        continue;
-      }
-      let end = at;
-      while (chars[end] === '*') end += 1;
-      const segmentStart = at === 0 || chars[at - 1] === '/';
-      if (end - at >= 2 && segmentStart && chars[end] === '/') {
-        tokens.push({ kind: 'dirs' });
-        at = end + 1;
-      } else {
-        tokens.push({ kind: end - at >= 2 ? 'any' : 'segment' });
-        at = end;
-      }
+      const wildcard = wildcardAt(chars, at);
+      tokens.push(wildcard.token);
+      at = wildcard.next;
     } else {
       run.push(char);
       if (literal) prefix += char;
@@ -101,6 +89,18 @@ export function compilePathGlob(glob: string): PathGlob {
     wildcards,
     matches: (path, work) => globMatches(tokens, path, work),
   };
+}
+
+/** The wildcard that starts at `at` (a `*` or a `?`), and where the glob goes on after it. */
+function wildcardAt(chars: readonly string[], at: number): { token: GlobToken; next: number } {
+  if (chars[at] === '?') return { token: { kind: 'one' }, next: at + 1 };
+  let end = at;
+  while (chars[end] === '*') end += 1;
+  const segmentStart = at === 0 || chars[at - 1] === '/';
+  if (end - at >= 2 && segmentStart && chars[end] === '/') {
+    return { token: { kind: 'dirs' }, next: end + 1 };
+  }
+  return { token: { kind: end - at >= 2 ? 'any' : 'segment' }, next: end };
 }
 
 /** How many of the characters `chars` `text` holds from `at`, one after the other. */
@@ -121,6 +121,118 @@ let nextScratch = new Uint8Array(1_100);
 /** A UTF-16 surrogate: a path with none is read by position, and one with a pair by character. */
 const SURROGATE = new RegExp(`[${String.fromCharCode(0xd800)}-${String.fromCharCode(0xdfff)}]`);
 
+/**
+ * One walk of a path: the positions reached so far (`reach`, from `lo` to `hi`) and the positions
+ * after the token being walked (`next`, from `nextLo` to `nextHi`, which is -1 while there are
+ * none). The positions of `next` are marked in order.
+ */
+interface Walk {
+  text: string | readonly string[];
+  size: number;
+  reach: Uint8Array;
+  next: Uint8Array;
+  lo: number;
+  hi: number;
+  nextLo: number;
+  nextHi: number;
+}
+
+/** Marks the position `j` as reached by the token being walked. */
+function markNext(walk: Walk, j: number): void {
+  walk.next[j] = 1;
+  if (walk.nextHi < 0) walk.nextLo = j;
+  walk.nextHi = j;
+}
+
+/** Charges `steps` to the work of the search: false once it is out of them. */
+function charge(work: GlobWork, steps: number): boolean {
+  work.steps -= steps;
+  if (work.steps > 0) return true;
+  work.exhausted = true;
+  return false;
+}
+
+/** Walks a run of literal characters; returns the steps taken. */
+function walkText(walk: Walk, chars: readonly string[]): number {
+  const { reach, text, size } = walk;
+  const length = chars.length;
+  let steps = 0;
+  for (let j = walk.lo; j <= walk.hi; j += 1) {
+    steps += 1;
+    if (reach[j] !== 1 || j + length > size) continue;
+    const matched = holds(text, j, chars);
+    steps += matched;
+    if (matched === length) markNext(walk, j + length);
+  }
+  return steps;
+}
+
+/** Walks a `?`: any one character but a slash. */
+function walkOne(walk: Walk): number {
+  const { reach, text, size } = walk;
+  let steps = 0;
+  for (let j = walk.lo; j <= walk.hi; j += 1) {
+    steps += 1;
+    if (reach[j] === 1 && j < size && text[j] !== '/') markNext(walk, j + 1);
+  }
+  return steps;
+}
+
+/** Walks a `*`: from a reachable position on, up to and not past the next '/'. */
+function walkSegment(walk: Walk): number {
+  const { reach, text, size } = walk;
+  let steps = 0;
+  let open = false;
+  for (let j = walk.lo; j <= size; j += 1) {
+    steps += 1;
+    if (reach[j] === 1) open = true;
+    if (!open) continue;
+    markNext(walk, j);
+    if (text[j] === '/') {
+      if (j >= walk.hi) break;
+      open = false;
+    }
+  }
+  return steps;
+}
+
+/** Walks a `**`: every position from the first reached on. */
+function walkAny(walk: Walk): number {
+  walk.next.fill(1, walk.lo, walk.size + 1);
+  walk.nextLo = walk.lo;
+  walk.nextHi = walk.size;
+  return walk.size - walk.lo + 1;
+}
+
+/** Walks a `**` and its slash: nothing, or a run of characters that ends with the '/' just before the position. */
+function walkDirs(walk: Walk): number {
+  const { reach, text, size } = walk;
+  let steps = 0;
+  let open = false;
+  for (let j = walk.lo; j <= size; j += 1) {
+    steps += 1;
+    if (reach[j] === 1 || (open && j > 0 && text[j - 1] === '/')) markNext(walk, j);
+    if (reach[j] === 1) open = true;
+  }
+  return steps;
+}
+
+/** Walks one token from the positions reached; returns the steps taken. */
+function walkToken(walk: Walk, token: GlobToken): number {
+  switch (token.kind) {
+    case 'text':
+      return walkText(walk, token.chars);
+    case 'one':
+      return walkOne(walk);
+    case 'segment':
+      return walkSegment(walk);
+    case 'any':
+      return walkAny(walk);
+    case 'dirs':
+      return walkDirs(walk);
+  }
+}
+
 function globMatches(
   tokens: readonly GlobToken[],
   path: string,
@@ -134,117 +246,41 @@ function globMatches(
   const size = text.length;
   // Looking at a path costs its length, before a token is walked: the walk of a path that no token
   // takes anywhere is as long as that.
-  if (work !== undefined) {
-    work.steps -= size;
-    if (work.steps <= 0) {
-      work.exhausted = true;
-      return false;
-    }
-  }
+  if (work !== undefined && !charge(work, size)) return false;
   if (reachScratch.length < size + 1) {
     reachScratch = new Uint8Array(2 * (size + 1));
     nextScratch = new Uint8Array(2 * (size + 1));
   }
-  let reach = reachScratch;
-  let next = nextScratch;
-  reach[0] = 1;
-  /** The first and the last position in `reach`. */
-  let lo = 0;
-  let hi = 0;
-  /** The same in `next`: the positions are marked in order, so `nextHi` is -1 while there are none. */
-  let nextLo = 0;
-  let nextHi = -1;
+  const walk: Walk = {
+    text,
+    size,
+    reach: reachScratch,
+    next: nextScratch,
+    lo: 0,
+    hi: 0,
+    nextLo: 0,
+    nextHi: -1,
+  };
+  walk.reach[0] = 1;
   try {
     for (const token of tokens) {
-      nextLo = size + 1;
-      nextHi = -1;
-      let steps = 0;
-      switch (token.kind) {
-        case 'text': {
-          const chars = token.chars;
-          const length = chars.length;
-          for (let j = lo; j <= hi; j += 1) {
-            steps += 1;
-            if (reach[j] !== 1 || j + length > size) continue;
-            const matched = holds(text, j, chars);
-            steps += matched;
-            if (matched === length) {
-              next[j + length] = 1;
-              if (nextHi < 0) nextLo = j + length;
-              nextHi = j + length;
-            }
-          }
-          break;
-        }
-        case 'one':
-          for (let j = lo; j <= hi; j += 1) {
-            steps += 1;
-            if (reach[j] === 1 && j < size && text[j] !== '/') {
-              next[j + 1] = 1;
-              if (nextHi < 0) nextLo = j + 1;
-              nextHi = j + 1;
-            }
-          }
-          break;
-        case 'segment': {
-          // From a reachable position on, up to and not past the next '/'.
-          let open = false;
-          for (let j = lo; j <= size; j += 1) {
-            steps += 1;
-            if (reach[j] === 1) open = true;
-            if (!open) continue;
-            next[j] = 1;
-            if (nextHi < 0) nextLo = j;
-            nextHi = j;
-            if (text[j] === '/') {
-              if (j >= hi) break;
-              open = false;
-            }
-          }
-          break;
-        }
-        case 'any':
-          // Every position from the first reached on.
-          next.fill(1, lo, size + 1);
-          nextLo = lo;
-          nextHi = size;
-          steps += size - lo + 1;
-          break;
-        case 'dirs': {
-          // Nothing, or a run of characters that ends with the '/' just before this position.
-          let open = false;
-          for (let j = lo; j <= size; j += 1) {
-            steps += 1;
-            if (reach[j] === 1 || (open && j > 0 && text[j - 1] === '/')) {
-              next[j] = 1;
-              if (nextHi < 0) nextLo = j;
-              nextHi = j;
-            }
-            if (reach[j] === 1) open = true;
-          }
-          break;
-        }
-      }
-      if (work !== undefined) {
-        work.steps -= steps;
-        if (work.steps <= 0) {
-          work.exhausted = true;
-          return false;
-        }
-      }
+      walk.nextLo = size + 1;
+      walk.nextHi = -1;
+      const steps = walkToken(walk, token);
+      if (work !== undefined && !charge(work, steps)) return false;
       // Nothing is reachable: no later token can change that.
-      if (nextHi < 0) return false;
-      reach.fill(0, lo, hi + 1);
-      [reach, next] = [next, reach];
-      lo = nextLo;
-      hi = nextHi;
-      nextHi = -1;
+      if (walk.nextHi < 0) return false;
+      walk.reach.fill(0, walk.lo, walk.hi + 1);
+      [walk.reach, walk.next] = [walk.next, walk.reach];
+      walk.lo = walk.nextLo;
+      walk.hi = walk.nextHi;
+      walk.nextHi = -1;
     }
-    return reach[size] === 1;
+    return walk.reach[size] === 1;
   } finally {
     // The scratch is clean for the next walk, whichever way this one ended.
-    reach.fill(0, lo, hi + 1);
-    if (nextHi >= 0) next.fill(0, nextLo, nextHi + 1);
+    walk.reach.fill(0, walk.lo, walk.hi + 1);
+    if (walk.nextHi >= 0) walk.next.fill(0, walk.nextLo, walk.nextHi + 1);
   }
 }
 
