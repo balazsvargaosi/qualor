@@ -403,6 +403,7 @@ export class GitLabClient {
     try {
       const base = new URL(`${this.#connection.baseUrl}/api/v4/projects/`);
       const target = new URL(location, from);
+      if (target.username || target.password) return null;
       if (!new URL(from).pathname.startsWith(base.pathname)) return null;
       if (target.origin !== base.origin || !target.pathname.startsWith(base.pathname)) return null;
       return target.href;

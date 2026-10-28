@@ -860,6 +860,7 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
       `${fake.url}/api/v4/projects`,
       `${fake.url}/other/api/v4/projects/7`,
       '//evil.example/api/v4/projects/7',
+      fake.url.replace('://', '://u:p@') + '/api/v4/projects/7',
       '',
     ];
     for (const location of bad) {
@@ -898,6 +899,17 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
         }),
       ),
     ).toMatchObject({ kind: 'refused', message: 'GitLab answered HTTP 307' });
+    expect(fake.requests).toHaveLength(1);
+  });
+
+  it('counts the redirect hop against the request budget', async () => {
+    fake.inject('GET', /^\/projects\/old%2Fname$/, {
+      status: 301,
+      headers: { location: `${fake.url}/api/v4/projects/7` },
+    });
+    expect(await failure(client({ maxRequests: 1 }).project('old/name'))).toMatchObject({
+      kind: 'budget',
+    });
     expect(fake.requests).toHaveLength(1);
   });
 

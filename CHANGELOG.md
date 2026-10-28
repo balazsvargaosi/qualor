@@ -13,7 +13,7 @@ All notable changes to Qualor are listed here, newest first. The format follows
 - An analyzer's message in the summary comment and in the inline note reads as ordinary text, with its code in code spans, instead of one code block with literal backticks. Mentions, references, links and HTML in a message still stay inert.
 - GitHub's secondary rate limit no longer delays reviews posted at the same time: one installation decorates one pull request at a time, and the next waits a moment.
 - A review retries a model provider that answers 5xx or cannot be reached twice instead of once, waiting the time the provider asks for (at most a minute), so one short outage no longer fails the review.
-- A GitLab project that was renamed or moved is followed to its new place: GitLab answers the old path with a redirect, and the connection test, replies and merge request state now follow it once on the same GitLab instead of failing with an HTTP error.
+- Reviews, the connection test, replies and merge request state follow a renamed or moved GitLab project once: GitLab answers the old path with a redirect to the project, and Qualor now follows it on the same GitLab instead of failing the review with an HTTP error.
 
 ## [0.12.0] - 2026-10-28
 
