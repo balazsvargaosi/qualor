@@ -58,8 +58,10 @@ export const PATH = 'src/cart.ts';
 /** The file the merge request adds, as the snapshot holds it. */
 const LINES = Array.from({ length: 30 }, (_, i) => `export const line${i + 1} = ${i + 1};`);
 /** The patch of a new file of `lines`. */
-const addedPatch = (lines: readonly string[]) =>
-  `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}`;
+const addedPatch = (lines: readonly string[]) => {
+  const added = lines.map((line) => `+${line}`).join('\n');
+  return `@@ -0,0 +1,${lines.length} @@\n${added}`;
+};
 
 /**
  * Who replies: five people with the rights to triage (`member` the least of them), someone with no

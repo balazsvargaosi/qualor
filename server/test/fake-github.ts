@@ -336,6 +336,13 @@ const PREFIX = '/api/v3';
 const GRAPHQL_PATH = '/api/graphql';
 /** GraphQL's `Int`: a signed 32-bit integer. */
 const GRAPHQL_MAX_INT = 2_147_483_647;
+
+type TokenGrant = NonNullable<ReturnType<FakeGitHub['tokens']['get']>>;
+
+const isText = (value: unknown): value is string => typeof value === 'string';
+const isInt = (value: unknown): value is number =>
+  Number.isInteger(value) && Math.abs(value as number) <= GRAPHQL_MAX_INT;
+
 /** The first review comment id: past GraphQL's `Int`, as github.com's ids are. */
 const FIRST_REVIEW_COMMENT_ID = 3_000_000_001;
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
@@ -794,6 +801,162 @@ export async function createFakeGitHub(
     submitted_at: new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z'),
   });
 
+  /** The replies of the GraphQL endpoint: a refused request (REST-shaped), an answer, an invalid variable. */
+  const graphqlReplies = (res: ServerResponse) => {
+    const refuse = (status: number, message: string) =>
+      send(res, status, {
+        message,
+        documentation_url: 'https://docs.github.com/graphql',
+        status: String(status),
+      });
+    const answer = (data: unknown, ...errors: Record<string, unknown>[]) =>
+      send(res, 200, {
+        ...(data === undefined ? {} : { data }),
+        ...(errors.length > 0 ? { errors } : {}),
+      });
+    const invalid = (name: string, type: string, value: unknown) =>
+      answer(undefined, {
+        message: `Variable $${name} of type ${type} was provided invalid value`,
+        extensions: {
+          value,
+          problems: [
+            {
+              path: [],
+              explanation: `Could not coerce value ${JSON.stringify(value)} to ${type.replace('!', '')}`,
+            },
+          ],
+        },
+      });
+    return { refuse, answer, invalid };
+  };
+
+  /** What the token's grant lets an operation see and do. */
+  const graphqlAccess = (grant: TokenGrant) => {
+    const visible = (repo: FakeRepository | undefined): repo is FakeRepository =>
+      repo !== undefined &&
+      repo.installationId === grant.installationId &&
+      grant.repositories.includes(repo.name.toLowerCase());
+    const may = (permission: string, access: Access) => {
+      const has = grant.permissions[permission];
+      return has !== undefined && (access === 'read' || has === 'write');
+    };
+    const forbidden = (path: string[]) => ({
+      type: 'FORBIDDEN',
+      path,
+      message: 'Resource not accessible by integration',
+    });
+
+    return { visible, may, forbidden };
+  };
+
+  /** The `QualorReviewThreads` operation: one page of a pull request's review threads. */
+  const reviewThreadsOperation = (
+    { answer, invalid }: ReturnType<typeof graphqlReplies>,
+    { visible, may, forbidden }: ReturnType<typeof graphqlAccess>,
+    query: string,
+    variables: Record<string, unknown>,
+  ) => {
+    const { owner, name, number, after } = variables;
+    if (!isText(owner)) return invalid('owner', 'String!', owner);
+    if (!isText(name)) return invalid('name', 'String!', name);
+    if (!isInt(number)) return invalid('number', 'Int!', number);
+    if (after !== undefined && after !== null && !isText(after))
+      return invalid('after', 'String', after);
+    const repo = repos.get(`${owner}/${name}`.toLowerCase());
+    if (!visible(repo))
+      return answer(
+        { repository: null },
+        {
+          type: 'NOT_FOUND',
+          path: ['repository'],
+          message: `Could not resolve to a Repository with the name '${owner}/${name}'.`,
+        },
+      );
+    if (!may('pull_requests', 'read'))
+      return answer({ repository: null }, forbidden(['repository']));
+    const pull = pulls.get(`${repo.id}#${number}`);
+    if (!pull)
+      return answer(
+        { repository: { pullRequest: null } },
+        {
+          type: 'NOT_FOUND',
+          path: ['repository', 'pullRequest'],
+          message: `Could not resolve to a PullRequest with the number of ${number}.`,
+        },
+      );
+    const first = Number(/reviewThreads\(first:\s*(\d+)/.exec(query)?.[1] ?? '0');
+    if (first < 1 || first > 100)
+      return answer(undefined, {
+        message:
+          first === 0
+            ? 'You must provide a `first` or `last` value to properly paginate the `reviewThreads` connection.'
+            : `Requesting ${first} records on the \`reviewThreads\` connection exceeds the \`first\` limit of 100 records.`,
+      });
+    const threads = fake.reviewThreads.filter(
+      (t) => t.repoId === repo.id && t.pull === pull.number,
+    );
+    // A cursor is the number of threads before it, as an opaque string.
+    const offset =
+      after === undefined || after === null
+        ? 0
+        : Number(/^cursor:(\d{1,9})$/.exec(Buffer.from(after, 'base64').toString())?.[1] ?? NaN);
+    if (!Number.isInteger(offset) || offset > threads.length)
+      return answer(undefined, { message: '`after` is not a cursor of this connection' });
+    const page = threads.slice(offset, offset + first);
+    return answer({
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: {
+              hasNextPage: offset + first < threads.length,
+              endCursor:
+                page.length === 0
+                  ? null
+                  : Buffer.from(`cursor:${offset + page.length}`).toString('base64'),
+            },
+            nodes: page.map((t) => ({
+              id: t.id,
+              isResolved: t.resolved,
+              resolvedBy: t.resolvedBy === null ? null : { login: t.resolvedBy },
+              comments: { nodes: [{ id: reviewCommentNodeId(t.commentIds[0]!) }] },
+            })),
+          },
+        },
+      },
+    });
+  };
+
+  /** The `QualorResolveThread` and `QualorUnresolveThread` operations. */
+  const threadResolutionOperation = (
+    { answer, invalid }: ReturnType<typeof graphqlReplies>,
+    { visible, may, forbidden }: ReturnType<typeof graphqlAccess>,
+    operation: string,
+    variables: Record<string, unknown>,
+  ) => {
+    const field =
+      operation === 'QualorResolveThread' ? 'resolveReviewThread' : 'unresolveReviewThread';
+    const { id } = variables;
+    if (!isText(id)) return invalid('id', 'ID!', id);
+    const thread = fake.reviewThreads.find((t) => t.id === id);
+    const repo = [...repos.values()].find((r) => r.id === thread?.repoId);
+    if (!thread || !visible(repo))
+      return answer(
+        { [field]: null },
+        {
+          type: 'NOT_FOUND',
+          path: [field],
+          message: `Could not resolve to a node with the global id of '${id}'.`,
+        },
+      );
+    // Measured on github.com: Contents (write) is what it takes, and Pull requests does not.
+    if (!may('contents', 'write')) return answer({ [field]: null }, forbidden([field]));
+    thread.resolved = field === 'resolveReviewThread';
+    // An installation token is this App's: GitHub names its `<slug>[bot]` as the resolver, and
+    // nobody once the thread is open again (ruling R6).
+    thread.resolvedBy = thread.resolved ? `${slug}[bot]` : null;
+    return answer({ [field]: { thread: { id: thread.id, isResolved: thread.resolved } } });
+  };
+
   /**
    * GraphQL (the operations 6I-1 sends, picked by the name in the document): review threads and
    * their resolution. As GitHub's, it answers a failed operation with HTTP 200 and `errors` (typed:
@@ -810,17 +973,8 @@ export async function createFakeGitHub(
     bearer: string,
     body: string,
   ) => {
-    const refuse = (status: number, message: string) =>
-      send(res, status, {
-        message,
-        documentation_url: 'https://docs.github.com/graphql',
-        status: String(status),
-      });
-    const answer = (data: unknown, ...errors: Record<string, unknown>[]) =>
-      send(res, 200, {
-        ...(data === undefined ? {} : { data }),
-        ...(errors.length > 0 ? { errors } : {}),
-      });
+    const replies = graphqlReplies(res);
+    const { refuse, answer } = replies;
     if (typeof req.headers['user-agent'] !== 'string')
       return refuse(
         403,
@@ -844,36 +998,7 @@ export async function createFakeGitHub(
       typeof request.variables === 'object' && request.variables !== null
         ? (request.variables as Record<string, unknown>)
         : {};
-    const invalid = (name: string, type: string, value: unknown) =>
-      answer(undefined, {
-        message: `Variable $${name} of type ${type} was provided invalid value`,
-        extensions: {
-          value,
-          problems: [
-            {
-              path: [],
-              explanation: `Could not coerce value ${JSON.stringify(value)} to ${type.replace('!', '')}`,
-            },
-          ],
-        },
-      });
-    const isText = (value: unknown): value is string => typeof value === 'string';
-    const isInt = (value: unknown): value is number =>
-      Number.isInteger(value) && Math.abs(value as number) <= GRAPHQL_MAX_INT;
-    const visible = (repo: FakeRepository | undefined): repo is FakeRepository =>
-      repo !== undefined &&
-      repo.installationId === grant.installationId &&
-      grant.repositories.includes(repo.name.toLowerCase());
-    const may = (permission: string, access: Access) => {
-      const has = grant.permissions[permission];
-      return has !== undefined && (access === 'read' || has === 'write');
-    };
-    const forbidden = (path: string[]) => ({
-      type: 'FORBIDDEN',
-      path,
-      message: 'Resource not accessible by integration',
-    });
-
+    const access = graphqlAccess(grant);
     const operation = /^\s*(?:query|mutation)\s+(\w+)/.exec(query)?.[1];
     // GitHub validates the whole document first: a field the schema lacks fails it, with no data.
     const unknownField = UNKNOWN_COMMENT_FIELD.exec(query)?.[1];
@@ -887,98 +1012,10 @@ export async function createFakeGitHub(
         },
       });
     if (operation === 'QualorReviewThreads') {
-      const { owner, name, number, after } = variables;
-      if (!isText(owner)) return invalid('owner', 'String!', owner);
-      if (!isText(name)) return invalid('name', 'String!', name);
-      if (!isInt(number)) return invalid('number', 'Int!', number);
-      if (after !== undefined && after !== null && !isText(after))
-        return invalid('after', 'String', after);
-      const repo = repos.get(`${owner}/${name}`.toLowerCase());
-      if (!visible(repo))
-        return answer(
-          { repository: null },
-          {
-            type: 'NOT_FOUND',
-            path: ['repository'],
-            message: `Could not resolve to a Repository with the name '${owner}/${name}'.`,
-          },
-        );
-      if (!may('pull_requests', 'read'))
-        return answer({ repository: null }, forbidden(['repository']));
-      const pull = pulls.get(`${repo.id}#${number}`);
-      if (!pull)
-        return answer(
-          { repository: { pullRequest: null } },
-          {
-            type: 'NOT_FOUND',
-            path: ['repository', 'pullRequest'],
-            message: `Could not resolve to a PullRequest with the number of ${number}.`,
-          },
-        );
-      const first = Number(/reviewThreads\(first:\s*(\d+)/.exec(query)?.[1] ?? '0');
-      if (first < 1 || first > 100)
-        return answer(undefined, {
-          message:
-            first === 0
-              ? 'You must provide a `first` or `last` value to properly paginate the `reviewThreads` connection.'
-              : `Requesting ${first} records on the \`reviewThreads\` connection exceeds the \`first\` limit of 100 records.`,
-        });
-      const threads = fake.reviewThreads.filter(
-        (t) => t.repoId === repo.id && t.pull === pull.number,
-      );
-      // A cursor is the number of threads before it, as an opaque string.
-      const offset =
-        after === undefined || after === null
-          ? 0
-          : Number(/^cursor:(\d{1,9})$/.exec(Buffer.from(after, 'base64').toString())?.[1] ?? NaN);
-      if (!Number.isInteger(offset) || offset > threads.length)
-        return answer(undefined, { message: '`after` is not a cursor of this connection' });
-      const page = threads.slice(offset, offset + first);
-      return answer({
-        repository: {
-          pullRequest: {
-            reviewThreads: {
-              pageInfo: {
-                hasNextPage: offset + first < threads.length,
-                endCursor:
-                  page.length === 0
-                    ? null
-                    : Buffer.from(`cursor:${offset + page.length}`).toString('base64'),
-              },
-              nodes: page.map((t) => ({
-                id: t.id,
-                isResolved: t.resolved,
-                resolvedBy: t.resolvedBy === null ? null : { login: t.resolvedBy },
-                comments: { nodes: [{ id: reviewCommentNodeId(t.commentIds[0]!) }] },
-              })),
-            },
-          },
-        },
-      });
+      return reviewThreadsOperation(replies, access, query, variables);
     }
     if (operation === 'QualorResolveThread' || operation === 'QualorUnresolveThread') {
-      const field =
-        operation === 'QualorResolveThread' ? 'resolveReviewThread' : 'unresolveReviewThread';
-      const { id } = variables;
-      if (!isText(id)) return invalid('id', 'ID!', id);
-      const thread = fake.reviewThreads.find((t) => t.id === id);
-      const repo = [...repos.values()].find((r) => r.id === thread?.repoId);
-      if (!thread || !visible(repo))
-        return answer(
-          { [field]: null },
-          {
-            type: 'NOT_FOUND',
-            path: [field],
-            message: `Could not resolve to a node with the global id of '${id}'.`,
-          },
-        );
-      // Measured on github.com: Contents (write) is what it takes, and Pull requests does not.
-      if (!may('contents', 'write')) return answer({ [field]: null }, forbidden([field]));
-      thread.resolved = field === 'resolveReviewThread';
-      // An installation token is this App's: GitHub names its `<slug>[bot]` as the resolver, and
-      // nobody once the thread is open again (ruling R6).
-      thread.resolvedBy = thread.resolved ? `${slug}[bot]` : null;
-      return answer({ [field]: { thread: { id: thread.id, isResolved: thread.resolved } } });
+      return threadResolutionOperation(replies, access, operation, variables);
     }
     return answer(undefined, { message: `Unknown operation ${operation ?? '(none)'}` });
   };

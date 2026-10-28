@@ -117,7 +117,9 @@ export function githubDeps(
   const runtime = createScmRuntime();
   runtime.githubPacer = new MutationPacer(
     () => t,
-    async (ms) => void (t += ms),
+    async (ms) => {
+      t += ms;
+    },
   );
   return decorationDeps(h, { runtime, ...overrides });
 }

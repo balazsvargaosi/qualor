@@ -374,22 +374,34 @@ function blankTextProblem(json: unknown): string | null {
   const messages = (json as { messages?: unknown } | null)?.messages;
   if (!Array.isArray(messages)) return null;
   for (const [i, message] of (messages as ({ content?: unknown } | null)[]).entries()) {
-    const content = message?.content;
-    if (typeof content === 'string') {
-      if (content.trim() === '') {
-        return `messages.${i}: text content blocks must contain non-whitespace text`;
-      }
-      continue;
-    }
-    if (!Array.isArray(content)) continue;
-    if (content.length === 0) return `messages.${i}: all messages must have non-empty content`;
-    for (const [j, block] of (content as ({ type?: unknown; text?: unknown } | null)[]).entries()) {
-      if (block?.type === 'text' && (typeof block.text !== 'string' || block.text.trim() === '')) {
-        return `messages.${i}.content.${j}.text: text content blocks must contain non-whitespace text`;
-      }
+    const problem = blankMessageProblem(message?.content, i);
+    if (problem !== null) return problem;
+  }
+  return null;
+}
+
+/** The problem of message number `i`, given its content, or null when it has none. */
+function blankMessageProblem(content: unknown, i: number): string | null {
+  if (typeof content === 'string') {
+    return content.trim() === ''
+      ? `messages.${i}: text content blocks must contain non-whitespace text`
+      : null;
+  }
+  if (!Array.isArray(content)) return null;
+  if (content.length === 0) return `messages.${i}: all messages must have non-empty content`;
+  for (const [j, block] of (content as ({ type?: unknown; text?: unknown } | null)[]).entries()) {
+    if (block?.type === 'text' && (typeof block.text !== 'string' || block.text.trim() === '')) {
+      return `messages.${i}.content.${j}.text: text content blocks must contain non-whitespace text`;
     }
   }
   return null;
+}
+
+/** The field a request of `wire` asks its output limit in, or undefined when a chat one has none. */
+function outputLimitField(wire: Wire, request: Record<string, unknown>): string | undefined {
+  if (wire === 'anthropic') return 'max_tokens';
+  if (wire === 'responses') return 'max_output_tokens';
+  return ['max_tokens', 'max_completion_tokens'].find((name) => typeof request[name] === 'number');
 }
 
 /**
@@ -408,12 +420,7 @@ function outputCapProblem(
   const model = request.model;
   if (typeof model !== 'string' || !Object.hasOwn(caps, model)) return null;
   const cap = caps[model]!;
-  const field =
-    wire === 'anthropic'
-      ? 'max_tokens'
-      : wire === 'responses'
-        ? 'max_output_tokens'
-        : ['max_tokens', 'max_completion_tokens'].find((name) => typeof request[name] === 'number');
+  const field = outputLimitField(wire, request);
   const asked = field === undefined ? undefined : request[field];
   if (field === undefined || typeof asked !== 'number' || asked <= cap) return null;
   if (wire === 'anthropic') {
@@ -481,14 +488,8 @@ function streamRefusal(wire: Wire): unknown {
 function responsesProblem(json: unknown): unknown {
   if (typeof json !== 'object' || json === null) return null;
   const request = json as { max_output_tokens?: unknown; input?: unknown };
-  const limit = request.max_output_tokens;
-  if (typeof limit === 'number' && limit < 16) {
-    return openAiProblem(
-      `Invalid 'max_output_tokens': integer below minimum value. Expected a value >= 16, but got ${limit} instead.`,
-      'max_output_tokens',
-      'integer_below_min_value',
-    );
-  }
+  const tooSmall = outputLimitBelowMinimum(request.max_output_tokens);
+  if (tooSmall !== null) return tooSmall;
   if (!Array.isArray(request.input)) return null;
   const items = request.input as ({
     type?: unknown;
@@ -507,18 +508,51 @@ function responsesProblem(json: unknown): unknown {
       );
     }
     if (item?.role === 'assistant' && Array.isArray(item.content)) {
-      for (const [j, part] of (item.content as ({ type?: unknown } | null)[]).entries()) {
-        if (part?.type !== 'output_text' && part?.type !== 'refusal') {
-          return openAiProblem(
-            `Invalid value: '${String(part?.type)}'. Supported values are: 'output_text' and 'refusal'.`,
-            `input[${i}].content[${j}]`,
-            'invalid_value',
-          );
-        }
-      }
+      const problem = assistantPartsProblem(item.content, i);
+      if (problem !== null) return problem;
     }
   }
   return null;
+}
+
+/** The refusal of an output limit below 16 tokens, or null. */
+function outputLimitBelowMinimum(limit: unknown): unknown {
+  if (typeof limit !== 'number' || limit >= 16) return null;
+  return openAiProblem(
+    `Invalid 'max_output_tokens': integer below minimum value. Expected a value >= 16, but got ${limit} instead.`,
+    'max_output_tokens',
+    'integer_below_min_value',
+  );
+}
+
+/** The refusal of an assistant input item (number `i`) with a part that is not its kind, or null. */
+function assistantPartsProblem(content: unknown[], i: number): unknown {
+  for (const [j, part] of (content as ({ type?: unknown } | null)[]).entries()) {
+    if (part?.type !== 'output_text' && part?.type !== 'refusal') {
+      return openAiProblem(
+        `Invalid value: '${String(part?.type)}'. Supported values are: 'output_text' and 'refusal'.`,
+        `input[${i}].content[${j}]`,
+        'invalid_value',
+      );
+    }
+  }
+  return null;
+}
+
+/** Every text an `input` holds: the output of a call, a message's content, the text of a part. */
+function inputTexts(input: unknown): string[] {
+  const words: string[] = [];
+  const items: unknown[] = Array.isArray(input) ? input : [];
+  for (const item of items as ({ content?: unknown; output?: unknown } | null)[]) {
+    if (typeof item?.output === 'string') words.push(item.output);
+    if (typeof item?.content === 'string') words.push(item.content);
+    if (Array.isArray(item?.content)) {
+      for (const part of item.content as ({ text?: unknown } | null)[]) {
+        if (typeof part?.text === 'string') words.push(part.text);
+      }
+    }
+  }
+  return words;
 }
 
 /**
@@ -534,18 +568,7 @@ function jsonWordProblem(json: unknown): unknown {
     input?: unknown;
   };
   if (text?.format?.type !== 'json_object') return null;
-  const words: string[] = [];
-  const items: unknown[] = Array.isArray(input) ? input : [];
-  for (const item of items as ({ content?: unknown; output?: unknown } | null)[]) {
-    if (typeof item?.output === 'string') words.push(item.output);
-    if (typeof item?.content === 'string') words.push(item.content);
-    if (Array.isArray(item?.content)) {
-      for (const part of item.content as ({ text?: unknown } | null)[]) {
-        if (typeof part?.text === 'string') words.push(part.text);
-      }
-    }
-  }
-  if (/json/i.test(words.join('\n'))) return null;
+  if (/json/i.test(inputTexts(input).join('\n'))) return null;
   return openAiProblem(
     "Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'.",
     'input',
@@ -652,11 +675,7 @@ function promptParts(wire: Wire, json: unknown): PromptPart[] {
   for (const block of list(system)) parts.push(part(['system', block], hasMark(block)));
   for (const [i, raw] of list(request.messages).entries()) {
     const message = (raw ?? {}) as { role?: unknown; content?: unknown };
-    const blocks =
-      typeof message.content === 'string'
-        ? [{ type: 'text', text: message.content }]
-        : list(message.content);
-    for (const block of blocks) {
+    for (const block of blocksOf(message.content)) {
       const type = (block as { type?: unknown } | null)?.type;
       const run = type === 'tool_use' || type === 'tool_result' ? type : undefined;
       parts.push(part(['message', i, message.role, block], hasMark(block), run));
@@ -665,11 +684,66 @@ function promptParts(wire: Wire, json: unknown): PromptPart[] {
   return parts;
 }
 
+/** The blocks of a Messages API message's content: a string is one text block. */
+function blocksOf(content: unknown): unknown[] {
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  return Array.isArray(content) ? (content as unknown[]) : [];
+}
+
 /**
  * How far back from a marked block the Messages API looks for an entry an earlier call wrote, in
  * positions: a run of `tool_use` blocks is one, and so is a run of `tool_result` blocks.
  */
 const CACHE_LOOKBACK_POSITIONS = 20;
+
+/**
+ * What the prompt cache keys on, for each prefix of `parts` (up to and including part `at`): its
+ * hash (with the wire and the model), its characters, and its position in the lookback (a run of
+ * `tool_use` or of `tool_result` blocks counts as one).
+ */
+function prefixesOf(
+  wire: Wire,
+  model: string,
+  parts: readonly PromptPart[],
+): { keys: string[]; chars: number[]; positions: number[] } {
+  const keys: string[] = [];
+  const chars: number[] = [];
+  const positions: number[] = [];
+  let hash = createHash('sha256').update(`${wire}\n${model}`).digest('hex');
+  let length = 0;
+  for (const [at, part] of parts.entries()) {
+    hash = createHash('sha256').update(`${hash}\n${part.text}`).digest('hex');
+    length += part.text.length;
+    keys.push(hash);
+    chars.push(length);
+    const sameRun = part.run !== undefined && parts[at - 1]?.run === part.run;
+    positions.push((positions.at(-1) ?? -1) + (sameRun ? 0 : 1));
+  }
+  return { keys, chars, positions };
+}
+
+/**
+ * The part of the furthest held prefix that a marked part reads from: for each mark, the nearest
+ * held prefix within {@link CACHE_LOOKBACK_POSITIONS} positions before it; -1 when there is none.
+ */
+function lookbackHit(
+  marks: readonly number[],
+  keys: readonly string[],
+  positions: readonly number[],
+  held: ReadonlySet<string>,
+): number {
+  let hit = -1;
+  for (const mark of marks) {
+    const from = positions[mark]! - CACHE_LOOKBACK_POSITIONS;
+    for (let at = mark; at >= 0 && positions[at]! >= from; at -= 1) {
+      if (held.has(keys[at]!)) {
+        hit = Math.max(hit, at);
+        break;
+      }
+    }
+  }
+  return hit;
+}
 
 /**
  * A provider's prompt cache, for the fake: the prefixes it holds, each keyed by the model and the
@@ -686,19 +760,7 @@ function promptCache(): (wire: Wire, json: unknown) => { read: number; written: 
   return (wire, json) => {
     const model = String((json as { model?: unknown } | null)?.model ?? '');
     const parts = promptParts(wire, json);
-    const keys: string[] = [];
-    const chars: number[] = [];
-    const positions: number[] = [];
-    let hash = createHash('sha256').update(`${wire}\n${model}`).digest('hex');
-    let length = 0;
-    for (const [at, part] of parts.entries()) {
-      hash = createHash('sha256').update(`${hash}\n${part.text}`).digest('hex');
-      length += part.text.length;
-      keys.push(hash);
-      chars.push(length);
-      const sameRun = part.run !== undefined && parts[at - 1]?.run === part.run;
-      positions.push((positions.at(-1) ?? -1) + (sameRun ? 0 : 1));
-    }
+    const { keys, chars, positions } = prefixesOf(wire, model, parts);
     const tokens = (at: number): number => (at < 0 ? 0 : Math.ceil((chars[at] ?? 0) / 4));
     if (wire !== 'anthropic') {
       let hit = -1;
@@ -708,21 +770,34 @@ function promptCache(): (wire: Wire, json: unknown) => { read: number; written: 
       return { read: tokens(hit), written: 0 };
     }
     const marks = parts.flatMap((part, at) => (part.marked ? [at] : []));
-    let hit = -1;
-    for (const mark of marks) {
-      const from = positions[mark]! - CACHE_LOOKBACK_POSITIONS;
-      for (let at = mark; at >= 0 && positions[at]! >= from; at -= 1) {
-        if (held.has(keys[at]!)) {
-          hit = Math.max(hit, at);
-          break;
-        }
-      }
-    }
+    const hit = lookbackHit(marks, keys, positions, held);
     const last = marks.at(-1);
     for (const mark of marks) held.add(keys[mark]!);
     const read = tokens(hit);
     return { read, written: last === undefined || last <= hit ? 0 : tokens(last) - read };
   };
+}
+
+/** The canned answer of the API `path` belongs to. */
+function answerFor(path: string, text: string): LlmReply['body'] {
+  if (path === '/v1/messages') return anthropicAnswer(text);
+  return path === '/v1/responses' ? responsesAnswer(text) : openAiAnswer(text);
+}
+
+/** The wire a request to `path` is on. */
+function wireOf(path: string): Wire {
+  if (path === '/v1/messages') return 'anthropic';
+  return path === '/v1/responses' ? 'responses' : 'chat';
+}
+
+/** What the real API of `wire` refuses in the request `json` that no other check covers, or null. */
+function refusedRequest(
+  wire: Wire,
+  json: unknown,
+  toolsOnlyThroughResponses: readonly string[] | undefined,
+): unknown {
+  if (wire === 'responses') return responsesProblem(json) ?? jsonWordProblem(json);
+  return wire === 'chat' ? chatToolsProblem(toolsOnlyThroughResponses, json) : null;
 }
 
 /** `body`'s usage with what the prompt cache did for the request, in the words of its API. */
@@ -839,12 +914,7 @@ export async function createFakeLlm(
 
   const shaped = (request: RecordedLlmRequest, text: string): LlmReply => ({
     status: 200,
-    body:
-      request.path === '/v1/messages'
-        ? anthropicAnswer(text)
-        : request.path === '/v1/responses'
-          ? responsesAnswer(text)
-          : openAiAnswer(text),
+    body: answerFor(request.path, text),
   });
 
   const server = createServer((req, res) => {
@@ -884,11 +954,7 @@ export async function createFakeLlm(
           }, reply.delayMs ?? 0);
         };
         const anthropic = request.path === '/v1/messages';
-        const wire: Wire = anthropic
-          ? 'anthropic'
-          : request.path === '/v1/responses'
-            ? 'responses'
-            : 'chat';
+        const wire = wireOf(request.path);
         const streamed =
           (json as { stream?: unknown } | null)?.stream === true && options.ignoreStream !== true;
         /**
@@ -992,12 +1058,7 @@ export async function createFakeLlm(
             },
           });
         }
-        const refused =
-          wire === 'responses'
-            ? (responsesProblem(json) ?? jsonWordProblem(json))
-            : wire === 'chat'
-              ? chatToolsProblem(options.toolsOnlyThroughResponses, json)
-              : null;
+        const refused = refusedRequest(wire, json, options.toolsOnlyThroughResponses);
         if (refused !== null) return send({ status: 400, body: refused });
         const capped = outputCapProblem(options.outputCaps, wire, json);
         if (capped !== null) return send({ status: 400, body: capped });

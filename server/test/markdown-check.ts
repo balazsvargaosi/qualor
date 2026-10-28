@@ -5,6 +5,20 @@
 
 import { AI_SECTION_MARKUP_LINES } from '../src/review/render';
 
+/** Where the next run of exactly as many backticks as `fence` starts, from `from`; -1 when none. */
+function closingRun(line: string, fence: string, from: number): number {
+  let j = from;
+  while (j < line.length) {
+    const at = line.indexOf(fence, j);
+    if (at < 0) return -1;
+    let m = 0;
+    while (line[at + m] === '`') m++;
+    if (m === fence.length) return at;
+    j = at + m;
+  }
+  return -1;
+}
+
 /**
  * What is outside the CommonMark code spans of one line, as the pieces between them: one before
  * the first span, one between each two and one after the last (a line without a span is one
@@ -24,19 +38,7 @@ function outsideSegments(line: string): string[] {
     let n = 0;
     while (line[i + n] === '`') n++;
     const fence = '`'.repeat(n);
-    let j = i + n;
-    let close = -1;
-    while (j < line.length) {
-      const at = line.indexOf(fence, j);
-      if (at < 0) break;
-      let m = 0;
-      while (line[at + m] === '`') m++;
-      if (m === n) {
-        close = at;
-        break;
-      }
-      j = at + m;
-    }
+    const close = closingRun(line, fence, i + n);
     if (close < 0) {
       out += fence;
       i += n;
@@ -191,25 +193,32 @@ const PROMPT_FINDING_LINE = /^(?:\d+\. | {3}\S)/;
  * action at the start of a line only, also where it does not take a fence for a code block).
  */
 export function badSectionLine(lines: readonly string[]): string | null {
-  for (let i = 0; i < lines.length; i += 1) {
+  let i = 0;
+  while (i < lines.length) {
     const line = lines[i]!;
     const opened = PROMPT_FENCE.exec(line);
     if (opened === null) {
       if (/^\s*\//.test(line) || /^`{3,}$/.test(line) || !checkSectionLine(line)) return line;
+      i += 1;
       continue;
     }
     const fence = opened[1]!;
     const close = lines.indexOf(fence, i + 1);
     if (lines[i - 2] !== PROMPT_OPEN || lines[i - 1] !== '') return line;
     if (close < 0 || lines[close + 1] !== '' || lines[close + 2] !== PROMPT_CLOSE) return line;
-    for (const inside of lines.slice(i + 1, close)) {
-      if ((inside.match(/`+/g) ?? []).some((run) => run.length >= fence.length)) return inside;
-      if (inside === '' || PROMPT_FIXED_LINE.test(inside) || PROMPT_FINDING_LINE.test(inside)) {
-        continue;
-      }
-      return inside;
-    }
-    i = close;
+    const bad = badPromptBlockLine(lines.slice(i + 1, close), fence.length);
+    if (bad !== null) return bad;
+    i = close + 1;
+  }
+  return null;
+}
+
+/** The first line inside the prompt block's fence that could end it or begin with model text. */
+function badPromptBlockLine(inside: readonly string[], fenceLength: number): string | null {
+  for (const line of inside) {
+    if ((line.match(/`+/g) ?? []).some((run) => run.length >= fenceLength)) return line;
+    if (line === '' || PROMPT_FIXED_LINE.test(line) || PROMPT_FINDING_LINE.test(line)) continue;
+    return line;
   }
   return null;
 }
@@ -248,10 +257,14 @@ export function checkAiThreadLines(body: string): boolean {
       continue;
     }
     if (line === '' || THREAD_LINK.test(line)) continue;
-    const bold = /^\*\*(.+)\*\*$/.exec(line);
-    const label = THREAD_LABELS.find((l) => line.startsWith(l));
-    const prose = bold?.[1] ?? (label === undefined ? line : line.slice(label.length));
-    if (!checkProse(prose)) return false;
+    if (!checkProse(proseOf(line))) return false;
   }
   return !inSuggestion;
+}
+
+/** The prose of a line of a thread note: the title without its bold, a labelled line without its label. */
+function proseOf(line: string): string {
+  const bold = /^\*\*(.+)\*\*$/.exec(line);
+  const label = THREAD_LABELS.find((l) => line.startsWith(l));
+  return bold?.[1] ?? (label === undefined ? line : line.slice(label.length));
 }

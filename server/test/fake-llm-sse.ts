@@ -46,8 +46,10 @@ export function deltasOf(text: string): string[] {
 }
 
 /** One event of a stream: its type when the API names it (`event:`), and its data as JSON. */
-const sse = (data: unknown, type?: string): string =>
-  `${type === undefined ? '' : `event: ${type}\n`}data: ${JSON.stringify(data)}\n\n`;
+const sse = (data: unknown, type?: string): string => {
+  const named = type === undefined ? '' : `event: ${type}\n`;
+  return `${named}data: ${JSON.stringify(data)}\n\n`;
+};
 
 /** The error event of each API, and the fault's type in it. */
 function errorEvent(wire: Wire, error: NonNullable<StreamFault['error']>): string {
@@ -59,6 +61,37 @@ function errorEvent(wire: Wire, error: NonNullable<StreamFault['error']>): strin
     return sse({ type: 'error', code: error.type, message, param: null }, 'error');
   }
   return sse({ error: { message, type: error.type, param: null, code: null } });
+}
+
+/**
+ * The chunks of the message's tool calls: each call's id and name first, then the deltas of the
+ * arguments, the calls taking turns.
+ */
+function toolCallChunks(message: Json, chunk: (delta: Json) => string): string[] {
+  const events: string[] = [];
+  const calls = Array.isArray(message.tool_calls) ? (message.tool_calls as unknown[]) : [];
+  const pieces = calls.map((raw, index) => {
+    const call = asRecord(raw) ?? {};
+    const fn = asRecord(call.function) ?? {};
+    const { arguments: args, ...rest } = fn;
+    const head: Json = { index };
+    for (const key of ['id', 'type']) if (key in call) head[key] = call[key];
+    head.function = {
+      ...rest,
+      ...(args === undefined ? {} : { arguments: typeof args === 'string' ? '' : args }),
+    };
+    events.push(chunk({ tool_calls: [head] }));
+    return typeof args === 'string' ? deltasOf(args) : [];
+  });
+  for (let turn = 0; pieces.some((left) => left.length > turn); turn += 1) {
+    for (const [index, left] of pieces.entries()) {
+      const piece = left[turn];
+      if (piece !== undefined) {
+        events.push(chunk({ tool_calls: [{ index, function: { arguments: piece } }] }));
+      }
+    }
+  }
+  return events;
 }
 
 /**
@@ -96,33 +129,50 @@ function chatEvents(body: Json, fault: StreamFault): { events: string[]; end: st
   if (typeof refusal === 'string') {
     events.push(...(refusal === '' ? [''] : deltasOf(refusal)).map((r) => chunk({ refusal: r })));
   }
-  const calls = Array.isArray(message.tool_calls) ? (message.tool_calls as unknown[]) : [];
-  const pieces = calls.map((raw, index) => {
-    const call = asRecord(raw) ?? {};
-    const fn = asRecord(call.function) ?? {};
-    const { arguments: args, ...rest } = fn;
-    const head: Json = { index };
-    for (const key of ['id', 'type']) if (key in call) head[key] = call[key];
-    head.function = {
-      ...rest,
-      ...(args === undefined ? {} : { arguments: typeof args === 'string' ? '' : args }),
-    };
-    events.push(chunk({ tool_calls: [head] }));
-    return typeof args === 'string' ? deltasOf(args) : [];
-  });
-  for (let turn = 0; pieces.some((left) => left.length > turn); turn += 1) {
-    for (const [index, left] of pieces.entries()) {
-      const piece = left[turn];
-      if (piece !== undefined) {
-        events.push(chunk({ tool_calls: [{ index, function: { arguments: piece } }] }));
-      }
-    }
-  }
+  events.push(...toolCallChunks(message, chunk));
   events.push(chunk({}, choice.finish_reason ?? null));
   if (fault.noUsage !== true && body.usage !== undefined) {
     events.push(sse({ ...meta, choices: [], usage: body.usage }));
   }
   return { events, end: 'data: [DONE]\n\n' };
+}
+
+/** A content block's start, its deltas and its stop. */
+function blockEvents(raw: unknown, index: number): string[] {
+  const block = asRecord(raw) ?? {};
+  const delta = (part: Json): string =>
+    sse({ type: 'content_block_delta', index, delta: part }, 'content_block_delta');
+  let start: Json = block;
+  const deltas: string[] = [];
+  if (block.type === 'text' && typeof block.text === 'string') {
+    start = { ...block, text: '' };
+    deltas.push(...deltasOf(block.text).map((text) => delta({ type: 'text_delta', text })));
+  } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
+    start = {
+      ...block,
+      thinking: '',
+      ...(typeof block.signature === 'string' ? { signature: '' } : {}),
+    };
+    deltas.push(
+      ...deltasOf(block.thinking).map((thinking) => delta({ type: 'thinking_delta', thinking })),
+    );
+    if (typeof block.signature === 'string' && block.signature !== '') {
+      deltas.push(delta({ type: 'signature_delta', signature: block.signature }));
+    }
+  } else if (block.type === 'tool_use' && block.input !== undefined) {
+    start = { ...block, input: {} };
+    deltas.push(
+      delta({ type: 'input_json_delta', partial_json: '' }),
+      ...deltasOf(JSON.stringify(block.input)).map((partial_json) =>
+        delta({ type: 'input_json_delta', partial_json }),
+      ),
+    );
+  }
+  return [
+    sse({ type: 'content_block_start', index, content_block: start }, 'content_block_start'),
+    ...deltas,
+    sse({ type: 'content_block_stop', index }, 'content_block_stop'),
+  ];
 }
 
 /**
@@ -156,42 +206,7 @@ function anthropicEvents(body: Json, fault: StreamFault): { events: string[]; en
     sse({ type: 'ping' }, 'ping'),
   ];
   const blocks = Array.isArray(content) ? (content as unknown[]) : [];
-  for (const [index, raw] of blocks.entries()) {
-    const block = asRecord(raw) ?? {};
-    const delta = (part: Json): string =>
-      sse({ type: 'content_block_delta', index, delta: part }, 'content_block_delta');
-    let start: Json = block;
-    const deltas: string[] = [];
-    if (block.type === 'text' && typeof block.text === 'string') {
-      start = { ...block, text: '' };
-      deltas.push(...deltasOf(block.text).map((text) => delta({ type: 'text_delta', text })));
-    } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
-      start = {
-        ...block,
-        thinking: '',
-        ...(typeof block.signature === 'string' ? { signature: '' } : {}),
-      };
-      deltas.push(
-        ...deltasOf(block.thinking).map((thinking) => delta({ type: 'thinking_delta', thinking })),
-      );
-      if (typeof block.signature === 'string' && block.signature !== '') {
-        deltas.push(delta({ type: 'signature_delta', signature: block.signature }));
-      }
-    } else if (block.type === 'tool_use' && block.input !== undefined) {
-      start = { ...block, input: {} };
-      deltas.push(
-        delta({ type: 'input_json_delta', partial_json: '' }),
-        ...deltasOf(JSON.stringify(block.input)).map((partial_json) =>
-          delta({ type: 'input_json_delta', partial_json }),
-        ),
-      );
-    }
-    events.push(
-      sse({ type: 'content_block_start', index, content_block: start }, 'content_block_start'),
-      ...deltas,
-      sse({ type: 'content_block_stop', index }, 'content_block_stop'),
-    );
-  }
+  for (const [index, raw] of blocks.entries()) events.push(...blockEvents(raw, index));
   events.push(
     sse(
       {
@@ -207,6 +222,68 @@ function anthropicEvents(body: Json, fault: StreamFault): { events: string[]; en
   return { events, end: sse({ type: 'message_stop' }, 'message_stop') };
 }
 
+type ResponseEvent = (type: string, data: Json) => string;
+
+/** The terminator of a response with this status. */
+function terminatorOf(status: unknown): string {
+  if (status === 'incomplete') return 'response.incomplete';
+  return status === 'failed' ? 'response.failed' : 'response.completed';
+}
+
+/** A message part's added, deltas, done and part done. */
+function partEvents(rawPart: unknown, at: Json, event: ResponseEvent): string[] {
+  const piece = asRecord(rawPart) ?? {};
+  const kind = piece.type === 'refusal' ? 'refusal' : 'output_text';
+  const field = kind === 'refusal' ? 'refusal' : 'text';
+  const text = typeof piece[field] === 'string' ? (piece[field] as string) : '';
+  return [
+    event('response.content_part.added', { ...at, part: { ...piece, [field]: '' } }),
+    ...deltasOf(text).map((delta) =>
+      event(`response.${kind}.delta`, {
+        ...at,
+        delta,
+        ...(kind === 'refusal' ? {} : { logprobs: [] }),
+      }),
+    ),
+    event(`response.${kind}.done`, { ...at, [field]: text }),
+    event('response.content_part.done', { ...at, part: piece }),
+  ];
+}
+
+/** An output item's added, what it streams (a message's parts, a call's arguments) and done. */
+function itemEvents(item: Json, index: number, event: ResponseEvent): string[] {
+  const where = { item_id: item.id, output_index: index };
+  const events: string[] = [];
+  if (item.type === 'message' && Array.isArray(item.content)) {
+    events.push(
+      event('response.output_item.added', {
+        output_index: index,
+        item: { ...item, status: 'in_progress', content: [] },
+      }),
+    );
+    for (const [part, rawPart] of (item.content as unknown[]).entries()) {
+      events.push(...partEvents(rawPart, { ...where, content_index: part }, event));
+    }
+  } else if (item.type === 'function_call' && typeof item.arguments === 'string') {
+    events.push(
+      event('response.output_item.added', {
+        output_index: index,
+        item: { ...item, status: 'in_progress', arguments: '' },
+      }),
+    );
+    for (const delta of deltasOf(item.arguments)) {
+      events.push(event('response.function_call_arguments.delta', { ...where, delta }));
+    }
+    events.push(
+      event('response.function_call_arguments.done', { ...where, arguments: item.arguments }),
+    );
+  } else {
+    events.push(event('response.output_item.added', { output_index: index, item }));
+  }
+  events.push(event('response.output_item.done', { output_index: index, item }));
+  return events;
+}
+
 /**
  * The events of a Responses API answer, from the response `body`: `response.created` and
  * `response.in_progress` with the response as it starts (no output, no usage); for each output item
@@ -217,8 +294,11 @@ function anthropicEvents(body: Json, fault: StreamFault): { events: string[]; en
  */
 function responsesEvents(body: Json, fault: StreamFault): { events: string[]; end: string } {
   let sequence = 0;
-  const event = (type: string, data: Json): string =>
-    sse({ type, sequence_number: sequence++, ...data }, type);
+  const event: ResponseEvent = (type, data) => {
+    const sequenceNumber = sequence;
+    sequence += 1;
+    return sse({ type, sequence_number: sequenceNumber, ...data }, type);
+  };
   const started = {
     ...body,
     status: 'in_progress',
@@ -233,66 +313,18 @@ function responsesEvents(body: Json, fault: StreamFault): { events: string[]; en
   ];
   const output = Array.isArray(body.output) ? (body.output as unknown[]) : [];
   for (const [index, raw] of output.entries()) {
-    const item = asRecord(raw) ?? {};
-    const where = { item_id: item.id, output_index: index };
-    if (item.type === 'message' && Array.isArray(item.content)) {
-      events.push(
-        event('response.output_item.added', {
-          output_index: index,
-          item: { ...item, status: 'in_progress', content: [] },
-        }),
-      );
-      for (const [part, rawPart] of (item.content as unknown[]).entries()) {
-        const at = { ...where, content_index: part };
-        const piece = asRecord(rawPart) ?? {};
-        const kind = piece.type === 'refusal' ? 'refusal' : 'output_text';
-        const field = kind === 'refusal' ? 'refusal' : 'text';
-        const text = typeof piece[field] === 'string' ? (piece[field] as string) : '';
-        events.push(
-          event('response.content_part.added', { ...at, part: { ...piece, [field]: '' } }),
-        );
-        for (const delta of deltasOf(text)) {
-          events.push(
-            event(`response.${kind}.delta`, {
-              ...at,
-              delta,
-              ...(kind === 'refusal' ? {} : { logprobs: [] }),
-            }),
-          );
-        }
-        events.push(
-          event(`response.${kind}.done`, { ...at, [field]: text }),
-          event('response.content_part.done', { ...at, part: piece }),
-        );
-      }
-    } else if (item.type === 'function_call' && typeof item.arguments === 'string') {
-      events.push(
-        event('response.output_item.added', {
-          output_index: index,
-          item: { ...item, status: 'in_progress', arguments: '' },
-        }),
-      );
-      for (const delta of deltasOf(item.arguments)) {
-        events.push(event('response.function_call_arguments.delta', { ...where, delta }));
-      }
-      events.push(
-        event('response.function_call_arguments.done', { ...where, arguments: item.arguments }),
-      );
-    } else {
-      events.push(event('response.output_item.added', { output_index: index, item }));
-    }
-    events.push(event('response.output_item.done', { output_index: index, item }));
+    events.push(...itemEvents(asRecord(raw) ?? {}, index, event));
   }
-  const terminator =
-    body.status === 'incomplete'
-      ? 'response.incomplete'
-      : body.status === 'failed'
-        ? 'response.failed'
-        : 'response.completed';
+  const terminator = terminatorOf(body.status);
   const { usage, ...rest } = body;
   const final = fault.noUsage === true || usage === undefined ? rest : { ...rest, usage };
   return { events, end: event(terminator, { response: final }) };
 }
+
+const EVENTS_OF: Record<
+  Wire,
+  (body: Json, fault: StreamFault) => { events: string[]; end: string }
+> = { anthropic: anthropicEvents, chat: chatEvents, responses: responsesEvents };
 
 /**
  * The stream of `body`, the answer of `wire` as the fake would give it whole (an object, or its
@@ -309,12 +341,7 @@ export function eventStream(wire: Wire, body: unknown, fault: StreamFault = {}):
     }
   }
   const json = asRecord(answer) ?? {};
-  const { events, end } =
-    wire === 'anthropic'
-      ? anthropicEvents(json, fault)
-      : wire === 'responses'
-        ? responsesEvents(json, fault)
-        : chatEvents(json, fault);
+  const { events, end } = EVENTS_OF[wire](json, fault);
   if (fault.error !== undefined) return [events[0] ?? '', errorEvent(wire, fault.error)];
   return fault.cut === true ? events : [...events, end];
 }
