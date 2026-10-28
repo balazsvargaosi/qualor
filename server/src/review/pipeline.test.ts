@@ -600,7 +600,9 @@ describe('runReviewPipeline', () => {
             reader: null,
             shouldStop: () => Promise.resolve(false),
             send: (conversation) => {
-              (sent[role] ??= []).push(conversation);
+              const sentBefore = sent[role] ?? [];
+              sent[role] = sentBefore;
+              sentBefore.push(conversation);
               const text = left.get(role)?.shift();
               if (text === undefined) return Promise.reject(new Error(`no text left for ${role}`));
               return Promise.resolve({
@@ -932,10 +934,9 @@ describe('runReviewPipeline', () => {
                   role === 'performance'
                     ? { inputTokens: 6_000 + 360 * (n - 1), outputTokens: n === 5 ? 333 : 320 }
                     : { inputTokens: firstThreeSpend - 200, outputTokens: 200 };
+                const answer = role === 'judge' ? judgeSays() : { findings: [] };
                 return Promise.resolve({
-                  text: reads
-                    ? ''
-                    : JSON.stringify(role === 'judge' ? judgeSays() : { findings: [] }),
+                  text: reads ? '' : JSON.stringify(answer),
                   finishReason: reads ? ('tool' as const) : ('stop' as const),
                   usage,
                   model: null,
@@ -1005,12 +1006,9 @@ describe('runReviewPipeline', () => {
           const findings = Array.from({ length: serious }, (_, i) =>
             judgedAs({ category: 'security', severity: 'critical', title: `S${i}` }),
           );
-          const value =
-            role === 'judge'
-              ? judgeSays({ findings })
-              : role === 'verify'
-                ? { verdict: 'confirmed', reason: 'r' }
-                : { findings: [] };
+          let value: unknown = { findings: [] };
+          if (role === 'judge') value = judgeSays({ findings });
+          else if (role === 'verify') value = { verdict: 'confirmed', reason: 'r' };
           return Promise.resolve(answer(value, [used, 0]));
         },
       };
@@ -1201,15 +1199,11 @@ describe('runReviewPipeline', () => {
         expect(Math.max(...shown.bodies)).toBe(1);
       }
       if (shown.suggestions < 24) expect(Math.max(...shown.priorBodies)).toBe(1);
-      order.push(
-        shown.suggestions < 24
-          ? 'suggestions'
-          : Math.max(...shown.priorBodies) < PROMPT_LIMITS.priorBodyChars
-            ? 'prior bodies'
-            : Math.max(...shown.bodies) < 1_200
-              ? 'bodies'
-              : 'whole',
-      );
+      let step = 'whole';
+      if (shown.suggestions < 24) step = 'suggestions';
+      else if (Math.max(...shown.priorBodies) < PROMPT_LIMITS.priorBodyChars) step = 'prior bodies';
+      else if (Math.max(...shown.bodies) < 1_200) step = 'bodies';
+      order.push(step);
     }
     // Each step is reached, a smaller window going further.
     expect(order).toEqual(['whole', 'whole', 'bodies', 'prior bodies', 'suggestions']);
