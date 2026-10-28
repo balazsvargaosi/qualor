@@ -6,6 +6,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-28
+
 ### Added
 
 - AI review settings (**Settings → AI**) and the repository snapshot the scanner sends for

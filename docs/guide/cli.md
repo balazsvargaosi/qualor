@@ -22,11 +22,11 @@ a snapshot of the repository right after the report. Every log line about that s
 `AI review`, and a failure there is only a warning: the exit code stays the quality gate's. A scan
 that exits 3 sends no snapshot.
 
-Its first line is its own version (`qualor 0.11.0 (linux-x64)`). With a server configured, it then
-asks the server for its version and logs `server https://qualor.example.com runs Qualor 0.11.0`. When
+Its first line is its own version (`qualor 0.12.0 (linux-x64)`). With a server configured, it then
+asks the server for its version and logs `server https://qualor.example.com runs Qualor 0.12.0`. When
 the two are different releases (`0.3` against `0.4`), it warns and names the scanner tag that
 matches the server. When the server knows of a newer Qualor release (its
-[update check](./telemetry.md#update-check)), the scanner logs `Qualor 0.11.0 is available …` with the
+[update check](./telemetry.md#update-check)), the scanner logs `Qualor 0.12.0 is available …` with the
 scanner tag to move to. The check never fails a scan: a server that does not answer it is noted only
 in the debug log.
 

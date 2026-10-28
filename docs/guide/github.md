@@ -30,8 +30,8 @@ In the repository (or the organisation) go to **Settings → Secrets and variabl
 | Secret | `QUALOR_TOKEN` | the token |
 
 Only if you run [your own image or a mirror](#without-the-action-your-own-image-or-a-mirror), add the
-variable `QUALOR_SCANNER_IMAGE` with `qualor/scanner:0.11`, or a full version such as
-`qualor/scanner:0.11.0` (for C#, `QUALOR_SCANNER_DOTNET_IMAGE` with `qualor/scanner-dotnet:0.11`).
+variable `QUALOR_SCANNER_IMAGE` with `qualor/scanner:0.12`, or a full version such as
+`qualor/scanner:0.12.0` (for C#, `QUALOR_SCANNER_DOTNET_IMAGE` with `qualor/scanner-dotnet:0.12`).
 
 ## 2. The workflow
 
@@ -95,8 +95,8 @@ when the upload is refused (a wrong or revoked token). It needs a Linux runner w
 (`ubuntu-latest` or self-hosted). The scanner cannot write into the checkout, so an option that
 writes a file (such as `--output`) needs a path under `/tmp`.
 
-The action's version follows Qualor's: `@v0.11.0` runs `qualor/scanner:0.11.0`, `@v0.11` follows
-the 0.11 patch releases and `@v0` the latest release. Pick the version that matches your Qualor
+The action's version follows Qualor's: `@v0.11.0` runs `qualor/scanner:0.12.0`, `@v0.11` follows
+the 0.12 patch releases and `@v0` the latest release. Pick the version that matches your Qualor
 server, or pin a full version to control every update.
 
 Why it looks like this:
