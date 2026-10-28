@@ -61,7 +61,12 @@
         i18n="@@project.tab.branches"
         >Branches and merge requests</a
       >
-      <a routerLink="issues" routerLinkActive="active" ariaCurrentWhenActive="page"
+      <a
+        routerLink="issues"
+        [queryParams]="issuesQuery()"
+        routerLinkActive="active"
+        ariaCurrentWhenActive="page"
+        [routerLinkActiveOptions]="issuesActive"
         ><ng-container i18n="@@project.tab.issues">Issues</ng-container>
         @if (issueCount() !== null) {
           <span class="tab-count" aria-hidden="true">{{ issueCount() }}</span>

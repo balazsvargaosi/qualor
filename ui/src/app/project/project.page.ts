@@ -9,7 +9,14 @@ import {
   viewChild,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import {
+  type IsActiveMatchOptions,
+  NavigationEnd,
+  Router,
+  RouterLink,
+  RouterLinkActive,
+  RouterOutlet,
+} from '@angular/router';
 import { filter, map } from 'rxjs';
 import { ApiError, problemMessage } from '../api/errors';
 import { SessionStore } from '../auth/session';
@@ -93,6 +100,18 @@ export class ProjectPage {
     const value = this.current()?.mainBranch?.measures['issues'];
     return typeof value === 'number' ? value : null;
   });
+  /** The Issues tab opens the list it counts: the shown branch's (`?branch=`), else the main one's. */
+  protected readonly issuesQuery = computed(() => {
+    const shown = this.shown();
+    return shown ? { branch: shown.id } : null;
+  });
+  /** The Issues tab stays current on any issues page, whatever branch its link carries. */
+  protected readonly issuesActive: IsActiveMatchOptions = {
+    paths: 'subset',
+    queryParams: 'ignored',
+    matrixParams: 'ignored',
+    fragment: 'ignored',
+  };
   /** A malformed id in the URL (422 on the path) is, for the reader, a project that does not exist. */
   protected readonly errorMessage = computed(() => {
     const error = this.project.error();

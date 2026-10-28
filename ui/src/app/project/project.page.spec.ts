@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router } from '@angular/router';
 import {
   FakeServer,
   me,
@@ -10,7 +10,7 @@ import {
   settle,
 } from '../../testing/fake-server';
 import { SessionStore } from '../auth/session';
-import type { BranchView } from './branches';
+import { type BranchView, branchView } from './branches';
 import { CurrentProject } from './current-project';
 import { ProjectPage } from './project.page';
 
@@ -209,6 +209,58 @@ describe('ProjectPage', () => {
     store.showBranch(null);
     await settle(fixture);
     expect(root.querySelector('.tab-count')?.textContent?.trim()).toBe('7');
+  });
+
+  it('links the Issues tab to the list of the branch it shows, and to the main branch’s without one', async () => {
+    server.on('GET', `/api/v0/projects/${ID}`, { body: PROJECT });
+    // On a merge request's issue page, which shows that merge request.
+    await TestBed.inject(Router).navigateByUrl('/issues/0190a6c2-0000-7000-8000-0000000000e1');
+    const fixture = TestBed.createComponent(ProjectPage);
+    fixture.componentRef.setInput('projectId', ID);
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    const link = () =>
+      [...root.querySelectorAll('nav[aria-label="Project"] a')].find((a) =>
+        a.textContent?.trim().startsWith('Issues'),
+      )!;
+    expect(link().getAttribute('href')).toBe('/issues');
+    TestBed.inject(CurrentProject).showBranch(MR);
+    await settle(fixture);
+    expect(link().getAttribute('href')).toBe('/issues?branch=b-mr');
+    // The issue page is still under the Issues tab.
+    expect(link().classList).toContain('active');
+    expect(link().getAttribute('aria-current')).toBe('page');
+    TestBed.inject(CurrentProject).showBranch(null);
+    await settle(fixture);
+    expect(link().getAttribute('href')).toBe('/issues');
+  });
+
+  it('shows no count for a merge request without an issues measure', async () => {
+    server.on('GET', `/api/v0/projects/${ID}`, { body: PROJECT });
+    const fixture = TestBed.createComponent(ProjectPage);
+    fixture.componentRef.setInput('projectId', ID);
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.tab-count')?.textContent?.trim()).toBe('7');
+    TestBed.inject(CurrentProject).showBranch(
+      branchView({
+        id: 'b-mr',
+        projectId: ID,
+        kind: 'merge_request',
+        name: '42',
+        isMain: false,
+        mrSourceBranch: 'feature/x',
+        mrTargetBranch: 'main',
+        mrTitle: null,
+        mrUrl: null,
+        lastAnalysisId: null,
+        lastAnalyzedAt: null,
+        gateStatus: null,
+        measures: {},
+      }),
+    );
+    await settle(fixture);
+    expect(root.querySelector('.tab-count')).toBeNull();
   });
 
   it('names the branch or merge request an overview shows, with its own gate and link', async () => {
