@@ -154,6 +154,17 @@ export function providerClientOf(
   return { provider: 'gitlab', client: found.client, ref: project.scmProjectRef, iid: branch.name };
 }
 
+/**
+ * The project's id on GitLab, asked for once through `ref`, its path or its id. GitLab sends a GET
+ * through a moved project's old path on to its id, and the client follows it; a POST or a PUT
+ * there is refused. So a side makes every call through the id, as a decoration does. A ref that is
+ * a number is the id already, with no request.
+ */
+function gitlabProjectId(client: GitLabClient, ref: string): () => Promise<string> {
+  let id = /^\d+$/.test(ref) ? ref : undefined;
+  return async () => (id ??= String((await client.project(ref)).id));
+}
+
 /** Who Qualor is on GitLab, and the merge request's discussions, each with all its notes. */
 async function gitlabListing(
   client: GitLabClient,
@@ -245,8 +256,9 @@ export function gitlabSide(
 ): ThreadSide {
   /** The GitLab user of each person's note the last read found. */
   const authorOf = new Map<number, number>();
-  const mayTriage = (userId: number) =>
-    gitlabMayTriage(client, ref, userId, (field) =>
+  const projectId = gitlabProjectId(client, ref);
+  const mayTriage = async (userId: number) =>
+    gitlabMayTriage(client, await projectId(), userId, (field) =>
       logger.warn(
         unparsedFields(row.id, field),
         'GitLab membership answer not understood; the reply changes no status',
@@ -255,7 +267,7 @@ export function gitlabSide(
   return {
     connectionId,
     async read() {
-      const { me, listed } = await gitlabListing(client, ref, iid);
+      const { me, listed } = await gitlabListing(client, await projectId(), iid);
       // A discussion is listed with all its notes: one that is listed is whole.
       const discussion = listed.items.find((d) => d.id === row.threadId);
       const [first, ...later] = discussion?.notes ?? [];
@@ -289,9 +301,12 @@ export function gitlabSide(
       }
       return true;
     },
-    post: async (body) => (await client.replyToDiscussion(ref, iid, row.threadId, body)).id,
+    post: async (body) =>
+      (await client.replyToDiscussion(await projectId(), iid, row.threadId, body)).id,
     async resolve() {
-      const done = await orGone(() => client.resolveDiscussion(ref, iid, row.threadId, true));
+      const done = await orGone(async () =>
+        client.resolveDiscussion(await projectId(), iid, row.threadId, true),
+      );
       return done !== GONE;
     },
   };
@@ -412,13 +427,14 @@ export function gitlabCommandSide(
   logger: Pick<WorkerLogger, 'warn'>,
 ): CommandSide {
   const marker = replyMarker(row.id);
+  const projectId = gitlabProjectId(client, ref);
   /** The GitLab user who wrote the command's note, as the last read found it: none until it did. */
   let author: number | undefined;
   return {
     connectionId,
     async read() {
       author = undefined;
-      const { me, listed } = await gitlabListing(client, ref, iid);
+      const { me, listed } = await gitlabListing(client, await projectId(), iid);
       const discussion = listed.items.find((d) => d.id === threadId);
       if (discussion === undefined) return listed.complete ? null : { answered: null };
       const command = discussion.notes.find((note) => note.id === row.noteId);
@@ -431,14 +447,15 @@ export function gitlabCommandSide(
     },
     async mayReview() {
       if (author === undefined) return false;
-      return gitlabMayTriage(client, ref, author, (field) =>
+      return gitlabMayTriage(client, await projectId(), author, (field) =>
         logger.warn(
           unparsedFields(row.id, field),
           'GitLab membership answer not understood; the command is refused',
         ),
       );
     },
-    post: async (body) => (await client.replyToDiscussion(ref, iid, threadId, body)).id,
+    post: async (body) =>
+      (await client.replyToDiscussion(await projectId(), iid, threadId, body)).id,
   };
 }
 

@@ -216,6 +216,12 @@ export interface FakeGitLab {
     userId: number,
     resolved: boolean,
   ): void;
+  /**
+   * The project moved from `oldPath` (renamed, or moved to another group). A request through the
+   * old path answers as GitLab's API does: a GET with a 301 to the same request through the
+   * project's id, the query kept; any other method with a 405.
+   */
+  moveProject(projectId: number, oldPath: string): void;
   /** The next matching requests get these answers, in order, before the fake answers normally. */
   inject(method: string, path: RegExp, ...answers: InjectedAnswer[]): void;
   /** Forgets the recorded requests (not the state). */
@@ -267,6 +273,8 @@ export async function createFakeGitLab(
   const requests: RecordedRequest[] = [];
   const statuses: FakeStatus[] = [];
   const injections: Injection[] = [];
+  /** A moved project's old path -> its id. */
+  const moved = new Map<string, number>();
   let nextNoteId = 1000;
   let nextStatusId = 9000;
   const userShape = gitlabShape('user');
@@ -434,6 +442,17 @@ export async function createFakeGitLab(
     if (req.method === 'GET' && apiPath === '/user') return send(res, 200, author(botUserId));
     if (segments[0] !== 'projects' || segments[1] === undefined) {
       return send(res, 404, { error: '404 Not Found' });
+    }
+    const movedTo = moved.get(segments[1]);
+    if (movedTo !== undefined) {
+      // GitLab's API (find_project!): a moved project's old path sends a GET on to the project's
+      // id, and refuses any other method.
+      if (req.method !== 'GET') {
+        return send(res, 405, { message: 'Non GET methods are not allowed for moved projects' });
+      }
+      const tail = apiPath.split('/').slice(3);
+      const location = [`${url}/api/v4/projects/${movedTo}`, ...tail].join('/');
+      return send(res, 301, undefined, { location: query ? `${location}?${query}` : location });
     }
     const project = findProject(segments[1]);
     if (!project) return send(res, 404, { message: '404 Project Not Found' });
@@ -780,6 +799,10 @@ export async function createFakeGitLab(
     },
     discussions(projectId, iid) {
       return projectOf(projectId).discussions.get(iid) ?? [];
+    },
+    moveProject(projectId, oldPath) {
+      projectOf(projectId);
+      moved.set(oldPath, projectId);
     },
     inject(method, pathPattern, ...answers) {
       injections.push({ method, path: pathPattern, answers: [...answers] });

@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import type { GitHubClient, GitHubComment } from '../scm/github/client';
-import { GitLabError, type GitLabClient, type GitLabDiscussion } from '../scm/gitlab/client';
+import { GitLabClient, GitLabError, type GitLabDiscussion } from '../scm/gitlab/client';
 import { issueMarker } from '../scm/markdown';
 import { ScmError } from '../scm/provider';
 import type { ReplyRow } from './replies';
@@ -247,6 +248,108 @@ describe('a membership answer of GitLab that does not parse', () => {
       await downSide.read();
       await expect(downSide.mayChangeStatus([NOTE])).rejects.toThrow('GitLab could not be reached');
     });
+  });
+});
+
+describe('a GitLab project that moved, mapped by its old path', () => {
+  // GitLab answers a GET through a moved project's old path with a 301 to its id, which the client
+  // follows, and refuses a POST or a PUT there (405). The sides ask for the id once, and every call
+  // after that goes through it, as a decoration's do.
+  const ISSUE = '01920000-0000-7000-8000-0000000000aa';
+  const OLD = 'acme/old-name';
+  const HEAD = 'a'.repeat(40);
+  const BASE = 'b'.repeat(40);
+  let fake: FakeGitLab;
+  const client = () =>
+    new GitLabClient(
+      { baseUrl: fake.url, token: fake.token, allowInternalHosts: true },
+      { timeoutMs: 1_000 },
+    );
+  /** What reached GitLab, as `METHOD path`. */
+  const sent = () => fake.requests.map((r) => `${r.method} ${r.path}`);
+
+  beforeAll(async () => {
+    fake = await createFakeGitLab();
+    fake.addProject({ id: 7, path: 'acme/new-name' });
+    fake.addMergeRequest(7, {
+      iid: 12,
+      title: 'Refund limits',
+      state: 'opened',
+      sourceBranch: 'feature/refund-limits',
+      targetBranch: 'main',
+      headSha: HEAD,
+      baseSha: BASE,
+      startSha: BASE,
+      diffs: [
+        {
+          oldPath: 'src/a.ts',
+          newPath: 'src/a.ts',
+          diff: '@@ -1,1 +1,2 @@\n export const a = 1;\n+console.log(a);\n',
+        },
+      ],
+    });
+    fake.moveProject(7, OLD);
+    fake.setMember(7, 5, 30);
+  });
+  afterAll(() => fake.close());
+
+  it('posts the answer to a reply and resolves its thread through the project id', async () => {
+    const opened = await client().createDiscussion('7', '12', `${issueMarker(ISSUE)}\nA finding.`, {
+      baseSha: BASE,
+      startSha: BASE,
+      headSha: HEAD,
+      oldPath: 'src/a.ts',
+      newPath: 'src/a.ts',
+      newLine: 2,
+    });
+    if (opened === 'position_rejected') throw new Error('the position was rejected');
+    const said = fake.reply(7, 12, opened.id, { body: 'We accept this.', authorId: 5 });
+    const reply = { ...ROW, noteId: said.id, threadId: opened.id, issueId: ISSUE } as ReplyInThread;
+    fake.clearRequests();
+    const side = gitlabSide('c1', client(), OLD, '12', reply, logger);
+    expect(await side.read()).toMatchObject({ notes: [{ id: said.id }], resolved: false });
+    expect(await side.mayChangeStatus([said.id])).toBe(true);
+    const answer = await side.post('The answer.');
+    expect(await side.resolve()).toBe(true);
+    const thread = fake.discussions(7, 12).find((d) => d.id === opened.id);
+    expect(thread?.notes.at(-1)).toMatchObject({ id: answer, authorId: fake.botUserId });
+    expect(thread?.notes.every((n) => n.resolved)).toBe(true);
+    // The old path is asked once, for the id; nothing is written through it.
+    expect(sent().filter((r) => r.includes(encodeURIComponent(OLD)))).toEqual([
+      `GET /projects/${encodeURIComponent(OLD)}`,
+    ]);
+    expect(sent().filter((r) => !r.startsWith('GET'))).toEqual([
+      `POST /projects/7/merge_requests/12/discussions/${opened.id}/notes`,
+      `PUT /projects/7/merge_requests/12/discussions/${opened.id}`,
+    ]);
+  });
+
+  it('posts the answer to a command through the project id', async () => {
+    const opened = fake.addNote(7, 12, { body: 'qualor review', authorId: 5 });
+    const row = { ...ROW, noteId: opened.notes[0]!.id } as ReplyRow;
+    fake.clearRequests();
+    const side = gitlabCommandSide('c1', client(), OLD, '12', row, opened.id, logger);
+    expect(await side.read()).toEqual({ answered: null });
+    expect(await side.mayReview()).toBe(true);
+    const answer = await side.post('Reviewing.');
+    const discussion = fake.discussions(7, 12).find((d) => d.id === opened.id);
+    expect(discussion?.notes.at(-1)).toMatchObject({ id: answer, authorId: fake.botUserId });
+    expect(sent().filter((r) => r.includes(encodeURIComponent(OLD)))).toEqual([
+      `GET /projects/${encodeURIComponent(OLD)}`,
+    ]);
+    expect(sent().filter((r) => !r.startsWith('GET'))).toEqual([
+      `POST /projects/7/merge_requests/12/discussions/${opened.id}/notes`,
+    ]);
+  });
+
+  it('a project GitLab does not have is not found, as each side’s other answers are', async () => {
+    const reply = { ...ROW, threadId: 'abc123', issueId: ISSUE } as ReplyInThread;
+    await expect(
+      gitlabSide('c1', client(), 'acme/nowhere', '12', reply, logger).read(),
+    ).rejects.toMatchObject({ kind: 'not_found' });
+    await expect(
+      gitlabCommandSide('c1', client(), 'acme/nowhere', '12', ROW, 'abc123', logger).post('x'),
+    ).rejects.toMatchObject({ kind: 'not_found' });
   });
 });
 
