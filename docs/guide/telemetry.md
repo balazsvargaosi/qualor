@@ -1,29 +1,32 @@
 # Telemetry
 
-The Qualor server sends anonymous usage statistics to the Qualor project once a day. They tell us
-how many servers run, which versions, and which languages and features people use, so we know
-what to work on. While telemetry is on, the server also checks Docker Hub once a day for a newer
-Qualor release. The scanner (`qualor scan`) sends nothing.
+The Qualor server sends anonymous usage statistics to the Qualor project once a day: how many
+servers run, which versions, and which languages and features they use. They tell us what to work
+on. While telemetry is on, the server also checks Docker Hub daily for a newer release. The scanner
+(`qualor scan`) sends nothing.
 
 ## Turn it off
 
-Set `QUALOR_TELEMETRY=false` and restart the server.
+Set `QUALOR_TELEMETRY=false` and restart the server. This also turns off the
+[update check](#update-check).
 
-- Docker Compose: add `QUALOR_TELEMETRY=false` to the server's `environment` (or `.env`).
-- `docker run`: `-e QUALOR_TELEMETRY=false`.
-- Helm: `config.telemetry: false`.
+| Install | Where to set it |
+| --- | --- |
+| Docker Compose | `QUALOR_TELEMETRY=false` in `.env`, or in `environment` |
+| `docker run` | `-e QUALOR_TELEMETRY=false` |
+| Helm | `config.telemetry: false` |
 
-At every start the server logs one line that says which it is:
+At every start the server logs whether telemetry is on. When it is off, the line is:
 
-```
+```text
 Telemetry: disabled
 ```
 
 ## When and where
 
-About a minute after the server starts, and then every 24 hours, the server sends one HTTPS
-`POST` to `https://qualor.dev/api/telemetry`. It waits 5 seconds at most and never retries. When
-it cannot reach qualor.dev (an offline network, a proxy), nothing else changes.
+About a minute after the server starts, and then every 24 hours, it sends one HTTPS `POST` to
+`https://qualor.dev/api/telemetry`. It waits 5 seconds at most and never retries. If qualor.dev
+cannot be reached (an offline network, a proxy), nothing else is affected.
 
 ## What is sent
 
@@ -58,47 +61,57 @@ The whole report, as an example:
 ```
 
 | Field | Meaning |
-|---|---|
+| --- | --- |
 | `installationId` | a random id the server creates on its first report and keeps. It is not derived from your licence, organisations or host |
-| `version`, `edition` | the server's version, and `community` or `enterprise` |
-| `platform` | operating system, CPU architecture, Node.js version, and whether it runs from the Docker image, on Kubernetes or as a plain Node.js process |
+| `version` | the server's version |
+| `edition` | `community` or `enterprise` |
+| `platform` | the operating system, CPU architecture and Node.js version, and whether the server runs from the Docker image, on Kubernetes or as plain Node.js |
 | `database` | `embedded` (the image's own PostgreSQL) or `external` (`DATABASE_URL`) |
-| `counts` | how many organisations, users, projects, branches, quality gates, quality profiles and webhooks exist, and how many analyses ran in the last 30 days |
+| `counts` | how many organisations, users, projects, branches, quality gates, quality profiles and webhooks exist, and the analyses of the last 30 days |
 | `languages` | the languages of the analysed files |
 | `engines` | the built-in analyzers that ran successfully in the last 30 days, and `external` when a SARIF report from another tool was imported |
 | `scm` | `gitlab` and/or `github`, when a connection exists |
 | `features` | whether single sign-on, SCIM, the AI assistant and AI review are set up |
-| `aiReview` | how AI review is used: the organisations that have it on, and the projects it reviews; the kind of model provider (`anthropic`, `openai_chat_completions`, `openai_responses` or `none`), never its address or its models; whether a strong and a fast model are set; and, for the last 30 days, the reviews by how they ended (done, skipped, failed, or superseded by a newer push), the findings they raised, those placed on a changed line and those with a suggestion, the replies answered and the status changes they made, and the `qualor review`, `qualor fix` and `qualor stop` commands handled |
-| `assistant30d` | how many Explain, Suggest triage and Suggest a fix requests people made in the last 30 days (automatic fix suggestions are not counted) |
+| `aiReview` | how AI review is used, in counts and flags only: see the next table |
+| `assistant30d` | the Explain, Suggest triage and Suggest a fix requests people made in the last 30 days. Automatic fix suggestions are not counted |
+
+| `aiReview` field | Meaning |
+| --- | --- |
+| `organizations`, `projects` | the organisations that have AI review on, and the projects it reviews |
+| `provider` | the kind of model provider: `anthropic`, `openai_chat_completions`, `openai_responses` or `none`. Never its address or its models |
+| `tiers` | whether a strong and a fast model are set |
+| `reviews30d` | the reviews of the last 30 days by how they ended: done, skipped, failed, or superseded by a newer push |
+| `findings30d`, `inline30d`, `suggestions30d` | the findings raised in the last 30 days, those placed on a changed line, and those with a suggestion |
+| `replies30d` | the replies answered in the last 30 days, and the status changes they made |
+| `commands30d` | the `qualor review`, `qualor fix` and `qualor stop` commands handled in the last 30 days |
 
 Servers before 0.12.0 send `schema` 1, without `aiReview`, `assistant30d` and the `aiReview` flag
 of `features`. A newer server also sends `schema` 1 on a day it cannot count its AI use.
 
 ## What is never sent
 
-Names of users, organisations, projects, repositories or branches, email addresses, URLs and
-host names, model names, the AI provider's address, source code, file paths, issues, prompts,
-model answers and review text, tokens, secrets and the licence key.
+Names of users, organisations, projects, repositories or branches, email addresses, URLs and host
+names, model names, the AI provider's address, source code, file paths, issues, prompts, model
+answers and review text, tokens, secrets and the licence key.
 
 ## Update check
 
 While telemetry is on, the server asks Docker Hub (`hub.docker.com`) for the list of
-`qualor/server` tags about a minute after it starts and then every 24 hours. The request carries
-nothing about your installation; like any request, Docker Hub sees the address it comes from.
+`qualor/server` tags, about a minute after it starts and then every 24 hours. The request carries
+nothing about your installation. Docker Hub sees the address it comes from, as for any request.
 
 When a newer release exists, the server:
 
 - logs `Qualor 0.9.0 is available (this server runs 0.8.0)` with a link to the release notes;
-- shows instance admins a banner, which they can dismiss until the next release, and the new
-  version next to the current one in the user menu;
-- tells the scanner, which logs it at the start of a scan (see [the scanner](./cli.md#qualor-scan)).
+- shows instance admins a banner, which they can dismiss until the next release;
+- shows the new version next to the current one in the user menu;
+- tells the scanner, which logs it at the start of a scan ([`qualor scan`](./cli.md#qualor-scan)).
 
-`QUALOR_TELEMETRY=false` turns the update check off as well. Behind a firewall or with your own
-registry mirror the check fails quietly and nothing is shown.
+Behind a firewall or with your own registry mirror, the check fails quietly and nothing is shown.
 
 ## What happens on our side
 
-qualor.dev stores the report under the installation id, one per day, and keeps it for 24 months.
-It keeps the report without the IP address it came from; like every request to qualor.dev, the
-address appears in the load balancer's logs, which are deleted after 30 days. Only the Qualor
-project sees the data. See also the [privacy policy](https://qualor.dev/privacy).
+qualor.dev stores one report per installation id and day, and keeps it for 24 months. The stored
+report has no IP address. Like every request to qualor.dev, the address appears in the load
+balancer's logs, which are deleted after 30 days. Only the Qualor project sees the data. See the
+[privacy policy](https://qualor.dev/privacy).

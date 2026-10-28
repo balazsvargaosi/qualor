@@ -1,21 +1,21 @@
 # Users, projects and tokens
 
+Organisations hold projects, people get roles in them, and CI uploads analyses with tokens.
+
 ## Organisations
 
-An organisation is a tenant. It owns its projects, quality profiles, quality gates, webhooks and
-GitLab/GitHub connections. The first start creates the organisation `default`. There is no limit
-on organisations, users, projects or lines of code, in the community edition or with an
-[enterprise licence](./enterprise.md). Most companies need only `default`.
+An organisation is a tenant: it owns its projects, quality profiles, quality gates, webhooks and
+GitLab/GitHub connections. The first start creates the organisation `default`, and most companies
+need no other. Organisations, users, projects and lines of code are unlimited in every edition.
 
-An instance admin creates more organisations in **Settings → Organizations** with **New
-organization**. Give it a name and a key of 2 to 64 lowercase letters, digits and hyphens. The key
-is what the CLI and the audit log use. Neither can be changed later. You become the new
-organisation's Organization admin, and the organisation switcher in the header lists it. The same
-screen calls `POST /api/v0/organizations`.
+An instance admin creates more in **Settings → Organizations** with **New organization**
+(`POST /api/v0/organizations`). The key, 2 to 64 lowercase letters, digits and hyphens, is what the
+CLI and the audit log use. Neither the name nor the key can be changed later. You become the new
+organisation's Organization admin, and the organisation switcher in the header lists it.
 
 ## Users and roles
 
-Every edition has these roles; none needs a licence.
+These roles exist in every edition, without a licence:
 
 | Role | Can |
 |---|---|
@@ -25,25 +25,27 @@ Every edition has these roles; none needs a licence.
 | **Maintainer** (`member`) | read the projects, upload analyses, triage issues (change a status, override a severity) and use the AI assistant |
 | **Viewer** (`viewer`) | read the projects: code, issues, quality gate, quality profile and AI answers |
 
-A role given in an organisation applies to all its projects. An Organization admin can also give
-someone Project admin, Maintainer or Viewer on a **single project**, in **Project → Access**; a
-project role only adds to the organisation role. The full permission table is in
+A role in an organisation applies to all its projects. An Organization admin can also give someone
+Project admin, Maintainer or Viewer on a **single project**, in **Project → Access**. A project role
+only adds to the organisation role. The full permission table is in
 [Roles and the audit log](./roles-and-audit.md).
 
 Instance admins manage users in **Settings → Users**: create or invite users, reset passwords,
-deactivate users, and make or remove instance admins. A new user and a user whose password was
-reset must choose a new password at their next password sign-in (a single sign-on sign-in does
-not ask). Passwords have at least 12 characters, and sign-in is rate-limited.
+deactivate users, and make or remove instance admins.
 
-An instance admin needs an email address to get Qualor's [alerts by email](./email.md). Everyone
-needs one to get [project notifications](./email.md#project-notifications); an instance
-administrator sets it in **Settings → Users**.
+- Passwords have at least 12 characters, and sign-in is rate-limited.
+- A user created with an initial password, and a user whose password was reset, must choose a new
+  password at their next password sign-in. A single sign-on sign-in does not ask.
+- **Reset password** on a user's row ends that user's sessions and revokes their personal tokens.
+  CI jobs that use one of those tokens need a new one.
+- An instance admin needs an email address to get Qualor's [alerts by email](./email.md), and
+  everyone needs one to get [project notifications](./email.md#project-notifications). An instance
+  admin sets it in **Settings → Users**.
 
-Organization admins manage organisation membership and roles in **Settings → Members**: add
-someone by name (the field suggests people who are not members yet as you type, or type the whole
-user name), change their role, or remove them. An organisation always keeps
-at least one Organization admin: demoting or removing the last one answers 409 `LAST_ADMIN`, so
-make someone else Organization admin first. The same screen calls the API:
+Organization admins manage membership and roles in **Settings → Members**: add someone by name,
+change their role, or remove them. An organisation always keeps at least one Organization admin:
+demoting or removing the last one answers 409 `LAST_ADMIN`, so make someone else Organization admin
+first. The same screen calls the API:
 
 ```sh
 # role: "admin", "project_admin", "member" or "viewer"
@@ -51,100 +53,106 @@ curl -fsS -X PUT -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" -H 'Content-Type
   -d '{"role":"member"}' "$QUALOR_URL/api/v0/organizations/<org id>/members/<user id>"
 ```
 
-Roles on a single project use `/api/v0/projects/<project id>/members/<user id>` the same way (see
-[Roles and the audit log](./roles-and-audit.md#managing-members)).
+Roles on a single project use `/api/v0/projects/<project id>/members/<user id>` the same way
+([Managing members](./roles-and-audit.md#managing-members)).
 
 ### Forgotten passwords and invitations
 
-When Qualor can send email ([Email](./email.md#account-emails)) and `QUALOR_PUBLIC_URL` is set:
+Both need Qualor to send email ([Email](./email.md#account-emails)) and `QUALOR_PUBLIC_URL` to be
+set. Without them, an instance admin resets a forgotten password in **Settings → Users**.
 
-- **Forgot password?** on the sign-in page sends a one-time link to the account's email address;
-  it works for 60 minutes. The page gives the same answer whether or not an account matches. Only
-  people who sign in with a password get a link: not single sign-on accounts without one, not the
-  [demo account](#a-public-read-only-demo), and while password sign-in is limited to break-glass
-  admins, only those admins. Setting the new password signs out every session of the account;
-  personal tokens keep working. Then sign in with the new password. Each IP address may ask 5 times
-  a minute, and each name or email typed gets at most 3 requests in 15 minutes.
-- **Settings → Users → New user** can **Send an invitation email** instead of setting an initial
-  password (the user then needs an email address). The user chooses their own password through the
-  link, which works for 7 days. The list shows **Invited · expires …** or **Invitation expired**,
-  with **Resend invitation** (the earlier link stops working) and **Revoke invitation**. Setting a
-  password for the user, changing their email address or deactivating them also ends the
-  invitation and any reset link, and an invitation stops working once the account is linked to
-  single sign-on. **Resend invitation** is refused for a user who already has a password or a
-  single sign-on identity.
-- People get **Your Qualor password was changed** after a reset through a link, a change of their
-  own password, or a reset by an administrator.
+**Forgot password?** on the sign-in page sends a one-time link to the account's email address,
+valid for 60 minutes. The page answers the same whether or not an account matches.
 
-Without email, an instance admin resets a forgotten password in **Settings → Users**, as before.
+- Only people who sign in with a password get a link: not single sign-on accounts without one, not
+  the [demo account](#a-public-read-only-demo), and, while password sign-in is limited to
+  break-glass admins, only those admins.
+- The new password signs out every session of the account. Personal tokens keep working.
+- Each IP address may ask 5 times a minute, and each name or email typed gets at most 3 requests in
+  15 minutes.
+
+**Invitations.** In **Settings → Users → New user**, choose **Send an invitation email** instead of
+setting an initial password. The user needs an email address, and chooses a password through the
+link, which works for 7 days.
+
+- The list shows **Invited · expires …** or **Invitation expired**, with **Resend invitation** (the
+  earlier link stops working) and **Revoke invitation**.
+- **Resend invitation** is refused for a user who already has a password or a single sign-on
+  identity.
+- Setting a password for the user, changing their email address or deactivating them ends the
+  invitation and any reset link. So does linking the account to single sign-on.
 
 ### A public, read-only demo
 
-To let anyone look around a server without an account, create a user (for example `guest`, with
-any long password nobody needs to know), give it the **Viewer** role in the organisations it may
-see, and set `QUALOR_DEMO_USER=guest` ([Server settings](./install-server.md#server-settings)).
-The sign-in page then shows **Explore the demo**, which signs the visitor in as that user without
-a password.
+To let anyone look around a server without an account:
+
+1. Create a user, for example `guest`, with a long password nobody needs to know.
+2. Sign in as that user once and choose a new password. Do it before step 4: the demo stays off
+   while the user must change its password, and the demo user cannot change it.
+3. Give it the **Viewer** role in the organisations it may show.
+4. Set `QUALOR_DEMO_USER=guest` ([Server settings](./install-server.md#server-settings)).
+
+The sign-in page then shows **Explore the demo**, which signs the visitor in as that user without a
+password. The visitor sees everything a Viewer of those organisations sees: the projects' code,
+issues and AI answers already given. Give the demo user only organisations whose code may be
+public.
 
 - **Read-only, whatever happens.** The server refuses every change made as the demo user with 403
   `DEMO_READ_ONLY`, even if someone later gives it a higher role or signs in with its password: no
   triage, no AI requests, no tokens, no password change. Signing out still works.
 - **Shown only while it is safe.** The button appears, and `POST /api/v0/auth/demo` works, only
-  while the user exists, is active, is no instance admin, needs no password change, and holds no
-  role above Viewer anywhere, on single projects included. Otherwise the button is gone and the
+  while the user exists, is active, is not an instance admin, needs no password change, and holds
+  no role above Viewer anywhere, single projects included. Otherwise the button is gone and the
   call answers 404 `DEMO_UNAVAILABLE`.
-- **Short sessions.** A demo session lasts at most 24 hours (less if `QUALOR_SESSION_TTL_HOURS` is
-  shorter), and the demo user's expired sessions are removed at each new demo sign-in. Demo
-  sign-ins are rate-limited per address like password sign-ins, and recorded in the audit log with
-  the method `demo`.
-
-The visitor sees everything a Viewer of those organisations sees: the projects' code, issues and
-AI answers already given. Give the demo user only organisations whose code may be public.
+- **Short sessions.** A demo session lasts at most 24 hours, or less if `QUALOR_SESSION_TTL_HOURS`
+  is shorter. The demo user's expired sessions are removed at each new demo sign-in. Demo sign-ins
+  are rate-limited per address like password sign-ins, and recorded in the audit log with the
+  method `demo`.
 
 ### Single sign-on users
 
-With an enterprise licence listing `sso`, people can also sign in through your identity provider,
-and an account can be created at their first sign-in or by SCIM (SCIM needs the Enterprise plan)
-([Single sign-on and SCIM](./sso-and-scim.md)). Such an account has **no password**: it signs in
-only through single sign-on. **Settings → Users** shows how each user signs in with badges:
+With an enterprise licence that lists `sso`, people can also sign in through your identity provider
+([Single sign-on and SCIM](./sso-and-scim.md)). Their account is created at their first sign-in, or
+by SCIM, which needs the Enterprise plan. Such an account has **no password**: it signs in only
+through single sign-on.
 
-- **No password**: the user cannot sign in with a password (the **No password** filter lists only
-  these users; `GET /api/v0/users?signIn=no-password` in the API);
-- **SSO**: the user has an account linked to an identity provider;
-- **SCIM**: the identity provider provisions the account, and may overwrite changes made to it in
-  Qualor.
+**Settings → Users** shows how each user signs in:
 
-Each user in `GET /api/v0/users` carries `hasPassword` and `sso` (`identities`, the number of
+| Badge | Meaning |
+|---|---|
+| **No password** | the user cannot sign in with a password. The **No password** filter lists only these users (`GET /api/v0/users?signIn=no-password`) |
+| **SSO** | the account is linked to an identity provider |
+| **SCIM** | the identity provider provisions the account, and may overwrite changes made to it in Qualor |
+
+In `GET /api/v0/users`, each user carries `hasPassword` and `sso` (`identities`, the number of
 linked accounts, and `scim`).
 
 **After the `sso` licence lapses**, users without a password cannot sign in. Give one a password
-in **Settings → Users**, with **Reset password** on their row: they choose their own at their
-next sign-in, as any user whose password was reset does. Setting (resetting) a password ends that user's
-sessions and revokes their personal tokens, so their CI jobs need a new token. The same works for
-a user whose only linked connection was deleted. Only an instance admin can give a user without a
-password one: changing your own password needs the current one. Who else may use a password is set in **Settings → Sign-in**.
+with **Reset password** on their row in **Settings → Users**, and they choose their own at their
+next sign-in. The same works for a user whose only linked connection was deleted. Only an instance
+admin can do this, because changing your own password needs the current one.
+**Settings → Sign-in** sets who else may use a password.
 
-Group mappings of single sign-on can manage memberships too. **Settings → Members** marks such a
-membership "From SSO group sync: *connection*", and `GET …/members` gives it a `managedBy` with the
-connection's id and name (`null` for a membership made by hand). Changing its role by hand takes it
-over from group sync: from then on it is a manual membership. Removing it works too, but the next
-sync adds it back while the person's group still maps to it.
+Single sign-on group mappings can manage memberships too. **Settings → Members** marks such a
+membership "From SSO group sync: _connection_", and `GET …/members` gives it a `managedBy` with the
+connection's id and name (`null` for a membership made by hand). Changing its role by hand turns it
+into a manual membership. Removing it works, but the next sync adds it back while the person's
+group still maps to it.
 
 ## Projects
 
 A project is one analysed codebase, usually one repository. A monorepo can hold several projects,
 each with its own key and its own `sources.include`.
 
-- **Create one** in **Projects → New project**, with a key and a name. Or let the first upload create
-  it: this happens when the scan uses a personal token of an org admin with the **Upload analyses**
-  scope.
+- **Create one** in **Projects → New project**, with a key and a name. Or let the first upload
+  create it: this happens when the scan uses a personal token of an org admin with the **Upload
+  analyses** scope.
 - **The key** is what the scanner reports. It defaults to the CI project path (`CI_PROJECT_PATH`,
-  `GITHUB_REPOSITORY`). You can set it with `project.key` in `qualor.yml`, `QUALOR_PROJECT_KEY` or
-  `--project-key`. Keys are unique on the instance. They may contain letters, digits, `.`, `_`, `-`,
+  `GITHUB_REPOSITORY`). Set it with `project.key` in `qualor.yml`, `QUALOR_PROJECT_KEY` or
+  `--project-key`. Keys are unique on the instance and may contain letters, digits, `.`, `_`, `-`,
   `/` and `:`.
 - **The main branch** is `main` by default. Every other branch and every merge request is compared
   with it.
-- **Deleting** a project needs its key as confirmation; see **Danger zone** below.
 
 ### Project settings
 
@@ -159,12 +167,12 @@ A project's **Settings** tab has these panels, and shows each person only the on
 | **Webhooks** | webhooks that fire for this project only ([Webhooks](./webhooks-and-api.md#webhooks)) | Organization admin |
 | **Danger zone** | **Delete project** | Organization admin |
 
-Deleting a project removes its branches and merge requests, analyses, issues and their history,
-analysis tokens and project webhooks, and cannot be undone. **Delete project** asks you to type the
-project key before it deletes anything. The API call is `DELETE /api/v0/projects/<id>?confirm=<key>`.
+**Delete project** removes the project's branches and merge requests, analyses, issues and their
+history, analysis tokens and project webhooks. It cannot be undone, so it asks you to type the
+project key first. The API call is `DELETE /api/v0/projects/<id>?confirm=<key>`.
 
-The same settings are available through `PATCH /api/v0/projects/<id>` (the project id is in the
-project's URL), using a personal token with the **Admin** scope:
+The same settings are available through `PATCH /api/v0/projects/<id>`, with a personal token that
+has the **Admin** scope. The project id is in the project's URL.
 
 ```sh
 curl -fsS -X PATCH -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" -H 'Content-Type: application/json' \
@@ -180,20 +188,21 @@ curl -fsS -X PATCH -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" -H 'Content-Ty
 | `qualityGateId` | a gate for this project, or `null` for the organisation's default gate |
 | `scmConnectionId`, `scmProjectRef` | the GitLab/GitHub mapping. **Settings → Repositories** also sets it. Only an org admin can change it (403 `FORBIDDEN` otherwise, even for a Project admin) |
 
-To assign a quality profile to one project, use `PUT /api/v0/projects/<id>/quality-profiles/<language>`
-with the body `{"profileId": "..."}`. Send `null` to return that language to the organisation's
-default profile.
+To assign a quality profile to one project, send `{"profileId": "..."}` to
+`PUT /api/v0/projects/<id>/quality-profiles/<language>`. Send `null` to return that language to the
+organisation's default profile.
 
 ## Tokens
 
-Every token is shown **once**, when it is created. The server stores only a hash. Tokens look like
-`qlr_pat_…` (personal) or `qlr_prj_…` (project). Qualor's own Gitleaks configuration knows the `qlr_`
-prefix, so a leaked token is reported as a secret.
+Every token is shown **once**, when it is created, and the server stores only a hash. Tokens look
+like `qlr_pat_…` (personal) or `qlr_prj_…` (project). Qualor's own Gitleaks configuration knows the
+`qlr_` prefix, so a leaked token is reported as a secret.
 
 ### Personal tokens
 
-**Settings → Access tokens → New token.** You choose the scopes and, optionally, an expiry. Only a
-signed-in browser session can create a personal token, so a token can never create another one.
+Create one in **Settings → Access tokens → New token**: choose the scopes and, if you like, an
+expiry. Only a signed-in browser session can create a personal token, so a token can never create
+another one.
 
 | Scope (UI) | API name | Allows |
 |---|---|---|
@@ -206,11 +215,12 @@ A token has the rights that both its scopes and its user's role allow.
 
 ### Project analysis tokens
 
-A project token can **only upload analyses to its one project**. It is the best token for CI. Create
-one in **Project → Settings → Analysis tokens** with **New token**: give it a name and, if you like,
-an **Expires after** period. Qualor shows the token once; press **Done** when you have stored it.
-**Revoke** stops a token at once. You can also create one through the API with a personal token
-that has the Admin scope:
+A project token can **only upload analyses to its one project**, which makes it the best token for
+CI. Create one in **Project → Settings → Analysis tokens** with **New token**: give it a name and,
+if you like, an **Expires after** period. Press **Done** once you have stored the token. **Revoke**
+stops a token at once.
+
+Through the API, create one with a personal token that has the **Admin** scope:
 
 ```sh
 curl -fsS -X POST -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" -H 'Content-Type: application/json' \
@@ -222,11 +232,11 @@ List and revoke project tokens with `GET` and `DELETE /api/v0/projects/<id>/toke
 
 ### Apps connected through MCP
 
-AI agents such as Claude Code or Cursor do not use a personal token. They sign in through your
-browser, you allow the app on a consent page, and Qualor gives it its own short-lived login that
-works only on the [MCP address](./mcp.md). You see these apps in **Settings → Connected apps** and
-disconnect them there, and an administrator can do the same for any user. They are not personal
-tokens and do not appear under **Access tokens**.
+AI agents such as Claude Code or Cursor use no personal token. They sign in through your browser,
+you allow the app on a consent page, and Qualor gives it its own short-lived login that works only
+on the [MCP address](./mcp.md). You see these apps in **Settings → Connected apps** and disconnect
+them there. An administrator can do the same for any user. They do not appear under **Access
+tokens**.
 
 ### Which token where
 

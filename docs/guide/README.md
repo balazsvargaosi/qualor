@@ -1,81 +1,62 @@
 # Qualor documentation
 
-Qualor is static analysis and AI code review in one self-hosted server. It is an open-source
-alternative to SonarQube with no lines-of-code licence, and a model of your choice, hosted or local,
-reviews your GitLab merge requests and GitHub pull requests (off by default, in every edition). The
-static analysis runs open-source analyzers you already know: ESLint, PMD, SpotBugs with
-FindSecBugs, Roslyn and Roslynator for C#, detekt for Kotlin, SwiftLint for Swift, Ruff for Python,
-PHPStan for PHP, RuboCop for Ruby, staticcheck, go vet and gosec for Go, cppcheck and clang-tidy for C and C++,
-stylelint and HTMLHint for CSS and HTML, OpenGrep, Gitleaks and Trivy, plus SonarQube-compatible
-rules (SonarAnalyzer.CSharp 9.32, eslint-plugin-sonarjs 2.0.4, LGPL-3.0) for C#, JavaScript and
-TypeScript, or any tool that writes SARIF. It also has Qualor's own security rules for JavaScript,
-TypeScript, Python, Java, Go and C# (source-available), which follow HTTP request data into SQL, shell
-commands, file paths, templates and outgoing requests and report unsafe settings such as disabled
-TLS verification. It tracks the issues of all of them across commits and measures coverage,
-duplication and complexity. It applies a quality gate to **new code**, and it comments on GitLab
-merge requests and GitHub pull requests. The AI reviewer comments on the same merge requests, in
-threads with suggested changes, and its findings never count in the quality gate.
+Qualor is static analysis and AI code review in one self-hosted server. It runs open-source
+analyzers in your CI, tracks their issues across commits, measures coverage, duplication and
+complexity, and applies a quality gate to **new code**. It comments on GitLab merge requests and
+GitHub pull requests. There is no lines-of-code licence.
 
-These pages cover installation, setup and day-to-day use. They are the same Markdown files that live in
-[`docs/guide/`](https://github.com/qualor-dev/qualor/tree/main/docs/guide) of the repository and on
-[qualor.dev/docs](https://qualor.dev/docs). Every Qualor server also carries the guide of its own
-release: **Docs** in the top bar, at `/docs` on your server, for signed-in users.
+The analyzers are tools you already know, such as ESLint, PMD, SpotBugs, Ruff, staticcheck,
+Gitleaks and Trivy, plus Qualor's own security rules and any tool that writes SARIF:
+[Languages and analyzers](./languages-and-analyzers.md) lists them for each language.
+
+A model of your choice, hosted or local, can review the same merge requests, in threads with
+suggested changes. AI review is off by default in every edition, and its findings never count in the
+quality gate.
+
+This guide is in [`docs/guide/`](https://github.com/qualor-dev/qualor/tree/main/docs/guide) of the
+repository and on [qualor.dev/docs](https://qualor.dev/docs). Every Qualor server also carries the
+guide of its own release, under **Docs** in the top bar (`/docs`, for signed-in users).
 
 ## Pages
 
 1. [Quick start](./quick-start.md): a server, a project and a first scan in about 15 minutes.
-2. [Install the server](./install-server.md): Docker Compose or Helm on Kubernetes, secrets, TLS,
-   backups, upgrades and server settings.
-3. [Users, projects and tokens](./users-projects-tokens.md): organisations, roles, projects, and the
+2. [Install the server](./install-server.md): Docker Compose or Helm, TLS, backups, upgrades and
+   server settings.
+3. [Users, projects and tokens](./users-projects-tokens.md): organisations, roles, projects and the
    tokens CI uses.
-4. [GitLab](./gitlab.md): the CI job or CI/CD component, merge request comments with a commit
-   status, and the webhook for replies.
-5. [GitHub](./github.md): the Actions workflow and a GitHub App for check runs, pull request
-   comments and replies.
-6. [Other CI systems and local scans](./other-ci.md): Jenkins, Bitbucket, TeamCity or a laptop.
-7. [Languages and analyzers](./languages-and-analyzers.md): JavaScript, TypeScript, Java, Kotlin,
-   Swift, C, C++, C#, Python, PHP, Ruby, Go, HTML, CSS, secrets, dependencies, external SARIF files
-   and coverage.
-8. [Dependency licences](./dependency-licenses.md): the dependencies of every project and their
-   licences, which ecosystems give them, and a licence policy that turns forbidden licences into
-   issues (Business and Enterprise).
-9. [Configuration reference](./configuration.md): `qualor.yml`, environment variables and
-   precedence.
-10. [Quality gates, profiles and issues](./quality-gates.md): metrics, new code, gates, rule
-    profiles and issue statuses.
-11. [AI assistant](./ai-assistant.md): explain issues, suggest triage and fixes with your own
-    model; the provider, its models and their tiers; off by default. Enterprise adds automatic fix
-    suggestions for merge requests.
-12. [AI review](./ai-review.md): a model reviews merge requests on GitLab and GitHub, with comments
-    and suggested changes, and answers replies and `qualor review` notes; switching it on, how a
-    review works, replies and commands, re-reviews, the repository snapshot the scanner uploads and
-    how long it is kept, the budgets, and what to do when a review or an answer does not come.
-13. [Email](./email.md): the SMTP server, the test message and the alerts for administrators.
+4. [GitLab](./gitlab.md): the CI/CD component, merge request comments and replies.
+5. [GitHub](./github.md): the Actions workflow and the GitHub App for check runs and comments.
+6. [Other CI systems and local scans](./other-ci.md): Jenkins, Bitbucket, any other CI, or a
+   laptop.
+7. [Languages and analyzers](./languages-and-analyzers.md): what runs for each language, plus
+   secrets, dependencies, SARIF files and coverage.
+8. [Dependency licences](./dependency-licenses.md): each project's dependencies and their licences,
+   and a licence policy (Business and Enterprise).
+9. [Configuration reference](./configuration.md): `qualor.yml` and environment variables.
+10. [Quality gates, profiles and issues](./quality-gates.md): metrics, new code, gates, profiles and
+    issue statuses.
+11. [AI assistant](./ai-assistant.md): explain an issue, suggest triage or a fix, with your own
+    model.
+12. [AI review](./ai-review.md): a model reviews merge requests and answers replies.
+13. [Email](./email.md): the SMTP server, account emails, notifications and alerts.
 14. [CLI reference](./cli.md): commands, options and exit codes.
 15. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.
-16. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the most useful
-    endpoints.
-17. [Enterprise](./enterprise.md): what a licence key adds, how to apply it, and what happens when
-    it expires.
-18. [Roles and the audit log](./roles-and-audit.md): the four roles and project-level access (every
-    edition), and the security audit log with its export, verification and SIEM stream.
-19. [Single sign-on and SCIM](./sso-and-scim.md): OIDC and SAML sign-in, group mapping,
-    break-glass admins, and SCIM provisioning.
-20. [Compliance reports](./compliance-reports.md): OWASP Top 10, CWE Top 25, OWASP ASVS and
-    PCI DSS reports of a project or an organisation, as JSON, CSV and PDF, and how to verify them.
-21. [Portfolio reports](./portfolio.md): the quality of every project and organisation in one
-    view, with trends and the projects that need attention, as CSV and PDF.
-22. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
-23. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
-    company.
-24. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
-    them off.
-25. [The support bundle](./support-bundle.md): one zip with versions, configuration without
-    secrets, health and recent failures, from the web UI or a command.
-26. [MCP server for AI agents](./mcp.md): Claude Code, Cursor and claude.ai read the quality gate
-    and issues, ask the AI assistant and mark false positives, signed in as the user.
-27. [Slack and Microsoft Teams](./chat-notifications.md): gate failures, recoveries and a weekly
-    security digest in a channel.
+16. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the main endpoints.
+17. [Enterprise](./enterprise.md): what a licence key adds, and how to apply it.
+18. [Roles and the audit log](./roles-and-audit.md): roles, project access and the audit log.
+19. [Single sign-on and SCIM](./sso-and-scim.md): OIDC, SAML, group mapping and SCIM.
+20. [Compliance reports](./compliance-reports.md): OWASP Top 10, CWE Top 25, OWASP ASVS and PCI DSS
+    reports.
+21. [Portfolio reports](./portfolio.md): every project's quality and trends in one view.
+22. [Troubleshooting](./troubleshooting.md): common errors and their fixes.
+23. [AI prompts](./ai-prompts.md): prompts that let an AI agent roll Qualor out.
+24. [Telemetry](./telemetry.md): what the server sends, and how to turn it off.
+25. [The support bundle](./support-bundle.md): one zip of diagnostics, without secrets, for a
+    support request.
+26. [MCP server for AI agents](./mcp.md): Claude Code, Cursor and other agents read the gate and
+    the issues.
+27. [Slack and Microsoft Teams](./chat-notifications.md): gate failures and a weekly security
+    digest in a channel.
 
 ## How Qualor works
 
@@ -89,23 +70,23 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
  └──────────────────────────────────┘   (exit code)    └────────────────────────────────┘
 ```
 
-- The **scanner** (`qualor` CLI, shipped in the `qualor/scanner` image) runs in your CI job. It runs the
-  analyzers, computes metrics, and works out which lines are new against the baseline. It uploads one
-  compressed report, then waits for the gate verdict. It exits with code 1 when the gate fails, and
-  that fails the pipeline.
-- The **server** (`qualor/server` image: one container with its own PostgreSQL, or an external one)
-  stores the history. It
-  applies your quality profiles and gates, serves the web UI and the REST API, sends webhooks, and
-  decorates merge requests and pull requests.
+- The **scanner**, the `qualor` CLI in the `qualor/scanner` image, runs in your CI job. It runs the
+  analyzers, computes metrics and works out which lines are new against the baseline. It uploads one
+  compressed report and waits for the gate verdict. It exits with code 1 when the gate fails, which
+  fails the pipeline.
+- The **server**, the `qualor/server` image, stores the history in its own PostgreSQL or an external
+  one. It applies your quality profiles and gates, serves the web UI and the REST API, sends
+  webhooks, and comments on merge requests and pull requests.
 
 ## Where to get it
 
 The images are on Docker Hub: [`qualor/server`](https://hub.docker.com/r/qualor/server),
 [`qualor/scanner`](https://hub.docker.com/r/qualor/scanner) and
-[`qualor/scanner-dotnet`](https://hub.docker.com/r/qualor/scanner-dotnet). The GitLab CI/CD component
-is [`gitlab.com/qualor/qualor`](https://gitlab.com/qualor/qualor). You need nothing else from the
-repository to run Qualor.
+[`qualor/scanner-dotnet`](https://hub.docker.com/r/qualor/scanner-dotnet). The GitLab CI/CD
+component is [`gitlab.com/qualor/qualor`](https://gitlab.com/qualor/qualor), and the GitHub Action
+is [`qualor-dev/scan-action`](https://github.com/qualor-dev/scan-action). You need nothing else from
+the repository to run Qualor.
 
-SonarQube and SonarCloud are trademarks of SonarSource SA. Qualor is an independent project. It is not
-affiliated with, sponsored by or endorsed by SonarSource. The names are used only to describe
+SonarQube and SonarCloud are trademarks of SonarSource SA. Qualor is an independent project. It is
+not affiliated with, sponsored by or endorsed by SonarSource. The names are used only to describe
 compatibility and to compare features.

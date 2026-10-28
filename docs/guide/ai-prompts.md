@@ -1,44 +1,43 @@
 # AI prompts
 
-These prompts let an AI coding agent set up Qualor for you. That can be Claude Code, Codex, Cursor,
-Copilot agent mode or any agent that can read web pages and run commands. Copy a prompt, fill in the
-`<…>` placeholders or let the agent ask for them, and paste it into the agent's session.
+These prompts let an AI coding agent set Qualor up for you: Claude Code, Codex, Cursor, Copilot
+agent mode or any agent that can read web pages and run commands. Copy a prompt, fill in the `<…>`
+placeholders or let the agent ask for them, and paste it into the agent's session.
 
-The prompts point the agent to this documentation as raw Markdown, which is easy for a model to read:
+The prompts send the agent to this guide as raw Markdown, which a model reads easily:
 `https://qualor.dev/docs/<page>.md`. The same files are in the repository under
 [`docs/guide/`](https://github.com/qualor-dev/qualor/tree/main/docs/guide).
 
 **Before you start**
 
-- Give the agent only the access the task needs. Use a shell on the target host for the server, a
+- Give the agent only the access the task needs: a shell on the target host for the server, a
   checkout of the repository for CI, and API tokens with the smallest scope that works.
-- Every prompt tells the agent never to print, log or commit secrets, and to stop and ask before
-  anything outward-facing or hard to undo. Keep those lines when you edit a prompt.
+- Every prompt tells the agent never to print, log or commit secrets, and to ask before anything
+  outward-facing or hard to undo. Keep those lines when you edit a prompt.
 - Review the agent's merge requests like any other change.
 
-These prompts have the agent configure Qualor from outside. Once Qualor runs, the agent can also
-call it directly: with the [MCP server](./mcp.md) your agent reads the quality gate and issues,
-asks the AI assistant and, if you allow it, marks false positives, signed in as you.
+Once Qualor runs, an agent can also work with it directly through the [MCP server](./mcp.md): read
+the quality gate and the issues, ask the AI assistant and, if you allow it, mark false positives,
+signed in as you.
 
 ## Full rollout in a company
 
-The complete path: inventory, server, pilot repositories, merge request comments, gate tuning,
-rollout and handover. Use it when you start from nothing.
+The whole path from nothing: inventory, server, pilot repositories, merge request comments, gate
+tuning, rollout and handover.
 
 ```prompt
 You are a platform engineer rolling out Qualor, an open-source,
 self-hosted code quality platform (a SonarQube alternative), in our
-company. Work in phases, and finish each one before you start the
-next. Read the documentation before you act. It is Markdown, served
-at https://qualor.dev/docs/<page>.md: README, quick-start,
+company. Work in phases, and finish each before you start the next.
+Read the documentation before you act. It is Markdown at
+https://qualor.dev/docs/<page>.md: README, quick-start,
 install-server, users-projects-tokens, gitlab, github, other-ci,
 languages-and-analyzers, configuration, quality-gates, cli,
 migrate-from-sonarqube, webhooks-and-api, troubleshooting. Fetch the
-pages as you need them. Prefer them over your memory, because Qualor
+pages as you need them, and trust them over your memory: Qualor
 changes quickly.
 
-Company context (ask me for anything that is missing, before phase
-2):
+Company context (ask me for anything missing before phase 2):
 - SCM: <GitLab self-managed at https://gitlab.example.com |
   GitLab.com | GitHub.com | GitHub Enterprise Server>
 - CI: <GitLab CI | GitHub Actions | Jenkins | other>
@@ -56,70 +55,69 @@ Company context (ask me for anything that is missing, before phase
 - Do we use SonarQube today? <no | yes, at https://sonar.example.com
   (Server x.y) or SonarQube Cloud org <key>>
 
-Phase 1, inventory. List the repositories of the pilot scope and,
-for each one: languages, build tool, how tests produce coverage
-(LCOV, Cobertura or JaCoCo, and the path), whether an ESLint config
-exists, the default branch, and the current CI file. Present this as
-a table and wait for my go-ahead.
+Phase 1, inventory. For each pilot repository, list: languages,
+build tool, how tests produce coverage (LCOV, Cobertura or JaCoCo,
+and the path), whether an ESLint config exists, the default branch,
+and the current CI file. Show this as a table and wait for my
+go-ahead.
 
-Phase 2, server. Deploy the server from the qualor/server image on
-Docker Hub with the compose.yml and .env of install-server.md:
-generated secrets in .env with mode 600, TLS in front,
-QUALOR_TRUST_PROXY, QUALOR_PUBLIC_URL, and QUALOR_SCM_INTERNAL_HOSTS
-if our SCM is on an internal network. On Kubernetes, install the
-Helm chart instead, as the Kubernetes section of install-server.md
-shows: the secrets in a Secret, values.yaml with publicUrl,
-trustProxy and the ingress, and database.mode external if we have a
-managed PostgreSQL. If we cannot pull from Docker
-Hub, copy qualor/server, qualor/scanner (and qualor/scanner-dotnet
-for C#) into our registry first, as install-server.md shows. Use the
-same release tag for the server and the scanner. Set up a daily
-pg_dump backup, and store .env (it holds QUALOR_SECRET_KEY)
-separately. Verify /readyz, sign-in, and a changed
-admin password. Tell me where every secret is stored, without
+Phase 2, server. Deploy the qualor/server image from Docker Hub with
+the compose.yml and .env of install-server.md: generated secrets in
+.env with mode 600, TLS in front, QUALOR_TRUST_PROXY,
+QUALOR_PUBLIC_URL, and QUALOR_SCM_INTERNAL_HOSTS if our SCM is on an
+internal network. On Kubernetes, install the Helm chart instead, as
+the Kubernetes section of install-server.md shows: the secrets in a
+Secret, values.yaml with publicUrl, trustProxy and the ingress, and
+database.mode external for a managed PostgreSQL. If we cannot pull
+from Docker Hub, first copy qualor/server, qualor/scanner (and
+qualor/scanner-dotnet for C#) into our registry, as install-server.md
+shows. Use the same release tag for the server and the scanner. Set
+up a daily pg_dump backup, and store .env (it holds
+QUALOR_SECRET_KEY) separately. Verify /readyz, sign-in and a changed
+admin password. Tell me where each secret is stored, without
 printing it.
 
 Phase 3, pilot. For each pilot repository: create the Qualor project
-(its key is the CI project path), make its main branch name match
-the default branch, create a project analysis token and store it as
-a masked, not protected, CI variable QUALOR_TOKEN, together with
-QUALOR_URL. Add the CI job from the docs, with full git history,
+(its key is the CI project path), with its main branch name matching
+the default branch. Create a project analysis token and store it as
+the masked, not protected, CI variable QUALOR_TOKEN, next to
+QUALOR_URL. Add the CI job from the docs: full git history,
 dependencies installed or the build run before the scan, the
 coverage report produced before the scan, and the GitLab component
 or GitHub workflow where it applies. Add a minimal qualor.yml only
 when the defaults are not enough. Start with the gate as a soft
 check (allow-failure / not required). Open one merge request per
-repository and make sure the pipeline is green and the analysis
+repository, and check that the pipeline is green and the analysis
 appears in Qualor.
 
 Phase 4, merge request feedback. Connect the SCM in Qualor as
-gitlab.md or github.md describes: a project or group access token
-with the api scope and Maintainer role for GitLab, or a GitHub App
-with Checks, Contents and Pull requests write and Issues read for
-GitHub (Qualor uses Contents only to resolve and reopen its own
-review conversations). Map each pilot project, run the connection
-test, and show me a merge request with Qualor's summary comment and
-inline findings.
+gitlab.md or github.md describes. GitLab: a project or group access
+token with the api scope and the Maintainer role. GitHub: a GitHub
+App with Checks, Contents and Pull requests write and Issues read
+(Qualor uses Contents only to resolve and reopen its own review
+conversations). Map each pilot project, run the connection test,
+and show me a merge request with Qualor's summary comment and inline
+findings.
 
-Phase 5, tuning. Look at the pilot results. Propose the
-organisation's gate and profile changes, with a reason for each:
-which noisy rules to deactivate, which severities to change, and
-whether to keep the default "Qualor way" gate (no new issues, 80 %
-coverage on new code, at most 3 % new duplication). Apply them only
-after I agree. If we use SonarQube, run `qualor import sonarqube
---dry-run` and show me the plan first.
+Phase 5, tuning. From the pilot results, propose the organisation's
+gate and profile changes, each with a reason: which noisy rules to
+deactivate, which severities to change, and whether to keep the
+default "Qualor way" gate (no new issues, 80 % coverage on new code,
+at most 3 % new duplication). Apply them only after I agree. If we
+use SonarQube, run `qualor import sonarqube --dry-run` and show me
+the plan first.
 
 Phase 6, rollout. Write a script that onboards every remaining
 repository through the Qualor API and the SCM API: create the
-project, create a token, set the CI variables, and open a merge
-request that adds the job. Run it in batches of 10 and report the
-results. After two weeks without false alarms, propose making the
-check required.
+project and a token, set the CI variables, and open a merge request
+that adds the job. Run it in batches of 10 and report the results.
+After two weeks without false alarms, propose making the check
+required.
 
 Phase 7, handover. Write docs/qualor-runbook.md in our
-infrastructure repository. Cover where everything runs, how to
-upgrade, back up and restore, rotate tokens, onboard a new
-repository, and what developers should do when the gate fails.
+infrastructure repository: where everything runs, how to upgrade,
+back up and restore, rotate tokens and onboard a new repository,
+and what developers do when the gate fails.
 
 Rules for the whole task:
 - Never print, log, echo or commit a token, password or private key.
@@ -131,7 +129,7 @@ Rules for the whole task:
   required.
 - Pin image tags. Never use :latest.
 - When something fails, read troubleshooting.md and the job log
-  before you change anything, and tell me the root cause you found.
+  before you change anything, and tell me the root cause.
 - At the end of each phase, give me a short status: what was done,
   what was verified and how, and what is open.
 ```
@@ -155,28 +153,28 @@ Inputs:
   and the sender | none>
 
 Steps:
-1. Check the prerequisites: Docker with Compose v2, at least 1 GiB
+1. Check the prerequisites: Docker with Compose v2, at least 1.5 GiB
    of free memory for the server (4 GiB if reports will be large),
    and disk space. Report what is missing.
 2. Create /opt/qualor/compose.yml exactly as install-server.md
    shows, and check that the host can pull qualor/server:<tag> from
    Docker Hub (tag: <0.12 | a full version such as 0.12.0>).
-3. Create /opt/qualor/.env with QUALOR_VERSION, a value from
-   `openssl rand -hex 32` for each secret, QUALOR_PUBLIC_URL,
+3. Create /opt/qualor/.env with mode 600: QUALOR_VERSION, a value
+   from `openssl rand -hex 32` for each secret, QUALOR_PUBLIC_URL,
    QUALOR_TRUST_PROXY=1 and, if needed, QUALOR_SCM_INTERNAL_HOSTS,
-   DATABASE_URL, and QUALOR_SMTP_URL with QUALOR_SMTP_FROM, with
-   mode 600. Never show the secret values.
+   DATABASE_URL, and QUALOR_SMTP_URL with QUALOR_SMTP_FROM. Never
+   show the secret values.
 4. Start it with `docker compose up -d` and wait until the server is
    healthy.
 5. Configure the reverse proxy: body size 50m, request buffering
    off, 300 s read timeout, and the X-Forwarded-* headers.
-6. Verify: /healthz and /readyz over the public address, the
+6. Verify /healthz and /readyz over the public address, the
    certificate, and a sign-in as admin. Then ask me to change the
-   admin password in the UI (don't do it through the API).
+   admin password in the UI (not through the API).
 7. Add a systemd timer or cron job for a daily backup into
-   /var/backups/qualor, keeping 14 days, with the pg_dump command
-   of install-server.md ("Backups"). Test the restore on a scratch
-   copy (a second volume), never on the live one.
+   /var/backups/qualor, keeping 14 days, with the pg_dump command of
+   install-server.md ("Backups"). Test the restore on a scratch copy
+   (a second volume), never on the live one.
 8. Summarise: URLs, file locations, how to upgrade, and where the
    secrets live (the location, never the value).
 
@@ -187,10 +185,10 @@ site.
 ## Add Qualor to a GitLab repository
 
 ```prompt
-Add Qualor to the GitLab repository in the current directory. Read
-https://qualor.dev/docs/gitlab.md,
+Add Qualor to the GitLab repository in the current directory. First
+read https://qualor.dev/docs/gitlab.md,
 https://qualor.dev/docs/languages-and-analyzers.md and
-https://qualor.dev/docs/configuration.md first.
+https://qualor.dev/docs/configuration.md.
 
 Inputs:
 - Qualor server: <https://qualor.example.com>
@@ -203,46 +201,50 @@ Inputs:
 
 Do this:
 1. Inspect the repository: languages, package manager and build
-   tool, how tests are run and whether they write coverage (and to
-   which path), the ESLint config, the default branch, and the
-   existing .gitlab-ci.yml (stages, rules, whether merge request
-   pipelines are used).
-2. Add a `qualor` job, with the component if there is one, otherwise
-   the plain job from gitlab.md. It must have GIT_DEPTH 0, run in
-   merge request pipelines and on the default branch, install the
-   dependencies (JS/TS, `go mod download` for Go) or build (Java, and C/C++ for clang-tidy)
-   before the scan, so the analyzers and the dependency licence
-   inventory (dependency-licenses.md) see them, produce
-   coverage before the scan (reuse the existing test job's artifact
-   through `needs` if one exists, instead of running the tests
-   twice), and keep the Code Quality, SAST and Dependency Scanning
-   reports as artifacts. Set allow_failure: true for now.
+   tool, how tests run and whether they write coverage (to which
+   path), the ESLint config, the default branch, and the existing
+   .gitlab-ci.yml (stages, rules, whether merge request pipelines
+   are used).
+2. Add a `qualor` job: the component if there is one, otherwise the
+   plain job from gitlab.md. It must:
+   - set GIT_DEPTH 0;
+   - run in merge request pipelines and on the default branch;
+   - install the dependencies (JS/TS, `go mod download` for Go) or
+     build (Java, and C/C++ for clang-tidy) before the scan, so the
+     analyzers and the dependency licence inventory
+     (dependency-licenses.md) see them;
+   - produce coverage before the scan, reusing the existing test
+     job's artifact through `needs` if there is one, instead of
+     running the tests twice;
+   - keep the Code Quality, SAST and Dependency Scanning reports as
+     artifacts;
+   - set allow_failure: true for the trial period.
 3. Add qualor.yml only if needed: coverage paths, excludes for
    generated code, SpotBugs class directories, or a PMD ruleset.
 4. Tell me which CI/CD variables to create (QUALOR_URL, and
-   QUALOR_TOKEN masked but not protected), and the exact Qualor
-   project key (the GitLab project path). If I give you an admin
-   token for Qualor in the environment variable QUALOR_ADMIN_TOKEN,
+   QUALOR_TOKEN masked but not protected) and the exact Qualor
+   project key (the GitLab project path). If I give you a Qualor
+   admin token in the environment variable QUALOR_ADMIN_TOKEN,
    create the project and a project analysis token yourself through
    the API (users-projects-tokens.md), and set the variable through
    the GitLab API without ever printing the token.
-5. Validate the config locally if Docker is available: `docker run
+5. If Docker is available, validate the config locally: `docker run
    --rm -v "$PWD":/src -w /src qualor/scanner:<release> validate`.
-6. Commit on a new branch, and open a merge request titled "ci: add
+6. Commit on a new branch and open a merge request titled "ci: add
    Qualor quality gate". In the description, list what the job does
    and what reviewers will see.
 
 Never print or commit a token. Ask before pushing if you are unsure
-about the branch or remote.
+of the branch or remote.
 ```
 
 ## Add Qualor to a GitHub repository
 
 ```prompt
-Add Qualor to the GitHub repository in the current directory. Read
-https://qualor.dev/docs/github.md,
+Add Qualor to the GitHub repository in the current directory. First
+read https://qualor.dev/docs/github.md,
 https://qualor.dev/docs/languages-and-analyzers.md and
-https://qualor.dev/docs/configuration.md first.
+https://qualor.dev/docs/configuration.md.
 
 Inputs:
 - Qualor server: <https://qualor.example.com>
@@ -258,10 +260,10 @@ Do this:
    branch, permissions contents: read, the scanner container with
    --user 1001, actions/checkout pinned by SHA with fetch-depth 0,
    persist-credentials false and the PR head ref, the fork guard,
-   and then install/build (installed dependencies also give Qualor
-   their licences), tests with coverage, and `qualor scan`.
-   For C#, use the qualor-dotnet.yml template with our real build
-   command. If the image is private, add container credentials and
+   then install/build (installed dependencies also give Qualor their
+   licences), tests with coverage, and `qualor scan`. For C#, use
+   the qualor-dotnet.yml template with our real build command. If
+   the image is private, add container credentials and
    packages: read.
 3. Add qualor.yml only if needed.
 4. Tell me to set the variables QUALOR_URL and QUALOR_SCANNER_IMAGE
@@ -273,10 +275,10 @@ Do this:
 5. Open a pull request titled "ci: add Qualor quality gate". Do not
    make the check required: I will do that after a trial period.
 
-Finally, remind me that the Qualor GitHub App must be installed on
-this repository, and the repository mapped to its Qualor project,
-for the pull request review comments and summary comment (github.md,
-"The GitHub App").
+Finally, remind me that the pull request review comments and the
+summary comment need the Qualor GitHub App installed on this
+repository and the repository mapped to its Qualor project
+(github.md, "The GitHub App").
 ```
 
 ## Add Qualor to a C# / .NET repository
@@ -285,25 +287,25 @@ for the pull request review comments and summary comment (github.md,
 Add Qualor's C# analysis to the .NET repository in the current
 directory. Read https://qualor.dev/docs/languages-and-analyzers.md
 (the C# section), and https://qualor.dev/docs/gitlab.md or
-https://qualor.dev/docs/github.md, depending on our CI.
+https://qualor.dev/docs/github.md for our CI.
 
 1. Find the solution or project to build, the SDK version
    (global.json), private NuGet feeds (and how the existing CI
    authenticates to them), the test projects and how they collect
    coverage (coverlet or dotnet-coverage, Cobertura format).
 2. Create a job in the qualor/scanner-dotnet:<release> image that
-   runs: qualor dotnet begin; the project's own restore and `dotnet
-   build <sln> --no-incremental` (no -warnaserror, no
+   runs, in order: qualor dotnet begin; the project's own restore
+   and `dotnet build <sln> --no-incremental` (no -warnaserror, no
    TreatWarningsAsErrors=true on the command line); the tests with
-   Cobertura coverage; then `qualor dotnet end` with QUALOR_URL and
-   QUALOR_TOKEN given to that step only. Add the cleanup `qualor
-   dotnet abort` for failures (after_script on GitLab, `if:
-   failure() || cancelled()` on GitHub). Full git history.
+   Cobertura coverage; then `qualor dotnet end`, with QUALOR_URL and
+   QUALOR_TOKEN given to that step only. On failure, clean up with
+   `qualor dotnet abort` (after_script on GitLab, `if: failure() ||
+   cancelled()` on GitHub). Use the full git history.
 3. Add qualor.yml with coverage.reports pointing to the Cobertura
-   files (glob) if they are not at the default path.
-4. If the repository must keep failing on compiler warnings, keep
-   that in its existing build job: explain why, because the scan job
-   turns warnings-as-errors off.
+   files (a glob) if they are not at the default path.
+4. The scan job turns warnings-as-errors off. If the repository must
+   keep failing on compiler warnings, keep that in its existing
+   build job, and explain why.
 5. Open a merge/pull request and explain the new job in the
    description.
 
@@ -314,17 +316,17 @@ Never print or commit feed credentials or tokens.
 
 ```prompt
 Write and run a script that puts all repositories of <GitLab group
-"platform" | GitHub organisation "acme"> under Qualor. Read
+"platform" | GitHub organisation "acme"> under Qualor. First read
 https://qualor.dev/docs/users-projects-tokens.md,
 https://qualor.dev/docs/webhooks-and-api.md and
-https://qualor.dev/docs/gitlab.md (or github.md) first.
+https://qualor.dev/docs/gitlab.md (or github.md).
 
-Available in the environment (never print them): QUALOR_URL,
+In the environment (never print them): QUALOR_URL,
 QUALOR_ADMIN_TOKEN (a Qualor personal token with the Admin scope),
 and <GITLAB_TOKEN with the api scope | GH_TOKEN for gh>.
 
-The script (bash or Python, idempotent and safe to rerun) must, for
-each non-archived repository:
+The script (bash or Python, idempotent and safe to rerun) does this
+for each non-archived repository:
 1. Skip it if a Qualor project with its key (the project path, or
    owner/repo) already exists.
 2. Otherwise create the Qualor project, set mainBranchName to the
@@ -342,35 +344,35 @@ each non-archived repository:
    status (created/skipped/failed), the MR/PR URL, and the error.
 
 Start with --dry-run and show me the plan for the first 10
-repositories. Then run it in batches of 10 and pause between
-batches. Respect the rate limits: on a 429, wait as long as
-Retry-After says. Never write a token to disk except where the CI's
-own API stores it, and never into the report.
+repositories. Then run it in batches of 10, pausing between
+batches. On a 429, wait as long as Retry-After says. Never write a
+token to disk except where the CI's own API stores it, and never
+into the report.
 ```
 
 ## Migrate from SonarQube
 
 ```prompt
-Migrate our SonarQube setup to Qualor. Read
+Migrate our SonarQube setup to Qualor. First read
 https://qualor.dev/docs/migrate-from-sonarqube.md and
-https://qualor.dev/docs/quality-gates.md first.
+https://qualor.dev/docs/quality-gates.md.
 
-Inputs: SonarQube URL <https://sonar.example.com> (or SonarQube
-Cloud with organisation <key>), SONAR_TOKEN (a user token),
-QUALOR_URL and QUALOR_TOKEN (a personal token with the Admin scope),
-all in the environment. Never print them.
+Inputs, all in the environment (never print them): the SonarQube
+URL <https://sonar.example.com> (or SonarQube Cloud with
+organisation <key>), SONAR_TOKEN (a user token), QUALOR_URL and
+QUALOR_TOKEN (a personal token with the Admin scope).
 
 1. Run `qualor import sonarqube --url ... --dry-run --output
    import-plan.json` (through the qualor/scanner image if the CLI is
    not installed).
-2. Summarise the plan for me: profiles, gates and projects to
-   create; the unmapped rules with the most resolved issues;
-   unmapped gate conditions and what the Qualor gate will lack
-   because of them; and the conflicts. Recommend whether to use
-   --create-projects and --set-defaults.
+2. Summarise the plan: profiles, gates and projects to create; the
+   unmapped rules with the most resolved issues; the unmapped gate
+   conditions and what the Qualor gate will lack because of them;
+   and the conflicts. Recommend whether to use --create-projects and
+   --set-defaults.
 3. After my approval, run the import without --dry-run.
-4. Check which projects have not been scanned by Qualor yet. Once
-   each has one main-branch analysis, run the import again with
+4. Check which projects Qualor has not scanned yet. Once each has
+   one main-branch analysis, run the import again with
    `--only issues`, and report how many statuses were applied, were
    already set, or stayed unmatched or ambiguous, and why.
 5. Propose a side-by-side period: which pipelines run both scanners,
@@ -394,13 +396,13 @@ step 1). Projects: <keys | all>.
 1. Through the API, collect for each project: the gate status of
    recent merge request analyses, which conditions failed and how
    often, the rules with the most new issues, the issues marked
-   false positive or won't fix (and their comments), and coverage
+   false positive or won't fix (with their comments), and coverage
    and duplication on new code.
-2. Find the noise: rules that are often marked false positive, rules
-   whose findings are mostly style, and conditions that fail on
-   small changes.
+2. Find the noise: rules often marked false positive, rules whose
+   findings are mostly style, and conditions that fail on small
+   changes.
 3. Propose concrete changes, each with its expected effect and a
-   reason: rules to deactivate, or severities to override, in a copy
+   reason: rules to deactivate or severities to override in a copy
    of the "Qualor way" profile; gate conditions to change (for
    example new_blocker_issues + new_high_issues instead of
    new_issues > 0 for the first months, then back); and ESLint, PMD
@@ -413,22 +415,21 @@ step 1). Projects: <keys | all>.
 ## Fix a failing Qualor job
 
 ```prompt
-The Qualor job in our CI fails. Find the root cause and fix it. Read
-https://qualor.dev/docs/troubleshooting.md and
-https://qualor.dev/docs/cli.md first.
+The Qualor job in our CI fails. Find the root cause and fix it.
+First read https://qualor.dev/docs/troubleshooting.md and
+https://qualor.dev/docs/cli.md.
 
-Here is the job log (tokens removed): <paste the log>
+The job log (tokens removed): <paste the log>
 
 1. Identify the exit code and what it means (cli.md, "Exit codes").
-2. If it is 1, the gate failed. That is not a bug. List the failed
-   conditions and the new issues behind them, and tell me which are
-   real problems and which look like false positives.
+2. Exit code 1 means the gate failed, which is not a bug. List the
+   failed conditions and the new issues behind them, and tell me
+   which are real problems and which look like false positives.
 3. For any other exit code, find the cause in the log and the
    repository: qualor.yml, the CI job, the git depth, installed
    dependencies, compiled classes, coverage paths, the server URL,
-   CA or proxy, and the token's scope. Rerun with
-   QUALOR_LOG_LEVEL=debug or `qualor validate` if you need more
-   detail.
+   CA or proxy, and the token's scope. For more detail, rerun with
+   QUALOR_LOG_LEVEL=debug or run `qualor validate`.
 4. Make the smallest fix, explain it, and open a merge/pull request.
    Do not weaken the gate, lower thresholds or set allow-failure to
    make the job pass, unless I ask you to.
@@ -436,16 +437,16 @@ Here is the job log (tokens removed): <paste the log>
 
 ## Set up single sign-on and SCIM
 
-For an enterprise licence listing `sso`, and `scim` for provisioning. SCIM, and a second enabled
-connection next to one you already have, need the Enterprise plan (`scim`, `sso.multi`); the
-Business plan gives one enabled connection and no SCIM. It adds an OIDC connection with a group
-mapping and a SCIM token through the API. The agent needs a personal token of an instance admin
-with the **Admin** scope.
+For a licence that lists `sso`, and `scim` for provisioning. The Business plan gives one enabled
+connection and no SCIM. SCIM, and a second enabled connection, need the Enterprise plan (`scim`,
+`sso.multi`). The prompt adds an OIDC connection with a group mapping, and a SCIM token, through
+the API. The agent needs an instance admin's personal token with the **Admin** scope.
 
 ```prompt
 Set up single sign-on and SCIM provisioning on our Qualor server
-through its REST API. Read https://qualor.dev/docs/sso-and-scim.md
-first, and the "Single sign-on and SCIM (enterprise)" section of
+through its REST API. First read
+https://qualor.dev/docs/sso-and-scim.md, and the "Single sign-on and
+SCIM (enterprise)" section of
 https://qualor.dev/docs/webhooks-and-api.md.
 
 Inputs:
@@ -474,8 +475,8 @@ Steps:
 2. POST /api/v0/ee/sso/connections with name, protocol "oidc",
    enabled false, groupSource "claims", and oidc { issuer,
    clientId, clientSecret }. Keep the issuer exactly as given,
-   trailing slash included. Read the answer's `urls.redirectUri`;
-   if `urls` is null, stop: QUALOR_PUBLIC_URL must be set on the
+   trailing slash included. Read `urls.redirectUri` from the answer.
+   If `urls` is null, stop: QUALOR_PUBLIC_URL must be set on the
    server first.
 3. Tell me the redirect URI to register at the identity provider,
    and wait until I confirm it is registered.
@@ -486,41 +487,41 @@ Steps:
    mapping (projectId null). Mappings to every role and to projects
    need only `sso`.
 6. PATCH the connection with { "enabled": true }, and check that
-   GET /api/v0/auth/methods lists it. If the answer is 409
+   GET /api/v0/auth/methods lists it. On 409
    SSO_MULTI_NOT_LICENSED, stop and tell me: another connection is
    enabled and the plan allows one.
 7. If SCIM is wanted: POST /api/v0/ee/scim/tokens with the
    connection id and a name. The answer's `token` is shown once:
-   never print, log or commit it. Write it to a file readable only
-   by me (mode 600) and tell me the path, and tell me the SCIM base
-   URL, <QUALOR_URL>/api/v0/ee/scim/v2, for the identity provider's
+   never print, log or commit it. Write it to a file only I can read
+   (mode 600) and tell me the path. Tell me the SCIM base URL,
+   <QUALOR_URL>/api/v0/ee/scim/v2, for the identity provider's
    provisioning settings.
 8. Summarise the connection id, the mapping, and what I must do at
    the identity provider next.
 
 Never print, log or commit the client secret, the admin token or
 the SCIM token. Do not change the password sign-in setting
-(/ee/sso/settings): ask me first, because limiting password
-sign-in to break-glass admins can lock people out.
+(/ee/sso/settings) without asking me: limiting password sign-in to
+break-glass admins can lock people out.
 ```
 
 ## Upgrade Qualor
 
 ```prompt
-Upgrade our Qualor server and scanner to release <version>. Read
-the "Upgrades" and "Backups" sections of
-https://qualor.dev/docs/install-server.md first, and the release
-notes on Docker Hub / GitHub.
+Upgrade our Qualor server and scanner to release <version>. First
+read the "Upgrades" and "Backups" sections of
+https://qualor.dev/docs/install-server.md, and the release notes on
+Docker Hub / GitHub.
 
 1. Report the running version (GET /api/v0/system/info) and the
    target version, and summarise the release notes, especially
    migrations and breaking changes.
-2. Take a pg_dump, and check that it is not empty. Note the current
+2. Take a pg_dump and check that it is not empty. Note the current
    QUALOR_VERSION in .env: it is the rollback target.
-3. Set QUALOR_VERSION to the new release in .env, then run
+3. If we copy images into our own registry, copy the new tags there
+   first. Set QUALOR_VERSION to the new release in .env, then run
    `docker compose pull server` and `docker compose up -d`. Watch
-   the logs until /readyz is 200. (If we copy images into our own
-   registry, copy the new tags there first.)
+   the logs until /readyz is 200.
 4. Smoke test: sign in, open a project, and run one scan with
    qualor/scanner:<version> against a test project.
 5. Open merge/pull requests that move the scanner tag and the GitLab
@@ -533,16 +534,16 @@ notes on Docker Hub / GitHub.
 
 ## Switch on AI review
 
-Use it when Qualor already runs and scans merge requests, and you want a model to review them. It
-checks what is in place, has the agent show you the warning, and switches AI review on only after
-you say so, because the code of the reviewed projects goes to the model provider.
+For a Qualor that already scans merge requests, when you want a model to review them. The agent
+checks what is in place, shows you the warning, and switches AI review on only after you agree,
+because the code of the reviewed projects goes to the model provider.
 
 ```prompt
-Switch on AI review in Qualor for our organisation. Read
+Switch on AI review in Qualor for our organisation. First read
 https://qualor.dev/docs/ai-review.md and
-https://qualor.dev/docs/ai-assistant.md first, then gitlab.md or
-github.md for the project's CI and webhook. Prefer them over your
-memory, because Qualor changes quickly.
+https://qualor.dev/docs/ai-assistant.md, then gitlab.md or
+github.md for the project's CI and webhook. Trust them over your
+memory: Qualor changes quickly.
 
 Inputs:
 - Qualor server: <https://qualor.example.com>, and an organisation
@@ -553,46 +554,47 @@ Inputs:
 - projects to review: <group/app-a, group/app-b | all projects>
 
 Do this:
-1. Check the provider. Read GET /api/v0/organizations/{id}/ai/review:
-   if it has no provider, tell me what an instance admin has to set
-   under Settings > AI provider (base URL, models, key) and stop. If
-   it has one, check that its providerTest says toolCalling
-   supported. AI review needs a model that can call tools: if it
-   says not_supported, name the modelsWithoutTools and stop; if it
-   says unknown, an instance admin has to press Save and test (or
-   Test again) under Settings > AI provider first, so tell me that
-   and stop.
-2. Read GET /api/v0/organizations/{id}/ai/review. Show me the
-   provider host and models, the warning text (notice), and which
-   projects would be reviewed (a project not linked to its GitLab or
-   GitHub repository is not reviewed until it is linked).
+1. Read GET /api/v0/organizations/{id}/ai/review and check the
+   provider. If there is none, tell me what an instance admin has
+   to set under Settings > AI provider (base URL, models, key) and
+   stop. AI review needs a model that can call tools, so check
+   providerTest.toolCalling:
+   - not_supported: name the modelsWithoutTools and stop;
+   - unknown: tell me that an instance admin has to press Save and
+     test (or Test again) under Settings > AI provider first, and
+     stop;
+   - supported: go on.
+2. From the same answer, show me the provider host and models, the
+   warning text (notice), and which projects would be reviewed. A
+   project not linked to its GitLab or GitHub repository is not
+   reviewed until it is linked.
 3. Check the CI of each project: the job runs in merge request
    pipelines (merge_request_event on GitLab, pull_request on
    GitHub), with the full history (GIT_DEPTH: 0, or fetch-depth: 0
    with the pull request's head checked out on GitHub), and the
    scanner image or component is of the server's release. Only
    GitLab CI and GitHub Actions send the snapshot the review reads.
-   Propose the CI changes as a merge request and do not merge it.
+   Propose the CI changes as a merge request, and do not merge it.
 4. Stop and ask me before you switch on. Quote the warning text and
    the provider host, and say that the diff and the files the model
-   reads go to that provider with secrets masked. Switch on only
+   reads go to that provider, with secrets masked. Switch on only
    after I answer yes in this session.
 5. Then call PUT /api/v0/organizations/{id}/ai/review with
    enabled: true, the scope and projectIds I approved, and
    acknowledgeDataSharing { host, model, models } copied from the
    provider of the GET answer. Leave the budgets at their defaults
    unless I give numbers.
-6. Optional, if I say yes: set up the webhook of the connection so
-   that Qualor answers replies and qualor review notes at once
+6. Optional, if I say yes: set up the connection's webhook so that
+   Qualor answers replies and `qualor review` notes at once
    (gitlab.md: Comments events; github.md: Issue comment and Pull
    request review comment events).
 7. Open a test merge request that changes some code, wait for the
    pipeline, and show me whether the review and its summary came.
    If not, use the troubleshooting section of ai-review.md.
 
-Never print a token, an API key or a webhook secret, and do not
-commit one. Stop and ask before switching on, since code goes to
-the provider, and before anything else that is hard to undo.
+Never print or commit a token, an API key or a webhook secret. Stop
+and ask before switching on, since code goes to the provider, and
+before anything else that is hard to undo.
 ```
 
 ## Explain Qualor to developers
@@ -603,14 +605,18 @@ requests". Read https://qualor.dev/docs/quality-gates.md, and
 https://qualor.dev/docs/gitlab.md or
 https://qualor.dev/docs/github.md.
 
-Explain in plain language, with short examples: what the check does
-and why it looks only at new code; how to read the summary comment
-and the inline findings; how to fix a failing gate; when and how to
-mark an issue false positive or won't fix (a comment is required,
-and it re-evaluates the gate without a new pipeline); where the
-rules come from (our own ESLint, PMD and .editorconfig settings) and
-how to propose a rule change; and who to ask. Our Qualor address is
-<https://qualor.example.com>, and the owning team is <team,
-channel>. Keep it under 600 words. Save it as <path in our
-handbook>.
+Explain in plain language, with short examples:
+- what the check does, and why it looks only at new code;
+- how to read the summary comment and the inline findings;
+- how to fix a failing gate;
+- when and how to mark an issue false positive or won't fix (a
+  comment is required, and the gate is re-evaluated without a new
+  pipeline);
+- where the rules come from (our own ESLint, PMD and .editorconfig
+  settings) and how to propose a rule change;
+- who to ask.
+
+Our Qualor address is <https://qualor.example.com>, and the owning
+team is <team, channel>. Keep it under 600 words. Save it as <path
+in our handbook>.
 ```

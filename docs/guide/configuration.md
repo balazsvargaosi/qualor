@@ -1,10 +1,8 @@
 # Configuration reference
 
-The scanner needs only `QUALOR_URL` and `QUALOR_TOKEN`. A repository with no `qualor.yml` still gets
-a useful scan. Add `qualor.yml` at the repository root when your team makes a choice: coverage report
-paths, excludes, rulesets or SARIF files.
-
-An editor can autocomplete `qualor.yml` from the JSON Schema in
+The scanner needs only `QUALOR_URL` and `QUALOR_TOKEN`: a repository without `qualor.yml` still gets
+a useful scan. Add `qualor.yml` at the repository root to set coverage report paths, excludes,
+rulesets or SARIF files. Editors can autocomplete it from the JSON Schema in
 [`packages/shared/schema/qualor.schema.json`](../../packages/shared/schema/qualor.schema.json).
 
 ## Precedence
@@ -13,14 +11,17 @@ From highest to lowest:
 
 1. command-line flags (`--project-key`, `--sarif`, …)
 2. environment variables (`QUALOR_*`)
-3. `qualor.yml` (or the file named by `--config` / `QUALOR_CONFIG`)
+3. `qualor.yml` (or the file named by `--config` or `QUALOR_CONFIG`)
 4. values detected from GitLab CI or GitHub Actions
 5. built-in defaults
 
-**Secrets never come from `qualor.yml`.** The token is read only from `QUALOR_TOKEN` or
-`--token-file`, and a file with a `token` key is refused. The token is also sent only to a server URL
-from `QUALOR_URL` or `--server-url`, never to `server.url` from the file. A merge request can edit the
-file, so it must not be able to redirect the token.
+**Secrets never come from `qualor.yml`.** A merge request can edit the file, so it must not be able
+to redirect the token:
+
+- The token is read only from `QUALOR_TOKEN` or `--token-file`. A file with a `token` key is
+  refused.
+- The token is sent only to a server URL from `QUALOR_URL` or `--server-url`, never to `server.url`
+  from the file.
 
 ## `qualor.yml`
 
@@ -117,75 +118,90 @@ gate:
   failOnError: true                 # a gate in "error" fails the job
 ```
 
-`analyzers.trivy.licenses` and `licenseTimeoutSeconds` are explained in
-[Dependency licences](./dependency-licenses.md#settings). There is no licence policy in
-`qualor.yml`: an organisation admin sets it on the server.
+There is no licence policy in `qualor.yml`: an organisation admin sets it on the server. For
+`analyzers.trivy.licenses` and `licenseTimeoutSeconds`, see
+[Dependency licences](./dependency-licenses.md#settings).
 
 ### Variables in values
 
-`${VAR}` and `${VAR:-default}` are replaced from the environment. Variables whose names look like
-secrets (`*TOKEN`, `*SECRET`, `*PASSWORD`, `*API_KEY`, `*PRIVATE_KEY`, `*_PASS`, …) always resolve to
-an empty string. That keeps a secret from leaking into the report through the config.
+`${VAR}` and `${VAR:-default}` are replaced from the environment. A variable whose name looks like a
+secret (`*TOKEN`, `*SECRET`, `*PASSWORD`, `*API_KEY`, `*PRIVATE_KEY`, `*_PASS`, …) always resolves
+to an empty string, so a secret cannot leak into the report through the config.
 
 ### Built-in excludes
 
-These always apply, and you can only add to them: `node_modules`, `.git`, `dist`, `build`, `target`
-(sources only; SpotBugs still reads the classes), `vendor`, `*.min.js`, `*.min.css`, `*.min.mjs`, `*.min.cjs`, `.qualor/`,
-.NET `obj/`, `bin/Debug`, `bin/Release`, generated C# (`*.g.cs`, `*.g.i.cs`, `*.Designer.cs`),
-Python virtual environments and caches (`.venv`, `venv`, `.tox`, `.nox`, `__pycache__`,
-`__pypackages__`, `.eggs`, `site-packages`), Swift's `Pods/`, `Carthage/` and `.build/`, Bundler's
-`.bundle/`, Rails' `db/schema.rb`, Go's `testdata/` directories (in every language, so secret and
-dependency scanning skip them too) and generated `*.pb.go` files, binary files, and nested git
-repositories. Files over 1 MiB are skipped for metrics and duplication, but analyzers still see them
-(detekt and SwiftLint are the exception: they are not given Kotlin or Swift files over 1 MiB).
+These always apply. You can add to them, but not remove them.
 
-When OpenGrep selects the files itself, because the file list is too long for one command line (about
-1 MB on Linux, about 24 kB on Windows) or because of the `semgrep` analyzer, it is given the built-in
-excludes and those of your `sources.exclude` patterns that start with `**/` as `--exclude`
-arguments (OpenGrep matches every pattern at any depth, so other patterns are not passed; their
-findings are still dropped after the scan). It then does not parse vendored and minified bundles
-at all, which can take it minutes.
+| Kind | Excluded |
+| --- | --- |
+| Dependencies and build output | `node_modules`, `vendor`, `dist`, `build`, `target` (sources only: SpotBugs still reads the classes) |
+| Minified files | `*.min.js`, `*.min.css`, `*.min.mjs`, `*.min.cjs` |
+| Git and Qualor | `.git`, nested git repositories, `.qualor/` |
+| .NET | `obj/`, `bin/Debug`, `bin/Release`, generated C# (`*.g.cs`, `*.g.i.cs`, `*.Designer.cs`) |
+| Python | virtual environments and caches: `.venv`, `venv`, `.tox`, `.nox`, `__pycache__`, `__pypackages__`, `.eggs`, `site-packages` |
+| Swift | `Pods/`, `Carthage/`, `.build/` |
+| Ruby | Bundler's `.bundle/`, Rails' `db/schema.rb` |
+| Go | generated `*.pb.go` files, and `testdata/` directories in every language, so secret and dependency scanning skip them too |
+| C and C++ | CMake's `CMakeFiles/`, CLion's `cmake-build-*/` and FetchContent's `_deps/` |
+| Other | binary files |
+
+Files over 1 MiB are skipped for metrics and duplication. Analyzers still see them, except detekt
+and SwiftLint, which are not given Kotlin or Swift files over 1 MiB.
+
+OpenGrep sometimes selects the files itself: for the `semgrep` analyzer, and when the file list is
+too long for one command line (about 1 MB on Linux, about 24 kB on Windows). It is then given, as
+`--exclude` arguments, the built-in excludes and the `sources.exclude` patterns that start with
+`**/`, so it never parses vendored and minified bundles, which can take it minutes. Other patterns
+are not passed, because OpenGrep matches every pattern at any depth. Their findings are still
+dropped after the scan.
 
 ## Environment variables (scanner)
 
-The server's variables (such as `QUALOR_PUBLIC_URL`, `QUALOR_SCM_INTERNAL_HOSTS`,
-`QUALOR_LLM_INTERNAL_HOSTS` and `QUALOR_SMTP_URL`) are in
+The server's variables, such as `QUALOR_PUBLIC_URL`, `QUALOR_SCM_INTERNAL_HOSTS`,
+`QUALOR_LLM_INTERNAL_HOSTS` and `QUALOR_SMTP_URL`, are in
 [Install the server](./install-server.md#server-settings).
 
 | Variable | Meaning |
-|---|---|
+| --- | --- |
 | `QUALOR_URL` | server base URL (`https://…`) |
 | `QUALOR_TOKEN` | project analysis token or personal token |
 | `QUALOR_PROJECT_KEY` | overrides `project.key` |
 | `QUALOR_CONFIG` | path to the config file |
 | `QUALOR_CA_FILE` | a PEM CA bundle for the server's certificate. Keep it outside the checkout |
 | `QUALOR_LOG_LEVEL` | `error`, `warn`, `info` (default) or `debug` |
-| `QUALOR_CACHE_DIR` | cache directory (default `~/.cache/qualor`) |
 | `QUALOR_TRIVY_CACHE_DIR` | another Trivy database directory (absolute, outside the checkout) |
 | `QUALOR_SONARJS_DIR` | another location for Qualor's sonarjs pass (absolute, outside the checkout; default `/opt/qualor/sonarjs`, set in `qualor/scanner`) |
-| `QUALOR_WEBLINT_DIR` | directory of the HTML and CSS linters (default `/opt/qualor/weblint`, in the `qualor/scanner` image); absolute and outside the repository |
+| `QUALOR_WEBLINT_DIR` | directory of the HTML and CSS linters (absolute, outside the checkout; default `/opt/qualor/weblint`, in `qualor/scanner`) |
 | `QUALOR_DETEKT_JAR` | another location for detekt's jar (absolute, outside the checkout; default `/opt/qualor/lib/detekt/detekt-cli.jar`, set in `qualor/scanner`) |
-| `QUALOR_PHPSTAN_PHAR` | another PHPStan phar (absolute, outside the checkout, PHPStan 2.2; default `/opt/qualor/lib/phpstan/phpstan.phar`, set in `qualor/scanner`) |
-| `QUALOR_RULES_DIR` | directory of Qualor's security rules (default `/opt/qualor/rules/qualor`, where the `qualor/scanner` image installs the rules); absolute and outside the checkout |
-| `QUALOR_RUBOCOP_DIR` | directory of the RuboCop pass (default `/opt/qualor/rubocop`, in the `qualor/scanner` image); absolute and outside the checkout |
+| `QUALOR_PHPSTAN_PHAR` | another PHPStan phar, PHPStan 2.2 (absolute, outside the checkout; default `/opt/qualor/lib/phpstan/phpstan.phar`, set in `qualor/scanner`) |
+| `QUALOR_RULES_DIR` | directory of Qualor's security rules (absolute, outside the checkout; default `/opt/qualor/rules/qualor`, where `qualor/scanner` installs them) |
+| `QUALOR_RUBOCOP_DIR` | directory of the RuboCop pass (absolute, outside the checkout; default `/opt/qualor/rubocop`, in `qualor/scanner`) |
+| `QUALOR_GO_DIR` | directory of Qualor's Go runner for staticcheck, go vet and gosec (absolute, outside the checkout; default `/opt/qualor/go`, in `qualor/scanner`) |
 | `QUALOR_DOTNET_ANALYZERS` | directory of the bundled Roslyn analyzer DLLs (set in `qualor/scanner-dotnet`) |
+| `QUALOR_MSBUILD_USER_DIR` | MSBuild's user extensions directory, where `qualor dotnet begin` installs its hook (absolute, outside the checkout; default: the one MSBuild uses) |
 | `QUALOR_TAINT_TIME_LIMIT` | time budget of Qualor's Roslyn taint engine in `qualor dotnet end`, in seconds (default `600`) |
-| `QUALOR_TAINT_MEMORY_LIMIT` | memory budget of Qualor's Roslyn taint engine in `qualor dotnet end`, in megabytes (default: half of the job's memory, at least 4096 and leaving 1024 free, see [Languages and analyzers](./languages-and-analyzers.md)) |
+| `QUALOR_TAINT_MEMORY_LIMIT` | memory budget of the same engine, in megabytes (default: half of the job's memory, at least 4096 and leaving 1024 free; see [Languages and analyzers](./languages-and-analyzers.md)) |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | a proxy between the runner and the server (`http://` proxies) |
 
-`SEMGREP_*` and `OPENGREP_*` variables are not passed to OpenGrep or Semgrep, by the `semgrep` and
-the `qualor` engine alike: `SEMGREP_BASELINE_REF` and `SEMGREP_BASELINE_COMMIT` would silently hide
-every finding older than that commit.
+`SEMGREP_*` and `OPENGREP_*` variables are never passed to OpenGrep or Semgrep, by the `semgrep` or
+the `qualor` engine. `SEMGREP_BASELINE_REF` and `SEMGREP_BASELINE_COMMIT` would silently hide every
+finding older than that commit.
 
-Values read from CI, when present: the revision, the branch, the MR/PR id and its target, the default
-branch and the project path, from `CI_*` on GitLab and `GITHUB_*` plus the event payload on GitHub.
-For [AI review](./ai-review.md#what-your-ci-needs) it also reads the merge request's last commit
-(`CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` in a merged-result or merge-train pipeline, else
-`CI_COMMIT_SHA`; the event's `pull_request.head.sha` on GitHub) and its title and description
-(`CI_MERGE_REQUEST_TITLE` and `CI_MERGE_REQUEST_DESCRIPTION`; the event's `pull_request.title` and
-`body`). Those three go into the AI review snapshot only, never into the report.
-Outside CI, the scanner uses `git rev-parse HEAD` and the current branch, and never assumes a merge
-request.
+### Values read from CI
+
+When present, the scanner reads the revision, the branch, the merge or pull request id and its
+target, the default branch and the project path: from `CI_*` on GitLab, and from `GITHUB_*` and the
+event payload on GitHub. Outside CI, it uses `git rev-parse HEAD` and the current branch, and never
+assumes a merge request.
+
+For [AI review](./ai-review.md#what-your-ci-needs) it also reads three values. They go into the AI
+review snapshot only, never into the report.
+
+| Value | GitLab | GitHub (the event) |
+| --- | --- | --- |
+| the merge request's last commit | `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` in a merged-result or merge-train pipeline, else `CI_COMMIT_SHA` | `pull_request.head.sha` |
+| its title | `CI_MERGE_REQUEST_TITLE` | `pull_request.title` |
+| its description | `CI_MERGE_REQUEST_DESCRIPTION` | `pull_request.body` |
 
 ## Examples
 

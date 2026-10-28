@@ -1,10 +1,12 @@
 # Quick start
 
-This page takes you from nothing to a first analysis in about 15 minutes. You need a Linux or macOS
-machine (or WSL) with Docker and Compose v2, and `openssl`. Everything runs from the images on Docker
-Hub: `qualor/server` and `qualor/scanner`.
+This page takes you from nothing to a first analysis in about 15 minutes. You need Linux, macOS or
+WSL, with Docker, Compose v2 and `openssl`. Everything runs from the `qualor/server` and
+`qualor/scanner` images on Docker Hub.
 
 ## 1. Start the server
+
+Create a directory:
 
 ```sh
 mkdir -p ~/qualor && cd ~/qualor
@@ -26,11 +28,12 @@ grep BOOTSTRAP .env        # the admin password for the first sign-in
 ```
 
 Open <http://127.0.0.1:8080> and sign in as `admin` with that password. Then change it: open the
-menu under your name at the top right and choose **Change password**.
-**Forgot password?** on the sign-in page works once Qualor can send email and `QUALOR_PUBLIC_URL`
-is set ([Email](./email.md#account-emails)); until then an instance admin resets passwords in
-**Settings → Users**. The server listens on `127.0.0.1` only. To reach it from other
-machines, put TLS in front of it ([Install the server](./install-server.md#reverse-proxy-and-tls)).
+menu under your name at the top right and choose **Change password**. **Forgot password?** works
+only once Qualor can send email
+([Forgotten passwords](./users-projects-tokens.md#forgotten-passwords-and-invitations)).
+
+The server listens on `127.0.0.1` only. To reach it from other machines, put TLS in front of it
+([Reverse proxy and TLS](./install-server.md#reverse-proxy-and-tls)).
 
 ## 2. Pull the scanner
 
@@ -38,23 +41,23 @@ machines, put TLS in front of it ([Install the server](./install-server.md#rever
 docker pull qualor/scanner:0.12
 ```
 
-It is about 4.1 GB, and 1.4 GB of that is Trivy's vulnerability database. CI runners pull it the same
+It is about 4.1 GB, 1.4 GB of which is Trivy's vulnerability database. CI runners pull it the same
 way.
 
 ## 3. Create a project and a token
 
-1. **Projects → New project.** The **key** identifies the project in every scan. By default the
-   scanner uses the CI project path as the key: `CI_PROJECT_PATH` on GitLab (`group/app`) or
-   `GITHUB_REPOSITORY` on GitHub (`owner/repo`). Use the same value here, and you need no config file.
-   The project's main branch is `main`. Analyses of any other branch are compared with it. If your
-   default branch has another name, such as `master`, rename it through the API:
-   `PATCH /api/v0/projects/<id>` with `{"mainBranchName":"master"}`. See
-   [Users, projects and tokens](./users-projects-tokens.md#projects).
-2. **Settings → Access tokens → New token**, with the scope **Upload analyses**. Copy the token now,
-   because it is shown only once.
+1. **Projects → New project.** The **Key** identifies the project in every scan. By default the
+   scanner uses the CI project path as the key: `CI_PROJECT_PATH` on GitLab (`group/app`),
+   `GITHUB_REPOSITORY` on GitHub (`owner/repo`). Use the same value here and you need no config
+   file.
+2. The main branch is `main`, and analyses of every other branch are compared with it. If your
+   default branch has another name, such as `master`, change it before the first scan in
+   **Project → Settings → Main branch** ([Projects](./users-projects-tokens.md#projects)).
+3. **Settings → Access tokens → New token**, with the scope **Upload analyses**. Copy the token: it
+   is shown only once.
 
-For CI, a project analysis token is safer: it can only upload to its own project. See
-[Users, projects and tokens](./users-projects-tokens.md#project-analysis-tokens).
+For CI, a [project analysis token](./users-projects-tokens.md#project-analysis-tokens) is safer: it
+can only upload to its own project.
 
 ## 4. Run a first scan locally
 
@@ -70,16 +73,16 @@ docker run --rm --network host \
   qualor/scanner:0.12 scan
 ```
 
-`--network host` lets the container reach the server on `127.0.0.1`. That works on Linux. With Docker
-Desktop, use `QUALOR_URL=http://host.docker.internal:8080`.
+`--network host` lets the container reach the server on `127.0.0.1`, on Linux. With Docker
+Desktop, use `QUALOR_URL=http://host.docker.internal:8080` instead.
 
-The scanner runs the analyzers that fit your code, uploads the report and prints the gate verdict. A
-first analysis of the main branch has no new code, so it passes the default gate. Open the project in
-the UI to see the issues, coverage, duplication and size.
+The scanner runs the analyzers that fit your code, uploads the report and prints the gate verdict.
+A first analysis of the main branch has no new code, so it passes the default gate. Open the
+project in the UI to see its issues, coverage, duplication and size.
 
-A JavaScript or TypeScript project needs its dependencies installed first (`npm ci`), because ESLint
-runs from the project's own `node_modules` and with its own config. A Java project needs to be built
-first (`mvn -DskipTests package`), because SpotBugs reads compiled classes. See
+Some analyzers need the project prepared first. For JavaScript or TypeScript, install the
+dependencies (`npm ci`): ESLint runs from the project's own `node_modules`, with its own config.
+For Java, build first (`mvn -DskipTests package`): SpotBugs reads compiled classes. See
 [Languages and analyzers](./languages-and-analyzers.md).
 
 ## 5. Put it in CI
@@ -88,9 +91,9 @@ first (`mvn -DskipTests package`), because SpotBugs reads compiled classes. See
 - GitHub: [GitHub](./github.md)
 - Anything else: [Other CI systems and local scans](./other-ci.md)
 
-From then on, every merge request or pull request gets a verdict on the code it changes. The pipeline
-fails when the gate fails. With the SCM connection set up, reviewers also see a summary comment and
-comments on the changed lines.
+From then on, every merge request or pull request gets a verdict on the code it changes, and the
+pipeline fails when the gate fails. Once the GitLab or GitHub connection is set up, reviewers also
+see a summary comment and comments on the changed lines.
 
 ## What next
 

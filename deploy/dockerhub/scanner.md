@@ -60,49 +60,53 @@ qualor:
       env: { QUALOR_URL: '${{ vars.QUALOR_URL }}', QUALOR_TOKEN: '${{ secrets.QUALOR_TOKEN }}' }
 ```
 
-The scan needs the full git history (`GIT_DEPTH: 0`, `fetch-depth: 0`). Install a JavaScript or
-TypeScript project's dependencies before `qualor scan`, run `composer install --no-scripts
---no-plugins` for a PHP project (PHPStan reads `vendor/`, never runs it), and build a Java project
-first (SpotBugs analyses compiled classes). For Go, run `go mod download` (or vendor the
-dependencies) first: Qualor never downloads modules. C and C++ need no build for cppcheck; for
-clang-tidy, scan in the job that built the project, with your own clang-tidy and its
-`compile_commands.json`.
+Before `qualor scan`:
+
+- Check out the full git history (`GIT_DEPTH: 0`, `fetch-depth: 0`).
+- JavaScript and TypeScript: install the project's dependencies (ESLint runs from `node_modules`).
+- Java: build the project (SpotBugs reads compiled classes).
+- PHP: run `composer install --no-scripts --no-plugins` (PHPStan reads `vendor/`, never runs it).
+- Go: run `go mod download` or vendor the dependencies. Qualor never downloads modules.
+- C and C++: nothing for cppcheck. For clang-tidy, scan in the job that built the project, with your
+  own clang-tidy and its `compile_commands.json`.
 
 ### What is inside
 
-- The `qualor` CLI (entrypoint `qualor`, default command `scan`), a single binary built with Bun.
-- Node.js 22.23.4 with npm and corepack, to run the project's own ESLint from its `node_modules`.
-- SonarQube-compatible rules for JavaScript and TypeScript (eslint-plugin-sonarjs 2.0.4, LGPL-3.0):
-  Qualor's own sonarjs pass in `/opt/qualor/sonarjs` runs eslint-plugin-sonarjs 2.0.4 on Qualor's
-  own ESLint 9, alongside the project's own ESLint above. The C# ones, SonarAnalyzer.CSharp 9.32,
-  are in `qualor/scanner-dotnet`.
-- stylelint 17.15 and HTMLHint 1.9.2 (HTML, CSS and SCSS): Qualor's own passes in
-  `/opt/qualor/weblint`.
-- Eclipse Temurin JRE 17.0.20+8, for PMD, SpotBugs and detekt.
-- git, with `safe.directory '*'`, since CI runners check out as another user.
-- The pinned analyzers in `/opt/qualor/bin`: PMD 7.27.0, SpotBugs 4.10.4 with FindSecBugs 1.14.0
-  (security rules), OpenGrep 1.30.0, Gitleaks 8.30.1, Trivy 0.74.0 and Ruff 0.16.9 (Python), with a
-  snapshot of Trivy's vulnerability database (the scan never downloads one); detekt 1.23.8 (Kotlin, Apache-2.0)
-  in `/opt/qualor/lib/detekt`; SwiftLint 0.65.1 (Swift, MIT), its static Linux build, in
-  `/opt/qualor/bin/swiftlint`; PHPStan 2.2.16 (PHP, MIT) in `/opt/qualor/lib/phpstan`, on Debian's
-  PHP 8.2; RuboCop 1.91.0 on Ruby 4.0.7 (Ruby, MIT), in `/opt/qualor/rubocop`; for Go, Go 1.27.1
-  in `/opt/qualor/lib/go`, with staticcheck 2026.2.1 (MIT) and gosec 2.29.0 (Apache-2.0) in
-  `/opt/qualor/bin`, which run offline; and cppcheck 2.22.0 (C and C++, GPL-3.0-or-later), built
-  from source, in `/opt/qualor/bin/cppcheck`: its source is in `qualor/scanner-sources`. clang-tidy
-  is not in the image: run `qualor scan` in the job that built your project to use your own. No
-  Semgrep or OpenGrep rules are bundled yet
-  (`/opt/qualor/rules/semgrep` is empty): name your own rule files in `qualor.yml`, or that
-  analyzer is skipped.
-- Qualor's own security rules, qualor-rules 2026.10.5 (PolyForm Shield 1.0.0, source-available),
-  in `/opt/qualor/rules/qualor`, run on the bundled OpenGrep: for JavaScript and TypeScript,
-  Python, Java, Go and C#, they follow HTTP request data into SQL, NoSQL, shell commands, code and
-  template evaluation, file paths, LDAP and XPath queries, regular expressions, outgoing requests,
-  redirects and HTML responses, and report disabled TLS verification, XXE, zip slip, unsafe
-  deserialization and broken ciphers. Weak hashes, cookies without their flags, raw HTML in React,
-  tar archives extracted without a safe filter and XML parsers that load DTDs are security
-  hotspots to review.
-- Runs as the user `node` (uid 1000) in `/src`; about 4.1 GB. Every base image is pinned by
-  digest.
+The `qualor` CLI (entrypoint `qualor`, default command `scan`) is a single binary built with
+Bun. It runs as the user `node` (uid 1000) in `/src`. The image is about 4.1 GB, and every base
+image is pinned by digest.
+
+| Tool                       | Version                                               | For                                                  |
+| -------------------------- | ----------------------------------------------------- | ---------------------------------------------------- |
+| PMD                        | 7.27.0                                                | Java                                                 |
+| SpotBugs with FindSecBugs  | 4.10.4, 1.14.0                                        | Java bytecode, security rules                        |
+| detekt                     | 1.23.8                                                | Kotlin                                               |
+| SwiftLint                  | 0.65.1 (static Linux build)                           | Swift                                                |
+| Ruff                       | 0.16.9                                                | Python                                               |
+| PHPStan                    | 2.2.16, on Debian's PHP 8.2                           | PHP                                                  |
+| RuboCop                    | RuboCop 1.91.0 on Ruby 4.0.7                          | Ruby                                                 |
+| staticcheck, go vet, gosec | 2026.2.1, Go 1.27.1, 2.29.0                           | Go, offline                                          |
+| cppcheck                   | 2.22.0 (built from source)                            | C, C++                                               |
+| eslint-plugin-sonarjs      | 2.0.4, on Qualor's own ESLint 9                       | SonarQube-compatible JavaScript and TypeScript rules |
+| stylelint, HTMLHint        | 17.15, 1.9.2                                          | CSS, SCSS, HTML                                      |
+| OpenGrep                   | 1.30.0                                                | Qualor's security rules and your own rule files      |
+| Gitleaks                   | 8.30.1                                                | secrets                                              |
+| Trivy                      | 0.74.0, with a snapshot of its vulnerability database | dependencies                                         |
+| qualor-rules               | 2026.10.5                                             | Qualor's security rules                              |
+
+The project's own ESLint runs on the bundled Node.js 22.23.4 (with npm and corepack). PMD, SpotBugs
+and detekt run on the Eclipse Temurin JRE 17.0.20+8. git is configured with `safe.directory '*'`,
+since CI runners check out as another user. The scan never downloads Trivy's database. Not
+included: clang-tidy (scan in the job that built your project to use your own), the C#
+analyzers (use [`qualor/scanner-dotnet`](https://hub.docker.com/r/qualor/scanner-dotnet)), and
+Semgrep or OpenGrep rules of your own (name your rule files in `qualor.yml`).
+
+**Qualor's security rules** (source-available) cover JavaScript and TypeScript, Python, Java, Go
+and C#. They follow HTTP request data into SQL, NoSQL, shell commands, code and template
+evaluation, file paths, LDAP and XPath queries, regular expressions, outgoing requests, redirects
+and HTML responses. They also report disabled TLS verification, XXE, zip slip, unsafe
+deserialization and broken ciphers. Weak hashes, cookies without their flags, raw HTML in React,
+unsafe tar extraction and XML parsers that load DTDs are reported as security hotspots to review.
 
 ### Environment
 
@@ -134,22 +138,32 @@ An interrupted scan exits 128 plus the signal number (130 for SIGINT, 143 for SI
 
 ### Licences
 
-The Qualor CLI is MIT-licensed. The image bundles third-party software under its own licences:
-OpenGrep and SpotBugs (LGPL-2.1), FindSecBugs (LGPL-3.0), PMD (BSD-style, with Apache-2.0 parts),
-Gitleaks and Trivy (MIT and Apache-2.0, with MPL-2.0 Go modules), Ruff (MIT, with three MPL-2.0 crates compiled in), detekt
-(Apache-2.0; Trove4J, LGPL-2.1, inside its jar), PHPStan (MIT; its Composer packages MIT,
-BSD-3-Clause and Apache-2.0), PHP 8.2 from Debian (PHP License 3.01), Go (BSD-3-Clause with
-Google's patent grant), staticcheck (MIT), gosec (Apache-2.0), SwiftLint (MIT; its static build
-links the Swift runtime, libc++, musl, curl, BoringSSL, libxml2, zlib and mimalloc, none of them
-copyleft), Ruby 4.0.7 (under its BSD-2-Clause option) with RuboCop and its gems (MIT, Ruby or
-BSD-2-Clause), cppcheck 2.22.0 (GPL-3.0-or-later, built from source; the source is in
-`qualor/scanner-sources`), eslint-plugin-sonarjs 2.0.4 (LGPL-3.0, the last release before the SONAR
-Source-Available License; its own npm dependency tree includes axe-core, MPL-2.0), the Temurin JRE
-(GPL-2.0 with the Classpath Exception), Node.js (MIT), and the Bun runtime inside the `qualor`
-binary (MIT; it links JavaScriptCore/WebKit and TinyCC, LGPL). Qualor's security rules are under
-PolyForm Shield 1.0.0 (not MIT, source-available). The notices are in `/opt/qualor/NOTICE.md` and
-the licence texts in `/opt/qualor/licenses/`. The complete corresponding source of every copyleft
-component is published as
+The Qualor CLI is MIT-licensed. Qualor's security rules are under PolyForm Shield 1.0.0
+(source-available, not MIT). The bundled software keeps its own licences:
+
+| Component                        | Licence                                                                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| OpenGrep, SpotBugs               | LGPL-2.1                                                                                                                        |
+| FindSecBugs                      | LGPL-3.0                                                                                                                        |
+| PMD                              | BSD-style, with Apache-2.0 parts                                                                                                |
+| Gitleaks, Trivy                  | MIT and Apache-2.0, with MPL-2.0 Go modules                                                                                     |
+| Ruff                             | MIT, with three MPL-2.0 crates compiled in                                                                                      |
+| detekt                           | Apache-2.0; Trove4J (LGPL-2.1) inside its jar                                                                                   |
+| PHPStan                          | MIT; its Composer packages MIT, BSD-3-Clause and Apache-2.0                                                                     |
+| PHP 8.2 (Debian)                 | PHP License 3.01                                                                                                                |
+| Go                               | BSD-3-Clause with Google's patent grant                                                                                         |
+| staticcheck                      | MIT                                                                                                                             |
+| gosec                            | Apache-2.0                                                                                                                      |
+| SwiftLint                        | MIT; its static build links the Swift runtime, libc++, musl, curl, BoringSSL, libxml2, zlib and mimalloc, none of them copyleft |
+| Ruby 4.0.7, RuboCop and its gems | Ruby under its BSD-2-Clause option; the gems MIT, Ruby or BSD-2-Clause                                                          |
+| cppcheck 2.22.0                  | GPL-3.0-or-later, built from source                                                                                             |
+| eslint-plugin-sonarjs 2.0.4      | LGPL-3.0, the last release before the SONAR Source-Available License; its npm dependency tree includes axe-core (MPL-2.0)       |
+| Temurin JRE                      | GPL-2.0 with the Classpath Exception                                                                                            |
+| Node.js                          | MIT                                                                                                                             |
+| Bun, inside the `qualor` binary  | MIT; it links JavaScriptCore/WebKit and TinyCC (LGPL)                                                                           |
+
+The notices are in `/opt/qualor/NOTICE.md` and the licence texts in `/opt/qualor/licenses/`. The
+complete corresponding source of every copyleft component is published as
 [`qualor/scanner-sources`](https://hub.docker.com/r/qualor/scanner-sources) with the same tag;
 `/opt/qualor/SOURCES.md` is its index.
 

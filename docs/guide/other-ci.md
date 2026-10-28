@@ -1,19 +1,19 @@
 # Other CI systems and local scans
 
-The scanner reads GitLab CI and GitHub Actions variables on its own. Everywhere else (Jenkins,
-Bitbucket Pipelines, TeamCity, Azure Pipelines, Buildkite, a laptop), it reads the revision and the
-branch from git. You pass the rest yourself.
+Run the scanner on Jenkins, Bitbucket Pipelines, TeamCity, Azure Pipelines, Buildkite or your own
+machine. The scanner reads GitLab CI and GitHub Actions variables by itself. Everywhere else it
+reads the revision and the branch from git, and you pass the rest.
 
 ## What every job needs
 
-1. The `qualor/scanner` image. Or the `qualor` binary with the analyzers on `PATH`; the image is much
-   simpler.
+1. The `qualor/scanner` image, or the `qualor` binary with the analyzers on `PATH`. The image is
+   much simpler.
 2. The repository checked out with **full history**, at the root of the working directory.
 3. `QUALOR_URL` and `QUALOR_TOKEN` in the environment, with the token from the CI's secret store.
-4. The project key: `QUALOR_PROJECT_KEY`, `--project-key` or `project.key` in `qualor.yml`, because no
-   CI project path is detected.
-5. For a pull request or merge request: `--mr <id> --mr-target <target branch>`. Otherwise the scan is
-   a branch analysis, compared with the project's main branch.
+4. The project key, because no CI project path is detected: `QUALOR_PROJECT_KEY`, `--project-key`
+   or `project.key` in `qualor.yml`.
+5. For a pull request or merge request: `--mr <id> --mr-target <target branch>`. Without them the
+   scan is a branch analysis, compared with the project's main branch.
 
 ```sh
 qualor scan --project-key acme/payments-api \
@@ -50,6 +50,8 @@ pipeline {
 
 ## Bitbucket Pipelines
 
+Set `QUALOR_URL` and `QUALOR_TOKEN` as secured repository variables.
+
 ```yaml
 image: qualor/scanner:0.12
 clone:
@@ -70,14 +72,11 @@ pipelines:
             - qualor scan --project-key acme/payments-api --branch main
 ```
 
-Set `QUALOR_URL` and `QUALOR_TOKEN` (secured) as repository variables. Qualor does not comment on
-Bitbucket, Azure DevOps or Gerrit reviews. The job's exit code carries the verdict there.
-
 ## C and C++
 
-clang-tidy needs your build's compile database and headers, so run `qualor scan` in the job that
-built the project (the `qualor` binary from the release page, with your clang-tidy on `PATH`) to get
-it. The `qualor/scanner` image runs cppcheck only. See
+The `qualor/scanner` image runs cppcheck only. clang-tidy needs your build's compile database and
+headers, so run `qualor scan` in the job that built the project, with the `qualor` binary from the
+release page and your clang-tidy on `PATH`. See
 [C and C++](./languages-and-analyzers.md#c-and-c-cppcheck-clang-tidy).
 
 ## A local scan
@@ -88,17 +87,20 @@ docker run --rm -v "$PWD":/src -w /src \
   qualor/scanner:0.12 scan
 ```
 
-Or without a server: `--dry-run --output report.json.gz` builds the report and writes it to a file,
-and uploads nothing:
+Without a server, `--dry-run --output report.json.gz` writes the report to a file and uploads
+nothing:
 
 ```sh
 docker run --rm -v "$PWD":/src -w /src qualor/scanner:0.12 scan --dry-run --output report.json.gz --project-key local/test
 ```
 
-`qualor validate` prints the resolved configuration, with every default filled in and the token
-redacted. Run it first when a scan behaves unexpectedly.
+When a scan behaves unexpectedly, run `qualor validate` first. It prints the resolved
+configuration, with every default filled in and the token redacted.
 
 ## Exit codes
 
-The job fails when the scanner exits with a non-zero code. Code `1` means the gate failed. The full
-table is in the [CLI reference](./cli.md#exit-codes).
+The job fails when the scanner exits with a non-zero code, and code `1` means the gate failed. The
+full table is in the [CLI reference](./cli.md#exit-codes).
+
+Qualor does not comment on Bitbucket, Azure DevOps or Gerrit reviews. There, the job's exit code
+carries the verdict.
