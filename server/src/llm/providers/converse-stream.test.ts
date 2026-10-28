@@ -80,6 +80,12 @@ const unstreamed = (request: RecordedLlmRequest): Record<string, unknown> =>
     ),
   );
 
+/** A plain answer with this text, in the wire's shape. */
+const answerOf = (wire: Wire, text: string): unknown => {
+  if (wire === 'anthropic') return anthropicAnswer(text);
+  return wire === 'responses' ? responsesAnswer(text) : openAiAnswer(text);
+};
+
 describe('converse: a streamed answer is the answer that is not streamed (R35)', () => {
   let fake: FakeLlm;
   let http: ProviderHttpOptions;
@@ -366,12 +372,7 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
     it.each(ERRORS)('%s: %s is %s', async (wire, type, failure) => {
       fake.enqueue({
         status: 200,
-        body:
-          wire === 'anthropic'
-            ? anthropicAnswer('{}')
-            : wire === 'responses'
-              ? responsesAnswer('{}')
-              : openAiAnswer('{}'),
+        body: answerOf(wire, '{}'),
         stream: { error: { type, message: 'Fake error text: it broke' } },
       });
       const err = await converse(configs[wire], fake.apiKey, start, streamed).catch(
@@ -424,12 +425,7 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
   it.each(WIRES)('%s: a stream that ends without its terminator is unavailable', async (wire) => {
     fake.enqueue({
       status: 200,
-      body:
-        wire === 'anthropic'
-          ? anthropicAnswer('{"findings":[]}')
-          : wire === 'responses'
-            ? responsesAnswer('{"findings":[]}')
-            : openAiAnswer('{"findings":[]}'),
+      body: answerOf(wire, '{"findings":[]}'),
       stream: { cut: true },
     });
     const err = await converse(configs[wire], fake.apiKey, start, streamed).catch(
@@ -455,12 +451,7 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
     async (wire) => {
       fake.enqueue({
         status: 200,
-        body:
-          wire === 'anthropic'
-            ? anthropicAnswer('{}')
-            : wire === 'responses'
-              ? responsesAnswer('{}')
-              : openAiAnswer('{}'),
+        body: answerOf(wire, '{}'),
         stream: { noUsage: true },
       });
       const turn = await converse(configs[wire], fake.apiKey, start, streamed);
@@ -477,12 +468,7 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
     it.each(WIRES)(
       '%s: a server refusing the stream is asked once more without it, with the same request',
       async (wire) => {
-        const body =
-          wire === 'anthropic'
-            ? anthropicAnswer('{"findings":[]}')
-            : wire === 'responses'
-              ? responsesAnswer('{"findings":[]}')
-              : openAiAnswer('{"findings":[]}');
+        const body = answerOf(wire, '{"findings":[]}');
         fake.enqueue({ status: 200, body }, { status: 200, body });
         const turn = await converse(configs[wire], fake.apiKey, start, streamed);
         expect(fake.requests).toHaveLength(2);
@@ -679,26 +665,29 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
     });
 
     /** An answer with text, calls and usage, and the thinking or reasoning of the wires that have it. */
-    const richAnswer = (wire: Wire): unknown =>
-      wire === 'anthropic'
-        ? anthropicToolUse(
-            [{ id: 'toolu_1', name: 'read_file', input: { path: 'src/café/😀.ts' } }],
-            {
-              text: TEXT,
-              thinking: [anthropicThinking('SIGNATURE-ONE', 'I should read 😀 first.')],
-              usage: { input_tokens: 431, output_tokens: 1_102 },
-            },
-          )
-        : wire === 'responses'
-          ? responsesToolCalls(CALLS, {
-              text: TEXT,
-              reasoning: [responsesReasoning('ENCRYPTED-ONE')],
-              usage: { input_tokens: 120, output_tokens: 34 },
-            })
-          : openAiToolCalls(CALLS, {
-              text: TEXT,
-              usage: { prompt_tokens: 120, completion_tokens: 34 },
-            });
+    const richAnswer = (wire: Wire): unknown => {
+      if (wire === 'anthropic') {
+        return anthropicToolUse(
+          [{ id: 'toolu_1', name: 'read_file', input: { path: 'src/café/😀.ts' } }],
+          {
+            text: TEXT,
+            thinking: [anthropicThinking('SIGNATURE-ONE', 'I should read 😀 first.')],
+            usage: { input_tokens: 431, output_tokens: 1_102 },
+          },
+        );
+      }
+      if (wire === 'responses') {
+        return responsesToolCalls(CALLS, {
+          text: TEXT,
+          reasoning: [responsesReasoning('ENCRYPTED-ONE')],
+          usage: { input_tokens: 120, output_tokens: 34 },
+        });
+      }
+      return openAiToolCalls(CALLS, {
+        text: TEXT,
+        usage: { prompt_tokens: 120, completion_tokens: 34 },
+      });
+    };
 
     it.each(WIRES)(
       '%s: its whole answer, JSON and no event stream, is read as the answer that is not streamed, in one request',
@@ -727,12 +716,7 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
       const text = 'é'.repeat(LLM_MAX_ANSWER_BYTES / 2 + 1);
       fake.enqueue({
         status: 200,
-        body:
-          wire === 'anthropic'
-            ? anthropicAnswer(text)
-            : wire === 'responses'
-              ? responsesAnswer(text)
-              : openAiAnswer(text),
+        body: answerOf(wire, text),
       });
       const err = await converse(configs[wire], fake.apiKey, start, streamed).catch(
         (e: unknown) => e,
@@ -785,12 +769,7 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
       const text = 'é'.repeat(LLM_MAX_ANSWER_BYTES / 2 + 1);
       fake.enqueue({
         status: 200,
-        body:
-          wire === 'anthropic'
-            ? anthropicAnswer(text)
-            : wire === 'responses'
-              ? responsesAnswer(text)
-              : openAiAnswer(text),
+        body: answerOf(wire, text),
       });
       const err = await converse(configs[wire], fake.apiKey, start, streamed).catch(
         (e: unknown) => e,

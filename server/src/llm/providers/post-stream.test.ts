@@ -56,6 +56,15 @@ function shape(error: unknown): unknown {
   return error instanceof LlmCallAborted ? 'LlmCallAborted' : error;
 }
 
+/** What a body came to: the error's shape, the events it holds drained, or the whole answer. */
+async function outcomeOf(got: unknown): Promise<unknown> {
+  if (got instanceof Error) return shape(got);
+  if ((got as StreamedAnswer).kind === 'events') {
+    return { events: await drain(eventsOf(got as StreamedAnswer)) };
+  }
+  return got;
+}
+
 describe('postStream', () => {
   let fake: FakeLlm;
   let http: ProviderHttpOptions;
@@ -801,13 +810,7 @@ describe('postStream', () => {
         for (const piece of pieces) await answer.write(piece);
         await answer.end();
         const got = await pending.catch((e: unknown) => e);
-        outcomes.push(
-          got instanceof Error
-            ? shape(got)
-            : (got as StreamedAnswer).kind === 'events'
-              ? { events: await drain(eventsOf(got as StreamedAnswer)) }
-              : got,
-        );
+        outcomes.push(await outcomeOf(got));
       });
     }
     expect(outcomes).toEqual([

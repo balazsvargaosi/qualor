@@ -146,11 +146,15 @@ describe('outputLimitRefusal: the words of a refusal of the output limit, and wh
 
 describe('askWithRoom: one call, asked again without the room that a model refuses', () => {
   let models = 0;
+  const nextModel = (): number => {
+    models += 1;
+    return models;
+  };
   /** A pair of its own for each test: what the process learns of one is kept for good. */
   const config = (over: Partial<ProviderConfig> = {}): ProviderConfig => ({
     kind: 'anthropic',
     baseUrl: 'https://llm.example',
-    model: `model-${(models += 1)}`,
+    model: `model-${nextModel()}`,
     auth: 'bearer',
     jsonMode: 'json_object',
     maxTokensField: 'max_tokens',

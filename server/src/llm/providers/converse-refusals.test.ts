@@ -81,10 +81,10 @@ describe('converse: conversations with read-only tools (R5)', () => {
     const conversation: LlmConversation = { ...start, ...ASKED };
     let models = 0;
     /** A model of its own for each test: what a process learns of one it keeps. */
-    const own = (config: ProviderConfig): ProviderConfig => ({
-      ...config,
-      model: `refusing-model-${(models += 1)}`,
-    });
+    const own = (config: ProviderConfig): ProviderConfig => {
+      models += 1;
+      return { ...config, model: `refusing-model-${models}` };
+    };
     /** The limit a request asked for, in the field of its wire. */
     const limitOf = (request: RecordedLlmRequest): unknown => {
       const json = request.json as { max_tokens?: unknown; max_completion_tokens?: unknown };

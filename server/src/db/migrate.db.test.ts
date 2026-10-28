@@ -26,6 +26,16 @@ function migrationsUpTo(count: number): { dir: string; remove: () => void } {
   return { dir, remove: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+/** An `llm_requests` row of the given feature (the 0016 and 0017 tests insert them before and after). */
+function insertLlmRequest(db: TestDatabase, org: string, project: string, feature: string) {
+  return db.pool.query(
+    `INSERT INTO llm_requests (id, organization_id, project_id, feature, cache_key, provider,
+       provider_host, model, prompt_version, input_sha256, input_bytes, fields)
+     VALUES ($1, $2, $3, $4, $5, 'openai', 'api.example.com', 'm', $6, $7, 10, '{rule}')`,
+    [randomUUID(), org, project, feature, 'a'.repeat(64), `${feature}.v1`, 'b'.repeat(64)],
+  );
+}
+
 describe('runMigrations / pendingMigrations', () => {
   let t: TestDatabase | undefined;
   afterEach(async () => {
@@ -347,14 +357,9 @@ describe('runMigrations / pendingMigrations', () => {
       `INSERT INTO projects (id, organization_id, key, name) VALUES ($1, $2, 'mig/6i3', 'P')`,
       [project, org],
     );
-    const insertRequest = (feature: string) =>
-      db.pool.query(
-        `INSERT INTO llm_requests (id, organization_id, project_id, feature, cache_key, provider,
-           provider_host, model, prompt_version, input_sha256, input_bytes, fields)
-         VALUES ($1, $2, $3, $4, $5, 'openai', 'api.example.com', 'm', $6, $7, 10, '{rule}')`,
-        [randomUUID(), org, project, feature, 'a'.repeat(64), `${feature}.v1`, 'b'.repeat(64)],
-      );
-    for (const feature of ['explain', 'triage', 'fix']) await insertRequest(feature);
+    for (const feature of ['explain', 'triage', 'fix']) {
+      await insertLlmRequest(db, org, project, feature);
+    }
     const requests = async () =>
       (
         await db.pool.query(
@@ -373,8 +378,8 @@ describe('runMigrations / pendingMigrations', () => {
       expect(rows, table).toEqual([{ n: 0 }]);
     }
     // The widened check lists review, and still refuses any other value.
-    await insertRequest('review');
-    await expect(insertRequest('poem')).rejects.toMatchObject({
+    await insertLlmRequest(db, org, project, 'review');
+    await expect(insertLlmRequest(db, org, project, 'poem')).rejects.toMatchObject({
       code: '23514',
       constraint: 'llm_requests_feature_check',
     });
@@ -422,14 +427,7 @@ describe('runMigrations / pendingMigrations', () => {
               ($4, $2, 'github', 'https://api.github.com', $3, '12345', $3)`,
       [randomUUID(), org, envelope, randomUUID()],
     );
-    const insertRequest = (feature: string) =>
-      db.pool.query(
-        `INSERT INTO llm_requests (id, organization_id, project_id, feature, cache_key, provider,
-           provider_host, model, prompt_version, input_sha256, input_bytes, fields)
-         VALUES ($1, $2, $3, $4, $5, 'openai', 'api.example.com', 'm', $6, $7, 10, '{rule}')`,
-        [randomUUID(), org, project, feature, 'a'.repeat(64), `${feature}.v1`, 'b'.repeat(64)],
-      );
-    await insertRequest('review');
+    await insertLlmRequest(db, org, project, 'review');
     const rowsOf = async (table: string) =>
       (
         await db.pool.query<{ row: Record<string, unknown> }>(
@@ -475,8 +473,8 @@ describe('runMigrations / pendingMigrations', () => {
       });
     }
     // The widened check lists review-reply, and still refuses any other value.
-    await insertRequest('review-reply');
-    await expect(insertRequest('poem')).rejects.toMatchObject({
+    await insertLlmRequest(db, org, project, 'review-reply');
+    await expect(insertLlmRequest(db, org, project, 'poem')).rejects.toMatchObject({
       code: '23514',
       constraint: 'llm_requests_feature_check',
     });

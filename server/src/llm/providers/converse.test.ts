@@ -821,11 +821,31 @@ describe('converse: conversations with read-only tools (R5)', () => {
   describe('a tool call without an id or a name is a bad_answer', () => {
     const brokenOpenAi: [string, (call: OpenAiToolCallBody) => void][] = [
       ['no id', (call) => void delete call.id],
-      ['an empty id', (call) => void (call.id = '')],
-      ['an id that is not a string', (call) => void (call.id = 7)],
+      [
+        'an empty id',
+        (call) => {
+          call.id = '';
+        },
+      ],
+      [
+        'an id that is not a string',
+        (call) => {
+          call.id = 7;
+        },
+      ],
       ['no name', (call) => void delete call.function.name],
-      ['an empty name', (call) => void (call.function.name = '')],
-      ['a name that is not a string', (call) => void (call.function.name = ['read_file'])],
+      [
+        'an empty name',
+        (call) => {
+          call.function.name = '';
+        },
+      ],
+      [
+        'a name that is not a string',
+        (call) => {
+          call.function.name = ['read_file'];
+        },
+      ],
     ];
     it.each(brokenOpenAi)('openai: %s', async (_name, change) => {
       const body = openAiToolCalls([
@@ -844,11 +864,31 @@ describe('converse: conversations with read-only tools (R5)', () => {
 
     const brokenAnthropic: [string, (block: AnthropicToolBody['content'][number]) => void][] = [
       ['no id', (block) => void delete block.id],
-      ['an empty id', (block) => void (block.id = '')],
-      ['an id that is not a string', (block) => void (block.id = 7)],
+      [
+        'an empty id',
+        (block) => {
+          block.id = '';
+        },
+      ],
+      [
+        'an id that is not a string',
+        (block) => {
+          block.id = 7;
+        },
+      ],
       ['no name', (block) => void delete block.name],
-      ['an empty name', (block) => void (block.name = '')],
-      ['a name that is not a string', (block) => void (block.name = ['read_file'])],
+      [
+        'an empty name',
+        (block) => {
+          block.name = '';
+        },
+      ],
+      [
+        'a name that is not a string',
+        (block) => {
+          block.name = ['read_file'];
+        },
+      ],
     ];
     it.each(brokenAnthropic)('anthropic: %s', async (_name, change) => {
       const body = anthropicToolUse([

@@ -37,6 +37,14 @@ const CALL = {
 /** The provider as stored, without its key. */
 const provider = { ...CALL, strongModel: null, fastModel: null, contextWindowTokens: null };
 
+/** The provider with these models for its strong and fast tiers. */
+const withModels = (strongModel: string | null, fastModel: string | null): StoredProvider => ({
+  ...provider,
+  strongModel,
+  fastModel,
+  apiKeyEnc: null,
+});
+
 describe('LLM settings (llm.md §3)', () => {
   it('reads the defaults as not configured', () => {
     expect(storedLlmSettingsSchema.parse(DEFAULT_LLM_SETTINGS).provider).toBeNull();
@@ -375,12 +383,6 @@ describe('pricingFor', () => {
   const strong = { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 2 };
   const fast = { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null };
   const pricing = { ...standard, strong, fast };
-  const withModels = (strongModel: string | null, fastModel: string | null): StoredProvider => ({
-    ...provider,
-    strongModel,
-    fastModel,
-    apiKeyEnc: null,
-  });
 
   it('takes the price pair of the model of the tier', () => {
     const tiers = withModels('big', 'small');
@@ -454,12 +456,6 @@ describe('dearestTokenPrice', () => {
     strong: stored(strong, 2),
     fast: stored(fast),
   };
-  const withModels = (strongModel: string | null, fastModel: string | null): StoredProvider => ({
-    ...provider,
-    strongModel,
-    fastModel,
-    apiKeyEnc: null,
-  });
 
   it('is the dearest price of the standard pair while no tier has a model of its own', () => {
     // The tier prices are beside the pair, but no call is costed at them.

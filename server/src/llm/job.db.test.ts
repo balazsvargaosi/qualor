@@ -41,6 +41,13 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
   };
   const row = async (id: string) =>
     (await h.ctx.db.select().from(llmRequests).where(eq(llmRequests.id, id)))[0]!;
+  /** The sweep failing a row (REQUEST_ABANDONED), as it does when a job lost its lease. */
+  const abandon = async (id: string) => {
+    await h.ctx.db
+      .update(llmRequests)
+      .set({ status: 'failed', errorCode: 'REQUEST_ABANDONED', finishedAt: sql`now()` })
+      .where(eq(llmRequests.id, id));
+  };
   const llmJobs = () => h.ctx.db.select().from(jobs).where(eq(jobs.queue, LLM_QUEUE));
   const logs = () => h.ctx.logs.join('\n');
   // Every test asks as the same person: the per-user bound (30 an hour) is not under test here.
@@ -724,12 +731,6 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
 
   it('records nothing, and retries nothing, when the job lost its lease while the model answered', async () => {
     // The sweep failed the row (REQUEST_ABANDONED) while the call was in flight.
-    const abandon = async (id: string) => {
-      await h.ctx.db
-        .update(llmRequests)
-        .set({ status: 'failed', errorCode: 'REQUEST_ABANDONED', finishedAt: sql`now()` })
-        .where(eq(llmRequests.id, id));
-    };
     let current = '';
     fake.enqueue(async () => {
       await abandon(current);
@@ -921,12 +922,6 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
   });
 
   it('a stop leaves a request alone whose job lost its lease meanwhile', async () => {
-    const abandon = async (id: string) => {
-      await h.ctx.db
-        .update(llmRequests)
-        .set({ status: 'failed', errorCode: 'REQUEST_ABANDONED', finishedAt: sql`now()` })
-        .where(eq(llmRequests.id, id));
-    };
     let current = '';
     const { inFlight, release } = holdNextCall(() => abandon(current));
     current = (await ask('explain')).id;

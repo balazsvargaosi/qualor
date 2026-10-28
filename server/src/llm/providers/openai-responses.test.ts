@@ -757,11 +757,31 @@ describe('the OpenAI Responses API wire', () => {
     describe('a call without an id or a name', () => {
       const broken: [string, (call: Record<string, unknown>) => void][] = [
         ['no call_id', (item) => void delete item.call_id],
-        ['an empty call_id', (item) => void (item.call_id = '')],
-        ['a call_id that is not a string', (item) => void (item.call_id = 7)],
+        [
+          'an empty call_id',
+          (item) => {
+            item.call_id = '';
+          },
+        ],
+        [
+          'a call_id that is not a string',
+          (item) => {
+            item.call_id = 7;
+          },
+        ],
         ['no name', (item) => void delete item.name],
-        ['an empty name', (item) => void (item.name = '')],
-        ['a name that is not a string', (item) => void (item.name = ['read_file'])],
+        [
+          'an empty name',
+          (item) => {
+            item.name = '';
+          },
+        ],
+        [
+          'a name that is not a string',
+          (item) => {
+            item.name = ['read_file'];
+          },
+        ],
       ];
       it.each(broken)('is a bad_answer in a conversation: %s', async (_name, change) => {
         const answer = responsesToolCalls([
@@ -1401,10 +1421,10 @@ describe('the OpenAI Responses API wire', () => {
     const conversation: LlmConversation = { ...start, ...ASKED };
     let models = 0;
     /** A model of its own for each test: what a process learns of one it keeps. */
-    const own = (config: ProviderConfig): ProviderConfig => ({
-      ...config,
-      model: `responses-model-${(models += 1)}`,
-    });
+    const own = (config: ProviderConfig): ProviderConfig => {
+      models += 1;
+      return { ...config, model: `responses-model-${models}` };
+    };
     const limits = () =>
       fake.requests.map((r) => (r.json as { max_output_tokens: number }).max_output_tokens);
     const answer = { status: 200, body: responsesAnswer('{"ok":true}') };
