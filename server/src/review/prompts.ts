@@ -371,6 +371,7 @@ export function replySystemPrompt(thread: {
     throw new Error('A thread that is membersOnly allows the verdict "keep" alone');
   }
   const explainsOnly = verdicts.length === 1;
+  const explainRule = membersOnly ? REPLY_MEMBERS_ONLY : REPLY_EXPLAIN_ONLY;
   const needs = verdicts.flatMap((verdict) =>
     verdict === 'keep' ? [] : [REPLY_INTENT_NEEDS[verdict]],
   );
@@ -383,13 +384,7 @@ export function replySystemPrompt(thread: {
       explainsOnly
         ? 'Decide what becomes of the finding. This thread allows one verdict: "keep".'
         : `Decide what becomes of the finding. This thread allows these verdicts: ${oneOf(verdicts)}. An answer with any other verdict is refused. Qualor changes the status of the finding itself from your verdict, and says so in a line of its own: never say in your answer that you did.`,
-      ...verdicts.map((verdict) =>
-        explainsOnly
-          ? membersOnly
-            ? REPLY_MEMBERS_ONLY
-            : REPLY_EXPLAIN_ONLY
-          : REPLY_VERDICT_RULES[verdict],
-      ),
+      ...verdicts.map((verdict) => (explainsOnly ? explainRule : REPLY_VERDICT_RULES[verdict])),
     ].join('\n'),
     [`Say what the person's last note is, in "intent": ${REPLY_INTENT_KINDS}.`, ...needs].join(' '),
     rules(
@@ -508,8 +503,10 @@ export interface VerifyData {
 }
 
 /** Sensitive files first, then the most changed lines; the slices are cut in the same order. */
-const byImportance = (a: ReviewableChange, b: ReviewableChange): number =>
-  a.sensitive === b.sensitive ? b.changedLines - a.changedLines : a.sensitive ? -1 : 1;
+const byImportance = (a: ReviewableChange, b: ReviewableChange): number => {
+  if (a.sensitive === b.sensitive) return b.changedLines - a.changedLines;
+  return a.sensitive ? -1 : 1;
+};
 
 /**
  * The changes listed: all of them when they fit, else the most important, in the path order of the

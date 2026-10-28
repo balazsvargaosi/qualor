@@ -393,32 +393,35 @@ const finding = (over: Partial<ReviewFinding> = {}): ReviewFinding => ({
 
 const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
 
+/** What every role's prompt holds: its role line, its JSON keys, the tools, and the rules of its kind. */
+function expectRolePrompt(role: ReviewRole): void {
+  const prompt = SYSTEM_PROMPTS[role];
+  const lower = prompt.toLowerCase();
+  // The line the test responder of the job's tests keys on.
+  expect(prompt.split('\n')[0]).toBe(`Qualor review: ${role}`);
+  expect(prompt.length, role).toBeLessThan(10_000);
+  for (const placeholder of PLACEHOLDERS) {
+    expect(prompt, `${role}: ${String(placeholder)}`).not.toMatch(placeholder);
+  }
+  for (const key of new Set(keysOf(ANSWER_SCHEMAS[role]))) {
+    expect(prompt, `${role} names its answer's "${key}"`).toContain(`"${key}"`);
+  }
+  for (const key of DATA_KEYS[role]) {
+    expect(prompt, `${role} names its data's ${key}`).toContain(key);
+  }
+  for (const tool of REVIEW_TOOLS) expect(prompt, `${role}: ${tool.name}`).toContain(tool.name);
+  for (const rule of EVERY_PROMPT) expect(lower, `${role}: ${rule}`).toContain(rule);
+  if (role !== 'verify') {
+    for (const rule of FINDING_WRITERS) expect(lower, `${role}: ${rule}`).toContain(rule);
+  }
+  for (const focus of FOCUS[role]) expect(lower, `${role}: ${focus}`).toContain(focus);
+}
+
 describe('the review prompts', () => {
   it('every prompt starts with its role line, holds no placeholder, names its JSON keys and stays under 10 000 characters', () => {
     // The reply role is the conversation of a person's reply, not part of a review: its prompt is tested below.
     expect(Object.keys(SYSTEM_PROMPTS).sort()).toEqual([...ROLES, 'reply'].sort());
-    for (const role of ROLES) {
-      const prompt = SYSTEM_PROMPTS[role];
-      const lower = prompt.toLowerCase();
-      // The line the test responder of the job's tests keys on.
-      expect(prompt.split('\n')[0]).toBe(`Qualor review: ${role}`);
-      expect(prompt.length, role).toBeLessThan(10_000);
-      for (const placeholder of PLACEHOLDERS) {
-        expect(prompt, `${role}: ${String(placeholder)}`).not.toMatch(placeholder);
-      }
-      for (const key of new Set(keysOf(ANSWER_SCHEMAS[role]))) {
-        expect(prompt, `${role} names its answer's "${key}"`).toContain(`"${key}"`);
-      }
-      for (const key of DATA_KEYS[role]) {
-        expect(prompt, `${role} names its data's ${key}`).toContain(key);
-      }
-      for (const tool of REVIEW_TOOLS) expect(prompt, `${role}: ${tool.name}`).toContain(tool.name);
-      for (const rule of EVERY_PROMPT) expect(lower, `${role}: ${rule}`).toContain(rule);
-      if (role !== 'verify') {
-        for (const rule of FINDING_WRITERS) expect(lower, `${role}: ${rule}`).toContain(rule);
-      }
-      for (const focus of FOCUS[role]) expect(lower, `${role}: ${focus}`).toContain(focus);
-    }
+    for (const role of ROLES) expectRolePrompt(role);
     // The verifier is given only its finding: it is told that the instructions, the analyzer
     // findings and the scope were settled before it, and not to take the instructions from the
     // tools. What it is not told is how sure the reviewer was: the body says why it believed it.
