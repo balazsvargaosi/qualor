@@ -24,6 +24,7 @@ import {
 } from '../../server/test/license';
 import { grantProject, LICENSE_EXPIRES } from '../../server/test/rbac';
 import { createAuditRecorder } from '../../server/src/audit/recorder';
+import { uuidv7 } from '../../server/src/db/ids';
 import { analyses, measures } from '../../server/src/db/schema';
 import { createEdition, type Edition } from '../../server/src/license/edition';
 import { licenseState } from '../../server/src/license/state';
@@ -160,6 +161,15 @@ describe('Qualor Enterprise: portfolio reports through the built plugin (4E-2 §
     sessions['grant-only'] = await login(ctx, grantOnly.username, grantOnly.password);
 
     // alpha and gamma: one succeeded analysis each on main, with measures; beta never analysed.
+    // Seeded a minute ago: the server reads its own clock, and a database clock ahead of it (a
+    // Docker VM drifts by hundreds of milliseconds) would put the analyses in the future. uuidv7
+    // never goes back in a process, so the id takes a new timestamp over a fresh one.
+    const aMinuteAgo = (): string => {
+      const hex = (Date.now() - 60_000).toString(16).padStart(12, '0');
+      const id = uuidv7().replaceAll('-', '');
+      const back = hex + id.slice(12);
+      return [0, 8, 12, 16, 20].map((p, i, a) => back.slice(p, a[i + 1] ?? 32)).join('-');
+    };
     for (const [project, ncloc, gateStatus] of [
       [alpha.id, 1_200, 'passed'],
       [gamma.id, 3_000, 'failed'],
@@ -168,13 +178,14 @@ describe('Qualor Enterprise: portfolio reports through the built plugin (4E-2 §
       const [analysis] = await ctx.db
         .insert(analyses)
         .values({
+          id: aMinuteAgo(),
           projectId: project,
           branchId,
           status: 'succeeded',
           revision: 'a'.repeat(40),
           baselineStatus: 'ok',
           scannerVersion: '1.0.0',
-          analysisDate: new Date(),
+          analysisDate: new Date(Date.now() - 60_000),
           gateStatus,
         })
         .returning({ id: analyses.id });
