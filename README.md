@@ -158,7 +158,7 @@ GitHub Actions: use the [Qualor Action](https://github.com/qualor-dev/scan-actio
     fetch-depth: 0
     persist-credentials: false
     ref: '${{ github.event.pull_request.head.sha || github.sha }}'
-- uses: qualor-dev/scan-action@v0.11
+- uses: qualor-dev/scan-action@v0.12
   with:
     server-url: '${{ vars.QUALOR_URL }}'
     token: '${{ secrets.QUALOR_TOKEN }}'
@@ -255,7 +255,7 @@ With the CI/CD component, set `inputs: { dotnet: true, image: qualor/scanner-dot
 optionally `build-command`, default `dotnet build --no-incremental`); the component then runs the
 same three steps instead of a plain `qualor scan`, and `qualor dotnet abort` in its `after_script`.
 
-On GitHub Actions, use `qualor-dev/scan-action/dotnet@v0.11` (inputs as for the main action, plus
+On GitHub Actions, use `qualor-dev/scan-action/dotnet@v0.12` (inputs as for the main action, plus
 `build-command`), or copy
 [`integrations/github/qualor-dotnet.yml`](integrations/github/qualor-dotnet.yml) to
 `.github/workflows/qualor.yml` and set the variable `QUALOR_SCANNER_DOTNET_IMAGE` to

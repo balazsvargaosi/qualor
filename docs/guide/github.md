@@ -45,7 +45,7 @@ scans, uploads and fails when the quality gate fails:
     fetch-depth: 0
     persist-credentials: false
     ref: ${{ github.event.pull_request.head.sha || github.sha }}
-- uses: qualor-dev/scan-action@v0.11
+- uses: qualor-dev/scan-action@v0.12
   with:
     server-url: ${{ vars.QUALOR_URL }}
     token: ${{ secrets.QUALOR_TOKEN }}
@@ -73,7 +73,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       # Install dependencies (JS/TS, Go) or build (Java) here, before the scan.
-      - uses: qualor-dev/scan-action@v0.11
+      - uses: qualor-dev/scan-action@v0.12
         with:
           server-url: ${{ vars.QUALOR_URL }}
           token: ${{ secrets.QUALOR_TOKEN }}
@@ -95,7 +95,7 @@ when the upload is refused (a wrong or revoked token). It needs a Linux runner w
 (`ubuntu-latest` or self-hosted). The scanner cannot write into the checkout, so an option that
 writes a file (such as `--output`) needs a path under `/tmp`.
 
-The action's version follows Qualor's: `@v0.11.0` runs `qualor/scanner:0.12.0`, `@v0.11` follows
+The action's version follows Qualor's: `@v0.12.0` runs `qualor/scanner:0.12.0`, `@v0.12` follows
 the 0.12 patch releases and `@v0` the latest release. Pick the version that matches your Qualor
 server, or pin a full version to control every update.
 
@@ -124,7 +124,7 @@ Qualor analyses C# inside your build, so use the `dotnet` action. It runs `qualo
 build and `qualor dotnet end` in the `qualor/scanner-dotnet` image:
 
 ```yaml
-- uses: qualor-dev/scan-action/dotnet@v0.11
+- uses: qualor-dev/scan-action/dotnet@v0.12
   with:
     server-url: ${{ vars.QUALOR_URL }}
     token: ${{ secrets.QUALOR_TOKEN }}
