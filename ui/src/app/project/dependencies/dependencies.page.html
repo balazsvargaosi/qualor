@@ -137,7 +137,7 @@
         </p>
       </div>
     } @else {
-      <div class="panel-scroll">
+      <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="deps-heading">
         <table [attr.aria-busy]="loading()">
           <caption class="visually-hidden" i18n="@@deps.caption">
             Dependencies with their licences

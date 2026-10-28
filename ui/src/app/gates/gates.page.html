@@ -22,7 +22,7 @@
     @if (usageError(); as message) {
       <p class="alert alert-error panel-alert" role="alert">{{ message }}</p>
     }
-    <div class="panel-scroll">
+    <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="gates-caption">
       <table #table>
         <caption id="gates-caption" class="visually-hidden" i18n="@@gates.caption">
           The organization's quality gates

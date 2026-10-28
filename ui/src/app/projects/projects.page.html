@@ -66,9 +66,9 @@
   }
 
   <section class="card panel projects-panel">
-    <div class="panel-scroll">
+    <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="projects-caption">
       <table [attr.aria-busy]="list.loading()">
-        <caption class="visually-hidden" i18n="@@projects.caption">
+        <caption id="projects-caption" class="visually-hidden" i18n="@@projects.caption">
           Projects with their quality gate and main-branch measures
         </caption>
         <thead>

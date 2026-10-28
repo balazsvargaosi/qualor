@@ -84,7 +84,12 @@
             </p>
           }
         </div>
-        <div class="panel-scroll">
+        <div
+          class="panel-scroll"
+          tabindex="0"
+          role="group"
+          [attr.aria-labelledby]="'scim-title-' + c.id"
+        >
           <table [id]="'scim-tokens-' + c.id">
             <caption class="visually-hidden" i18n="@@scim.tokens">
               Tokens

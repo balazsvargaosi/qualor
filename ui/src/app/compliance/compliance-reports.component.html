@@ -54,7 +54,7 @@
     </div>
   } @else if (loaded()) {
     <section class="card panel compliance-list" aria-labelledby="compliance-caption">
-      <div class="panel-scroll">
+      <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="compliance-caption">
         <table>
           <caption id="compliance-caption" class="visually-hidden" i18n="@@compliance.caption">
             Compliance reports, newest first
@@ -226,7 +226,12 @@
           </p>
         }
         @if (standard(); as st) {
-          <div class="panel-scroll">
+          <div
+            class="panel-scroll"
+            tabindex="0"
+            role="group"
+            aria-labelledby="compliance-preview-title"
+          >
             <table class="compliance-categories">
               <caption class="visually-hidden" i18n="@@compliance.preview.caption">
                 Open findings by category of

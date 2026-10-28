@@ -54,9 +54,9 @@
       <a routerLink="/docs/quick-start" i18n="@@code.empty.link">Read the quick start</a>
     </div>
   } @else {
-    <div class="panel-scroll">
+    <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="code-caption">
       <table [attr.aria-busy]="list.loading()">
-        <caption class="visually-hidden" i18n="@@code.caption">
+        <caption id="code-caption" class="visually-hidden" i18n="@@code.caption">
           Files and directories with their measures
         </caption>
         <thead>

@@ -32,7 +32,7 @@
   }
 
   <section class="card panel" aria-labelledby="gitlab-projects-caption">
-    <div class="panel-scroll">
+    <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="gitlab-projects-caption">
       <table [attr.aria-busy]="projects.loading()">
         <caption
           id="gitlab-projects-caption"

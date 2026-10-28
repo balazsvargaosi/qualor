@@ -31,7 +31,12 @@
             other {{{ group.profiles.length }} profiles}
           }</span>
         </div>
-        <div class="panel-scroll">
+        <div
+          class="panel-scroll"
+          tabindex="0"
+          role="group"
+          [attr.aria-labelledby]="'profiles-' + group.language"
+        >
           <table>
             <thead>
               <tr>

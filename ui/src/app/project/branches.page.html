@@ -18,9 +18,9 @@
 </div>
 
 <section class="card panel">
-  <div class="panel-scroll">
+  <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="branches-caption">
     <table [attr.aria-busy]="list.loading()">
-      <caption class="visually-hidden" i18n="@@branches.caption">
+      <caption id="branches-caption" class="visually-hidden" i18n="@@branches.caption">
         Branches and merge requests with their quality gate and new-code measures
       </caption>
       <thead>

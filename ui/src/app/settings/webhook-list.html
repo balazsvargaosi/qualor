@@ -135,7 +135,9 @@
               <q-delivery-strip [deliveries]="strips()[w.id] ?? []" />
               @if (items.length > 0) {
                 <details class="deliveries" (toggle)="openDeliveries(w, $event)">
-                  <summary i18n="@@webhooks.deliveries">Recent deliveries</summary>
+                  <summary [id]="'webhook-deliveries-' + w.id" i18n="@@webhooks.deliveries">
+                    Recent deliveries
+                  </summary>
                   <p class="deliveries-tools">
                     <button
                       type="button"
@@ -146,7 +148,12 @@
                       Refresh
                     </button>
                   </p>
-                  <div class="panel-scroll">
+                  <div
+                    class="panel-scroll"
+                    tabindex="0"
+                    role="group"
+                    [attr.aria-labelledby]="'webhook-deliveries-' + w.id"
+                  >
                     <table>
                       <thead>
                         <tr>

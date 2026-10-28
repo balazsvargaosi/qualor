@@ -7,7 +7,7 @@
   <p class="alert alert-error" role="alert">{{ message }}</p>
 }
 @if (grants(); as list) {
-  <div class="panel-scroll">
+  <div class="panel-scroll" tabindex="0" role="group" [attr.aria-label]="caption()">
     <table #table>
       <caption class="visually-hidden">
         {{

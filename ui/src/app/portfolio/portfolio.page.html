@@ -260,7 +260,7 @@
       @if (projects.error(); as message) {
         <p class="alert alert-error panel-alert" role="alert">{{ message }}</p>
       }
-      <div class="panel-scroll">
+      <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="portfolio-projects">
         <table [attr.aria-busy]="projects.loading()">
           <caption class="visually-hidden" i18n="@@portfolio.projects.caption">
             The projects with their main-branch quality; the column headers sort them
