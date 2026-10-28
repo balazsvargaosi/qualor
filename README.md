@@ -1,35 +1,14 @@
 # Qualor
 
-**Static analysis and AI code review in one self-hosted server:** quality gates on new code, and an
-AI reviewer for GitLab and GitHub merge requests on your own model. Free, with no lines-of-code
-licence.
+**Static analysis and AI code review in one self-hosted server.** Qualor runs proven open-source
+analyzers in your CI, applies a quality gate to new code, and comments on GitLab merge requests and
+GitHub pull requests. A model of your choice can review the same merge requests. It is free, with
+no lines-of-code licence.
 
-Qualor is an open-source SonarQube alternative for GitLab, GitHub and any other CI. It runs
-existing open-source analyzers (ESLint,
-PMD, SpotBugs with FindSecBugs, Roslyn and Roslynator for C#, detekt for Kotlin, SwiftLint for
-Swift, RuboCop for
-Ruby, staticcheck, go vet and gosec for Go, cppcheck and clang-tidy for C and C++, Ruff for Python,
-PHPStan for PHP, stylelint and HTMLHint for CSS and HTML, OpenGrep, Gitleaks, Trivy,
-SonarQube-compatible rules for C#, JavaScript and TypeScript, or any SARIF), tracks their issues
-across commits, measures coverage, duplication and complexity, and applies a quality gate to new
-code. MIT, except `enterprise/`: source-available under the Qualor Enterprise Licence, and inert
-without a licence key
-([licence keys](https://qualor.dev/enterprise)). It also brings its own source-available
-security rules for JS/TS, Python, Java, Go and C#: they follow HTTP request data into SQL, shell
-commands, file paths, templates, redirects and outgoing requests, and report unsafe settings such
-as disabled TLS verification.
-
-Repository: <https://github.com/qualor-dev/qualor>. Homepage: <https://qualor.dev>. Images:
-[`qualor/*` on Docker Hub](https://hub.docker.com/u/qualor). GitLab CI/CD component:
-[`gitlab.com/qualor/qualor`](https://gitlab.com/qualor/qualor).
-
-**Live demo:** <https://review.qualor.dev>, Qualor analysing its own code. Click **Explore the
-demo** on the sign-in page: no account needed, read-only.
-
-**Documentation:** [docs/guide/](docs/guide/README.md), also published at
-<https://qualor.dev/docs>. It covers installation, GitLab, GitHub and other CI systems, languages,
-configuration, quality gates, AI review, migration from SonarQube, the API and troubleshooting, and it has
-[ready-made prompts](docs/guide/ai-prompts.md) that let an AI agent roll Qualor out for you.
+[Documentation](https://qualor.dev/docs) · [Live demo](https://review.qualor.dev) ·
+[Docker Hub](https://hub.docker.com/u/qualor) ·
+[GitLab CI/CD component](https://gitlab.com/qualor/qualor) ·
+[GitHub Action](https://github.com/qualor-dev/scan-action)
 
 <p align="center">
   <img src="docs/screenshots/overview.png" width="100%" alt="A project's overview in Qualor's dark theme: the quality gate that failed and the condition that failed it, the new-code measures, coverage, issues, duplication, lines of code and ratings with their trends, the history of open issues by severity, and the open issues by severity and software quality">
@@ -39,17 +18,17 @@ configuration, quality gates, AI review, migration from SonarQube, the API and t
   <tr>
     <td width="50%" valign="top">
       <img src="docs/screenshots/issues.png" alt="A project's issues: filters by severity and status with counts, the severity distribution, and each issue with its rule, file and line">
-      <br><sub><b>Issues</b>, filtered by severity, status, software quality and rule</sub>
+      <br><sub><b>Issues</b>, filtered by severity, status, quality and rule</sub>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/issue-ai.png" alt="An issue with the code around it and the optional AI assistant's explanation of the finding and how to fix it">
-      <br><sub><b>An issue</b> with its code, and the optional AI assistant on your own model</sub>
+      <img src="docs/screenshots/issue-ai.png" alt="An issue with the code around it and the AI assistant's explanation of the finding and how to fix it">
+      <br><sub><b>An issue</b> with its code and the AI assistant</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/screenshots/gate.png" alt="A quality gate's conditions, each edited in its row, and the form to add one">
-      <br><sub><b>A quality gate</b>, its conditions edited in place</sub>
+      <br><sub><b>A quality gate</b> and its conditions</sub>
     </td>
     <td width="50%" valign="top">
       <img src="docs/screenshots/projects.png" alt="The projects list: quality gate results, open issues, average coverage and lines of code across the organization, then each project's measures">
@@ -58,14 +37,29 @@ configuration, quality gates, AI review, migration from SonarQube, the API and t
   </tr>
 </table>
 
-The screenshots show the dark theme; the web UI follows the system's light or dark setting.
+The live demo is Qualor analysing its own code. Click **Explore the demo** on the sign-in page: no
+account needed.
+
+## What you get
+
+- **A quality gate on new code.** Issues, coverage, duplication and complexity are tracked across
+  commits. The gate judges only what a change adds, and a failed gate fails the CI job.
+- **The analyzers you already know**, pinned in one scanner image (see [Languages](#languages)).
+- **Qualor's own security rules** for JavaScript, TypeScript, Python, Java, Go and C#. They follow
+  request data into SQL, shell commands, file paths, templates, redirects and outgoing requests.
+- **Merge request comments** on GitLab and GitHub: a summary, a thread on each new issue, and a
+  commit status or check run.
+- **AI review** on your own model: threads with suggested changes, answers to replies, and
+  re-reviews after a push. Off by default, in every edition.
+- **An AI assistant** that explains an issue, suggests triage or suggests a fix, on a person's click.
+- **An MCP server**, so agents such as Claude Code and Cursor can read the gate and the issues.
+- **SonarQube import**: quality gates, profiles and issue statuses.
 
 ## Quick start
 
-You need Docker with Compose v2. The server is one container, `qualor/server`, with its own
-PostgreSQL 18 on a volume (or an external PostgreSQL 16+ through `DATABASE_URL`).
-Save the compose file of [Install the server](docs/guide/install-server.md#the-compose-file) as
-`compose.yml` in an empty directory, then:
+You need Docker with Compose v2. Save the compose file from
+[Install the server](docs/guide/install-server.md#the-compose-file) as `compose.yml` in an empty
+directory, then:
 
 ```sh
 umask 077
@@ -78,31 +72,18 @@ docker compose up -d
 docker compose ps          # wait until the server is "healthy"
 ```
 
-Open <http://127.0.0.1:8080> and sign in as `admin` with the bootstrap password from `.env`, then
-change it (_Change password_, top right). The server listens on 127.0.0.1 only; see
-[Install the server](docs/guide/install-server.md) for a reverse proxy with TLS, backups,
-upgrades and the Helm chart for Kubernetes. To build the images yourself instead, see [deploy/README.md](deploy/README.md).
+Open <http://127.0.0.1:8080>, sign in as `admin` with the password from `.env`, and change it. The
+server is one container with its own PostgreSQL. For TLS, backups, upgrades and Kubernetes, see
+[Install the server](docs/guide/install-server.md).
 
-Then create a project (Projects → New project; its key is what `qualor.yml` or
-`CI_PROJECT_PATH` names) and a token for the CI: either a personal token (Settings → Access
-tokens → New token, scope _Upload analyses_), or a project analysis token, which can upload to
-that one project only. Project tokens are API-only for now; create one with a personal token that
-has the _Admin_ scope (the project id is in the project's URL):
+Then create a project and a CI token: see [Quick start](docs/guide/quick-start.md).
 
-```sh
-curl -fsS -X POST -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"ci"}' http://127.0.0.1:8080/api/v0/projects/<project id>/tokens
-```
+## Scan in CI
 
-The answer's `token` is shown once.
+Set `QUALOR_URL` and `QUALOR_TOKEN` (masked) as CI variables. The scanner image is
+`qualor/scanner:<tag>`, for example `0.12` or `0.12.0`.
 
-## Scan in CI: one line
-
-The scanner image is `qualor/scanner:<tag>` on Docker Hub (`0.12`, or a full version such as `0.12.0`).
-It carries the `qualor` CLI and the pinned analyzers; its entrypoint is `qualor`. Set `QUALOR_URL`
-and `QUALOR_TOKEN` as CI variables (the token masked), then:
-
-GitLab (`.gitlab-ci.yml`), with the CI/CD component from the catalog:
+**GitLab**, with the CI/CD component:
 
 ```yaml
 include:
@@ -110,47 +91,12 @@ include:
     inputs: { image-tag: <tag> }
 ```
 
-A self-managed GitLab includes components only from its own instance: import
-`https://gitlab.com/qualor/qualor.git` into a project there once (New project → Import project →
-Repository by URL) and include it by its full version
-(`component: $CI_SERVER_FQDN/<path of the copy>/qualor@0.12.0`); a short version such as `@0.12`
-resolves only in a CI/CD catalog project with releases
-([docs/guide/gitlab.md](docs/guide/gitlab.md)). It runs in merge request
-pipelines and on the default branch, fails with the quality gate, and keeps GitLab's Code Quality,
-SAST and Dependency Scanning reports as artifacts, so findings show in the merge request widget and
-the security tab (vulnerable dependencies, found by Trivy, in Dependency Scanning)
-(inputs: `stage`, `image`, `image-tag`, `job-name`, `args`, `allow-failure`;
-[docs/guide/gitlab.md](docs/guide/gitlab.md)). The token is a masked CI/CD variable, not a protected
-one (merge request pipelines of unprotected branches must get it), and never a component input.
-GitLab reads the SAST and Dependency Scanning reports (security widget, vulnerability report) on
-GitLab Ultimate only; the Code Quality report, which lists every finding, works on every tier. The
-report paths are relative to the working directory, so run `qualor scan` from the repository root.
-Without the component:
+The job runs in merge request pipelines and on the default branch. It also writes GitLab's Code
+Quality report, which works on every tier, and the SAST and Dependency Scanning reports, which
+GitLab shows on GitLab Ultimate only. A self-managed GitLab needs its own copy of the component.
+See [GitLab](docs/guide/gitlab.md).
 
-```yaml
-qualor:
-  image: { name: qualor/scanner:<tag>, entrypoint: [''] }
-  variables: { GIT_DEPTH: 0 }
-  script:
-    - >-
-      qualor scan --gitlab-code-quality gl-code-quality-report.json --gitlab-sast gl-sast-report.json
-      --gitlab-dependency-scanning gl-dependency-scanning-report.json
-  artifacts:
-    when: always
-    reports:
-      codequality: gl-code-quality-report.json
-      sast: gl-sast-report.json
-      dependency_scanning: gl-dependency-scanning-report.json
-```
-
-For merge request comments, inline discussions and a commit status, connect the organisation to
-GitLab in Qualor (Settings, GitLab: the GitLab URL and a project access token with the `api` scope
-and the Maintainer role) and map each project to its GitLab project there. For answers to replies
-and `qualor review` notes at once, set a webhook secret on the connection and add a webhook for
-Comments to the GitLab project, with the URL Qualor shows and that secret.
-
-GitHub Actions: use the [Qualor Action](https://github.com/qualor-dev/scan-action) and set the
-`QUALOR_URL` variable and the `QUALOR_TOKEN` secret. Its steps:
+**GitHub Actions**, with the Qualor Action:
 
 ```yaml
 - uses: actions/checkout@v4
@@ -164,248 +110,79 @@ GitHub Actions: use the [Qualor Action](https://github.com/qualor-dev/scan-actio
     token: '${{ secrets.QUALOR_TOKEN }}'
 ```
 
-The [guide](docs/guide/github.md) has the complete workflow (triggers, `permissions: { contents: read }`,
-skipping fork pull requests) and the template
-[integrations/github/qualor.yml](integrations/github/qualor.yml) for your own image or a mirror.
-The checkout takes the pull request's head (so review comments land on its lines) with the full
-history and without leaving the job's token in `.git/config`, and skips pull requests from forks,
-which GitHub gives no secrets. For check runs and pull request comments (a summary, and a review
-comment on each new issue), create a GitHub App
-(Checks: read and write, Contents: read and write, Issues: read, Metadata: read, Pull requests:
-read and write; Qualor uses Contents only to resolve and reopen its own review conversations;
-[integrations/github/app-manifest.json](integrations/github/app-manifest.json) has these settings),
-install it on the repositories, add it in Qualor (Settings, GitHub: the API URL, the App id and the
-private key) and map each project to `owner/repo`. For the check run's Re-run button, and for
-answers to replies and `qualor review` comments at once, set a webhook secret there too, then paste
-the webhook URL Qualor shows and the same secret into the App's webhook settings and activate the
-webhook.
+See [GitHub](docs/guide/github.md) for the whole workflow and the GitHub App that posts check runs
+and review comments.
 
-### Kotlin
+**Other CI systems** run the scanner image with `qualor scan`: see
+[Other CI systems](docs/guide/other-ci.md).
 
-`qualor/scanner` runs detekt 1.23.8 on `.kt` and `.kts` files, with your `detekt.yml` (for example
-`config/detekt/detekt.yml`) on top of detekt's defaults, or without one detekt's default rule set
-with the settings detekt recommends for Jetpack Compose. It needs no build, but rules that need the
-project's classpath do not run; see
-[Kotlin (detekt)](docs/guide/languages-and-analyzers.md#kotlin-detekt).
+Run the scan from the repository root, in a full clone. An optional `qualor.yml` there configures
+it; see the [configuration reference](docs/guide/configuration.md).
 
-### Swift
+## Languages
 
-`qualor/scanner` runs SwiftLint 0.65.1 on `.swift` files, with your `.swiftlint.yml` (read and
-filtered by Qualor) or, without one, SwiftLint's default rules with a few adjustments. It needs no
-Swift toolchain or build; the rules that need SourceKit do not run. See
-[Swift (SwiftLint)](docs/guide/languages-and-analyzers.md#swift-swiftlint).
+| Language               | Analyzers                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------- |
+| JavaScript, TypeScript | ESLint, SonarQube-compatible rules (eslint-plugin-sonarjs), Qualor security rules            |
+| Java                   | PMD, SpotBugs with FindSecBugs, Qualor security rules                                        |
+| Kotlin                 | detekt                                                                                       |
+| Swift                  | SwiftLint                                                                                    |
+| C#                     | Roslyn, Roslynator, SonarQube-compatible rules (SonarAnalyzer.CSharp), Qualor security rules |
+| Python                 | Ruff, Qualor security rules                                                                  |
+| PHP                    | PHPStan                                                                                      |
+| Ruby                   | RuboCop                                                                                      |
+| Go                     | staticcheck, go vet, gosec, Qualor security rules                                            |
+| C, C++                 | cppcheck; clang-tidy when your job has it                                                    |
+| CSS, HTML              | stylelint, HTMLHint                                                                          |
+| Every language         | OpenGrep, Gitleaks for secrets, Trivy for dependencies, any SARIF file                       |
 
-### PHP
+Some analyzers need the project prepared first: installed `node_modules` for ESLint, compiled
+classes for SpotBugs, downloaded Go modules. C# runs inside your own build with the
+`qualor/scanner-dotnet` image. See [Languages and analyzers](docs/guide/languages-and-analyzers.md).
 
-`qualor/scanner` runs PHPStan 2.2 on `.php` files, at level 2 (`analyzers.phpstan.level` raises
-it), with Qualor's own configuration: your `phpstan.neon` and PHPStan extensions are never
-loaded. Run `composer install --no-scripts --no-plugins` before the scan: the installed
-dependencies in `vendor/` are read, never run, and a project that requires packages is skipped
-without them. See [PHP (PHPStan)](docs/guide/languages-and-analyzers.md#php-phpstan).
+## AI review
 
-### Ruby
+A model reviews GitLab merge requests and GitHub pull requests on the projects you choose. It reads
+the change and any file of the repository it needs, and it is told what the analyzers already
+found.
 
-`qualor/scanner` runs RuboCop 1.91 on `.rb`, `.rake`, `.gemspec`, `.ru`, `Gemfile` and `Rakefile`,
-on its own Ruby, so the runner needs no Ruby. Qualor chooses the cops (RuboCop's Lint and Security
-cops by default; change them with `analyzers.rubocop.select` and `ignore`) and never reads your
-`.rubocop.yml`, which can run code. See
-[Ruby (RuboCop)](docs/guide/languages-and-analyzers.md#ruby-rubocop).
+- It comments in threads on the changed lines, with suggested changes a person applies in one
+  click.
+- It answers replies in its threads. A `qualor review` comment asks for a review.
+- After a push, only new changes get new findings, and fixed findings close.
+- AI findings never count in the quality gate. The model never approves and never commits.
 
-### Go
-
-`qualor/scanner` runs staticcheck 2026.2.1, go vet and gosec 2.29.0 on every Go module, offline: run
-`go mod download` (or vendor your dependencies) before `qualor scan`, because Qualor never downloads
-modules and skips packages whose dependencies are missing. Nothing the repository asks for is run
-(no `go generate`, no cgo). See
-[Go (staticcheck, go vet, gosec)](docs/guide/languages-and-analyzers.md#go-staticcheck-go-vet-gosec).
-
-### C and C++
-
-`qualor/scanner` runs cppcheck 2.22.0 on C and C++ files, with no build and no setup. clang-tidy
-(LLVM 14 or newer) runs when your own job has it and a `compile_commands.json`; no image bundles
-it. See [C and C++ (cppcheck, clang-tidy)](docs/guide/languages-and-analyzers.md#c-and-c-cppcheck-clang-tidy).
-
-### C#
-
-Roslyn analyzers need the project's own build (its SDK, restored packages and arguments), so
-Qualor hooks into that build instead of building anything itself: `qualor dotnet begin`, the
-project's own `dotnet build`, then `qualor dotnet end`. Use the
-`qualor/scanner-dotnet` image, which adds the .NET 8 and .NET 10 SDKs, the bundled Roslynator
-analyzers and SonarAnalyzer.CSharp 9.32 (SonarQube-compatible rules, LGPL-3.0) on top of
-`qualor/scanner`; a project's own reference to SonarAnalyzer.CSharp or Roslynator replaces the
-bundled one:
-
-```yaml
-qualor:
-  image: { name: qualor/scanner-dotnet:<tag>, entrypoint: [''] }
-  variables: { GIT_DEPTH: 0 }
-  script:
-    - qualor dotnet begin
-    - dotnet build --no-incremental
-    - qualor dotnet end
-  after_script:
-    - if [ -d .qualor/dotnet ]; then qualor dotnet abort; fi
-```
-
-When the build fails, the job never reaches `qualor dotnet end`; `qualor dotnet abort` then removes
-the MSBuild hook, the session's lease and `.qualor/dotnet/` without scanning or uploading anything
-(after a successful `end` the directory is gone, so the `after_script` does nothing).
-
-With the CI/CD component, set `inputs: { dotnet: true, image: qualor/scanner-dotnet }` (and
-optionally `build-command`, default `dotnet build --no-incremental`); the component then runs the
-same three steps instead of a plain `qualor scan`, and `qualor dotnet abort` in its `after_script`.
-
-On GitHub Actions, use `qualor-dev/scan-action/dotnet@v0.12` (inputs as for the main action, plus
-`build-command`), or copy
-[`integrations/github/qualor-dotnet.yml`](integrations/github/qualor-dotnet.yml) to
-`.github/workflows/qualor.yml` and set the variable `QUALOR_SCANNER_DOTNET_IMAGE` to
-`qualor/scanner-dotnet:<tag>`. It runs `qualor dotnet begin`, the build (replace
-it with your project's own), `qualor dotnet end`, and `qualor dotnet abort` when a step failed or the run was cancelled;
-`QUALOR_URL` and `QUALOR_TOKEN` are given to the `end` step only, so the build, which runs the
-repository's code, never sees the token.
-
-`qualor scan` exits 1 when the quality gate fails, which fails the job (exit codes:
-[docs/guide/cli.md](docs/guide/cli.md)). Configure the scan with an optional `qualor.yml`
-at the repository root (this repository's own is an example); a repository without one still
-gets a useful scan. ESLint runs from the project's own `node_modules`, so install a JavaScript or
-TypeScript project's dependencies before `qualor scan` (the image has Node.js, npm and corepack);
-SpotBugs, with its FindSecBugs security rules, needs compiled classes, so build a Java project
-first; a C# project is built between `qualor dotnet begin` and `qualor dotnet end` (above), never
-by the CLI itself. Qualor skips what `.gitignore`
-ignores, but has no built-in `coverage` exclude (a `coverage` source directory is code): if your
-repository commits generated coverage output, add it to `sources.exclude` in `qualor.yml`.
+Use any OpenAI-compatible endpoint, OpenAI's Responses API or the Anthropic Messages API, hosted
+with your key or running locally. Secrets are masked before anything is sent, and with a local
+model nothing leaves your network. See [AI review](docs/guide/ai-review.md) and the
+[AI assistant](docs/guide/ai-assistant.md).
 
 ## Migrating from SonarQube
 
-`qualor import sonarqube` copies a SonarQube Server (9.9 LTA or later, Community Build included) or
-SonarQube Cloud organisation's setup into one Qualor organisation: quality gates (for conditions on
-metrics Qualor has), which gate each project uses (with `--create-projects`, the projects
-themselves), quality profiles for JavaScript, TypeScript, C#, Java, Python, PHP, Ruby, Go, C and C++
-(Kotlin and Swift profiles are not imported), and the main branch's issues marked false positive,
-won't fix or accepted. C#, JavaScript and TypeScript rules map one to one to Qualor's bundled
-SonarQube-compatible rules (SonarAnalyzer.CSharp 9.32, eslint-plugin-sonarjs 2.0.4, LGPL-3.0)
-wherever the bundled version has the rule key SonarQube reports. Ruff and RuboCop findings imported
-into SonarQube map one to one; for SonarQube's own Python and Ruby rules, reviewed mappings
-activate the Ruff rule or RuboCop cop in a profile where it is the same rule, and import issue
-statuses where it is a partial counterpart. It only reads SonarQube (`GET` requests), and
-`--dry-run` shows what would change without writing anything:
+`qualor import sonarqube` copies the quality gates, quality profiles and issue statuses of a
+SonarQube Server or SonarQube Cloud organisation. It only reads from SonarQube, and `--dry-run`
+shows what would change. See [Migrating from SonarQube](docs/guide/migrate-from-sonarqube.md).
 
-```sh
-SONAR_TOKEN=… QUALOR_URL=https://qualor.example.com QUALOR_TOKEN=… qualor import sonarqube --url https://sonar.example.com --dry-run
-# SonarQube Cloud: --url https://sonarcloud.io --organization <key>
-```
+## Editions
 
-Drop `--dry-run` to import. Statuses can only be matched to issues Qualor has seen: run it again
-after the first Qualor scan (`--only issues`; a rerun changes nothing that is already imported). A
-status is applied only where the match is certain; everything else is reported. The SonarQube token
-is a user token (`squ_…`); the Qualor token needs the `admin` scope. Run from the scanner image
-against a Qualor on your machine through Docker Desktop's `host.docker.internal`, it needs
-`--allow-insecure-http`. See
-[docs/guide/migrate-from-sonarqube.md](docs/guide/migrate-from-sonarqube.md).
+Everything above is free, with no limit on lines of code, users or projects. The code is
+MIT-licensed, and Qualor's security rules are source-available. A Business or Enterprise licence key
+adds single sign-on, SCIM, the audit log, compliance and
+portfolio reports, a dependency licence policy and automatic fix suggestions. That code lives in
+`enterprise/`, under the source-available Qualor Enterprise Licence, and does nothing without a
+key. See [Enterprise](docs/guide/enterprise.md) and [qualor.dev/enterprise](https://qualor.dev/enterprise).
 
-## AI review and the AI assistant (optional)
+## Documentation
 
-Qualor can put a language model to work in two ways. Both are **off by default** and use the model
-you choose: any OpenAI-compatible endpoint (OpenAI, Azure OpenAI's v1 API, vLLM, Ollama, LM
-Studio), OpenAI's Responses API or the Anthropic Messages API, hosted with your key or local.
-
-### AI review
-
-A model reviews merge requests and pull requests on GitLab and GitHub, in every edition, on the
-projects an organisation admin chooses. It reads the change and any file of the repository it
-needs, not only the diff, and is shown what the analyzers found, so that it does not repeat them.
-It follows the repository's own rules files (`AGENTS.md`, `REVIEW.md`).
-
-- **Threads on the changed lines**, with suggested changes that a person applies in one click.
-- **It answers replies** in its threads, and a member's reply can mark a finding won't fix or false
-  positive. A `qualor review` note asks for a review, drafts included.
-- **After a push**, only new changes raise new findings; fixed findings close and their threads
-  resolve.
-- **A strong, a standard and a fast model**, each for the part of the review it suits.
-- **Findings are Qualor issues.** AI findings never count in the quality gate, the model never
-  approves a merge request and never commits, and agents read the findings through the
-  [MCP server](docs/guide/mcp.md).
-
-To switch it on, an instance admin connects the provider under **Settings → AI provider** and runs
-its Test, which checks that the model can call tools. An organisation admin then chooses the
-projects under **Settings → AI** and confirms the warning that code goes to the provider. Your CI
-scans merge requests with the full history, and the scanner uploads the copy of the repository
-that the review reads (GitLab CI and GitHub Actions). Daily budgets per organisation and project
-are set there too. AI review sends the merge request, the files the model reads and the findings
-on them to the model you chose, with secrets masked; with a local model, nothing leaves your
-network. See [docs/guide/ai-review.md](docs/guide/ai-review.md).
-
-### AI assistant
-
-On a person's click in the issue view, the model can look at one issue at a time:
-
-- **Explain**: what the rule checks, why this code triggers it, and how to fix it.
-- **Suggest triage**: whether the finding looks like a false positive, with reasons. It is only a
-  suggestion: the model never changes an issue. A person who agrees marks it false positive
-  through the usual form, with a comment of their own, and the changelog records that the
-  suggestion was shown.
-- **Suggest a fix**: a replacement for the flagged lines, shown before and after. It is posted to
-  the merge request (a GitLab suggestion or a GitHub suggested change) only when a person clicks
-  **Post to merge request**, and only when the merge request's head is still the analysed commit
-  and the replaced lines are lines it added, unchanged. The model never pushes code.
-
-An instance admin configures one provider for the instance under **Settings → AI provider**: its
-base URL, model (and optionally a stronger and a faster model for AI review) and API key
-(write-only, stored encrypted). Each organisation is then allowed to use AI, with the features it
-wants, under **Settings → AI**, and a project's **AI** panel shows what applies to it. Projects and
-paths can be excluded. No request leaves the server without that configuration and a person's
-click, with two exceptions that an organisation admin must switch on first (both are off by
-default):
-
-- **AI review**, above, reviews merge requests of the projects the admin chose without a
-  click;
-- the Enterprise feature **Automatic fix suggestions** suggests fixes for the new findings of each
-  merge request, at or above a severity the admin chooses, and posts them as suggestions without a
-  click. A project can opt out.
-
-The CLI never contacts a model.
-
-**What is sent** for the issue: the rule's key, name, description and CWE; the severity, quality
-and kind; the message; the path, lines and language; and the stored snippet (the flagged lines
-with 3 lines of context). The server redacts secrets again before sending, on top of the CLI's own
-redaction. **Never sent by these three actions:** issues of secret-detection rules (Gitleaks,
-credential CWEs), issues in files that look like credentials (`.env*`, keys, keystores, `.npmrc`,
-`kubeconfig`, …), and excluded projects and paths. An AI review is shown the rule, place and masked
-message of a secret issue, so that it does not report the secret again. Answers are plain text
-labelled "AI-generated, may be wrong"; nothing the model writes is rendered as HTML or Markdown.
-See [docs/guide/ai-assistant.md](docs/guide/ai-assistant.md).
-
-**Limits.** Daily budgets per organisation (explanations, triage, fix suggestions, tokens and an
-optional cost estimate) and a per-user hourly bound, all set by the instance admin; no edition caps
-them. Answers are cached per organisation for 30 days.
-
-**A local model.** Provider URLs follow the SCM rules: `https`, or plain `http` and private or
-loopback addresses only for hosts listed in `QUALOR_LLM_INTERNAL_HOSTS` (its own list, separate
-from `QUALOR_SCM_INTERNAL_HOSTS`). For Ollama running beside the compose stack as the service
-`ollama` ([deploy/README.md](deploy/README.md#a-local-model-with-ollama)), set
-`QUALOR_LLM_INTERNAL_HOSTS=ollama:11434` on the server and use the base URL
-`http://ollama:11434/v1`, kind OpenAI-compatible, no API key.
-
-## Development
-
-`pnpm install`, then `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm format:check` (see
-[AGENTS.md](AGENTS.md)). Qualor scans itself:
-`pnpm deploy:exit-test` runs the Phase 1 exit test locally with Docker, once both images are
-built (`docker build -f deploy/server/Dockerfile -t qualor/server:dev .` and
-`docker build -f deploy/scanner/Dockerfile -t qualor/scanner:dev .`). The GitLab tests of
-`pnpm test` run against a fake GitLab; `pnpm gitlab:real` runs the decoration against GitLab CE in
-Docker (opt-in: a 1.5 GB image and a few minutes to start), and
-`QUALOR_GITLAB_TEST_TOKEN=… pnpm gitlab:real --url <GitLab> --project <group/project>` runs the
-whole flow against a GitLab you already have (it pushes a temporary branch and merge request to
-that project, and closes and deletes them afterwards).
+The guide is in [docs/guide/](docs/guide/README.md), on [qualor.dev/docs](https://qualor.dev/docs),
+and under **Docs** on every Qualor server. It also has [ready-made prompts](docs/guide/ai-prompts.md)
+that let an AI agent roll Qualor out for you.
 
 ## Contributing and security
 
-**Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md) (setup, commands, rules, and the DCO
-sign-off every commit needs).
-
-**Security:** report vulnerabilities privately to security@qualor.dev, never in a public issue;
-see [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, commands and the DCO sign-off every commit needs.
+Report vulnerabilities privately to security@qualor.dev, never in a public issue: see
+[SECURITY.md](SECURITY.md).
 
 ## Trademarks
 
