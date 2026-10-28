@@ -97,6 +97,10 @@ describe('/system/llm (llm.md §3, §16)', () => {
       headers: session.headers,
       payload: payload as object,
     });
+  const usageAndAuditRows = async () => [
+    (await ctx.db.select({ n: count() }).from(llmRequests))[0]!.n,
+    (await ctx.db.select({ n: count() }).from(auditEvents))[0]!.n,
+  ];
   const get = (session = admin) =>
     ctx.app.inject({ method: 'GET', url: '/api/v0/system/llm', headers: session.headers });
   const test = (session = admin) =>
@@ -515,11 +519,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
     });
 
     it('keeps the latency of the plain test, and writes no usage row and no audit row', async () => {
-      const rows = async () => [
-        (await ctx.db.select({ n: count() }).from(llmRequests))[0]!.n,
-        (await ctx.db.select({ n: count() }).from(auditEvents))[0]!.n,
-      ];
-      const before = await rows();
+      const before = await usageAndAuditRows();
       fake.enqueue(plainOk('openai'), async () => {
         await new Promise((r) => setTimeout(r, 800));
         return toolAnswer('openai');
@@ -528,7 +528,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
       expect(res.toolCalling).toBe('supported');
       // The slow check is not part of the latency of the test.
       expect(res.latencyMs).toBeLessThan(700);
-      expect(await rows()).toEqual(before);
+      expect(await usageAndAuditRows()).toEqual(before);
     });
   });
 
@@ -611,11 +611,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
       };
       // Three plain calls, then a tool check of each model.
       enqueue(6, together);
-      const rows = async () => [
-        (await ctx.db.select({ n: count() }).from(llmRequests))[0]!.n,
-        (await ctx.db.select({ n: count() }).from(auditEvents))[0]!.n,
-      ];
-      const before = await rows();
+      const before = await usageAndAuditRows();
 
       const res = await check();
       clearTimeout(giveUp);
@@ -646,7 +642,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
       expect(fake.requests.filter(asksForTool)).toHaveLength(3);
       expect(res.body).not.toContain(fake.apiKey);
       // No usage row and no audit row, no matter how many models.
-      expect(await rows()).toEqual(before);
+      expect(await usageAndAuditRows()).toEqual(before);
 
       // The press took one of the ten tests a minute, not one per model.
       for (let i = 1; i < 10; i += 1) expect((await check()).statusCode).toBe(200);

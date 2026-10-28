@@ -26,7 +26,9 @@ function fieldsOf(value: unknown, prefix = ''): string[] {
   return Object.entries(value)
     .flatMap(([key, field]) => {
       const path = prefix === '' ? key : `${prefix}.${key}`;
-      const kind = Array.isArray(field) ? 'list' : field === null ? 'null' : typeof field;
+      let kind: string = typeof field;
+      if (Array.isArray(field)) kind = 'list';
+      else if (field === null) kind = 'null';
       return [`${path}: ${kind}`, ...fieldsOf(field, path)];
     })
     .sort();

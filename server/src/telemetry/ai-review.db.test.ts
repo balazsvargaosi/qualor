@@ -46,6 +46,10 @@ describe('telemetry schema 2: AI review and the assistant (telemetry.md, R39)', 
   let branchId: string;
   let ruleId: string;
   let note = 0;
+  const nextNoteId = () => {
+    note += 1;
+    return note;
+  };
 
   /** The report, which is schema 2 whenever the server could count its AI use. */
   const collect = async (): Promise<TelemetryPayloadV2> => {
@@ -70,6 +74,10 @@ describe('telemetry schema 2: AI review and the assistant (telemetry.md, R39)', 
     strongModel: 'secret-strong',
     fastModel: null,
   });
+  const reasonOf = (status: ReviewRunStatus): 'draft' | 'internal' | null => {
+    if (status === 'skipped') return 'draft';
+    return status === 'failed' ? 'internal' : null;
+  };
   const run = async (status: ReviewRunStatus, finishedAt: SQL | null) => {
     const analysisId = first(
       await h.ctx.db.insert(analyses).values({ projectId: p.id }).returning(),
@@ -79,7 +87,7 @@ describe('telemetry schema 2: AI review and the assistant (telemetry.md, R39)', 
       branchId,
       analysisId,
       status,
-      reason: status === 'skipped' ? 'draft' : status === 'failed' ? 'internal' : null,
+      reason: reasonOf(status),
       deadlineAt: new Date(),
       startedAt: status === 'waiting' ? null : NOW,
       finishedAt,
@@ -98,7 +106,7 @@ describe('telemetry schema 2: AI review and the assistant (telemetry.md, R39)', 
       projectId: p.id,
       branchId,
       provider: 'gitlab',
-      noteId: (note += 1),
+      noteId: nextNoteId(),
       kind: 'reply',
       author: 'secret-team-member',
       status: 'done',

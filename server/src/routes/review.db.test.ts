@@ -466,8 +466,9 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
           .insert(analyses)
           .values({ projectId, branchId: branch!.id })
           .returning();
-        const reason =
-          status === 'failed' ? 'internal' : status === 'skipped' ? 'draft' : undefined;
+        let reason: 'internal' | 'draft' | undefined;
+        if (status === 'failed') reason = 'internal';
+        else if (status === 'skipped') reason = 'draft';
         const [row] = await ctx.db
           .insert(reviewRuns)
           .values({

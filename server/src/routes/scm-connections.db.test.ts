@@ -30,6 +30,37 @@ interface Connection {
   baseUrl: string;
 }
 
+/** An organisation admin's PATCH of a connection. */
+const patchConnection = (h: IngestHarness, id: string, payload: Record<string, unknown>) =>
+  h.ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v0/scm-connections/${id}`,
+    headers: h.orgAdmin.headers,
+    payload,
+  });
+
+const raceConnectionPatches = async (
+  h: IngestHarness,
+  id: string,
+  first: Record<string, unknown>,
+  second: Record<string, unknown>,
+) => {
+  let a: ReturnType<typeof patchConnection> | undefined;
+  let b: ReturnType<typeof patchConnection> | undefined;
+  await h.ctx.db.transaction(async (tx) => {
+    await tx
+      .select({ id: scmConnections.id })
+      .from(scmConnections)
+      .where(eq(scmConnections.id, id))
+      .for('update');
+    a = patchConnection(h, id, first);
+    await waitForLockWaiters(h.ctx.db, 1);
+    b = patchConnection(h, id, second);
+    await waitForLockWaiters(h.ctx.db, 2);
+  });
+  return [await a!, await b!] as const;
+};
+
 describe('SCM connections API and project mapping (scm.md §2)', () => {
   let h: IngestHarness;
   let fake: FakeGitLab;
@@ -679,13 +710,7 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
         ...payload,
       },
     });
-  const patch = (id: string, payload: Record<string, unknown>) =>
-    h.ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v0/scm-connections/${id}`,
-      headers: h.orgAdmin.headers,
-      payload,
-    });
+  const patch = (id: string, payload: Record<string, unknown>) => patchConnection(h, id, payload);
   const list = async () =>
     (
       await h.ctx.app.inject({
@@ -860,26 +885,8 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
    * Holds the connection's row lock while `first` and then `second` send their PATCH, so both
    * wait, in that order, on the write; then releases it.
    */
-  const race = async (
-    id: string,
-    first: Record<string, unknown>,
-    second: Record<string, unknown>,
-  ) => {
-    let a: ReturnType<typeof patch> | undefined;
-    let b: ReturnType<typeof patch> | undefined;
-    await h.ctx.db.transaction(async (tx) => {
-      await tx
-        .select({ id: scmConnections.id })
-        .from(scmConnections)
-        .where(eq(scmConnections.id, id))
-        .for('update');
-      a = patch(id, first);
-      await waitForLockWaiters(h.ctx.db, 1);
-      b = patch(id, second);
-      await waitForLockWaiters(h.ctx.db, 2);
-    });
-    return [await a!, await b!] as const;
-  };
+  const race = (id: string, first: Record<string, unknown>, second: Record<string, unknown>) =>
+    raceConnectionPatches(h, id, first, second);
   const ELSEWHERE = 'https://github.qualor.invalid/api/v3';
 
   it('never moves the connection past a webhook secret set meanwhile', async () => {
@@ -1076,13 +1083,7 @@ describe('GitLab connections: the webhook secret (6I-4)', () => {
         ...payload,
       },
     });
-  const patch = (id: string, payload: Record<string, unknown>) =>
-    h.ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v0/scm-connections/${id}`,
-      headers: h.orgAdmin.headers,
-      payload,
-    });
+  const patch = (id: string, payload: Record<string, unknown>) => patchConnection(h, id, payload);
   const list = async () =>
     (
       await h.ctx.app.inject({
@@ -1276,26 +1277,8 @@ describe('GitLab connections: the webhook secret (6I-4)', () => {
    * Holds the connection's row lock while `first` and then `second` send their PATCH, so both
    * wait, in that order, on the write; then releases it.
    */
-  const race = async (
-    id: string,
-    first: Record<string, unknown>,
-    second: Record<string, unknown>,
-  ) => {
-    let a: ReturnType<typeof patch> | undefined;
-    let b: ReturnType<typeof patch> | undefined;
-    await h.ctx.db.transaction(async (tx) => {
-      await tx
-        .select({ id: scmConnections.id })
-        .from(scmConnections)
-        .where(eq(scmConnections.id, id))
-        .for('update');
-      a = patch(id, first);
-      await waitForLockWaiters(h.ctx.db, 1);
-      b = patch(id, second);
-      await waitForLockWaiters(h.ctx.db, 2);
-    });
-    return [await a!, await b!] as const;
-  };
+  const race = (id: string, first: Record<string, unknown>, second: Record<string, unknown>) =>
+    raceConnectionPatches(h, id, first, second);
   const ELSEWHERE = 'https://gitlab.qualor.invalid';
 
   it('never moves the connection past a webhook secret set meanwhile', async () => {

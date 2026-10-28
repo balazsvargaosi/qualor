@@ -83,6 +83,26 @@ describe('/system/llm (llm.md §3, §16)', () => {
       headers: session.headers,
       payload: payload as object,
     });
+  /** What the organisation's own admins are told: `GET /organizations/{id}/ai/review`. */
+  const told = async () =>
+    (
+      await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v0/organizations/${org}/ai/review`,
+        headers: orgAdmin.headers,
+      })
+    ).json();
+  /**
+   * The org admin's save of the organisation's AI review. Switching it on needs
+   * `acknowledgeDataSharing`: the provider its GET names.
+   */
+  const setReview = (payload: Record<string, unknown>) =>
+    ctx.app.inject({
+      method: 'PUT',
+      url: `/api/v0/organizations/${org}/ai/review`,
+      headers: orgAdmin.headers,
+      payload: { scope: 'all', projectIds: [], budgets: DEFAULT_REVIEW_BUDGETS, ...payload },
+    });
   const get = (session = admin) =>
     ctx.app.inject({ method: 'GET', url: '/api/v0/system/llm', headers: session.headers });
   const test = (session = admin) =>
@@ -576,22 +596,10 @@ describe('/system/llm (llm.md §3, §16)', () => {
         provider({ apiKey: undefined, ...over });
       expect((await put(body())).statusCode).toBe(200);
       // The organisation's admins switch AI review on, acknowledging the provider their page names.
-      const review = (payload: Record<string, unknown>) =>
-        ctx.app.inject({
-          method: 'PUT',
-          url: `/api/v0/organizations/${org}/ai/review`,
-          headers: orgAdmin.headers,
-          payload: { scope: 'all', projectIds: [], budgets: DEFAULT_REVIEW_BUDGETS, ...payload },
-        });
-      const told = async () =>
-        (
-          await ctx.app.inject({
-            method: 'GET',
-            url: `/api/v0/organizations/${org}/ai/review`,
-            headers: orgAdmin.headers,
-          })
-        ).json();
-      const on = await review({ enabled: true, acknowledgeDataSharing: (await told()).provider });
+      const on = await setReview({
+        enabled: true,
+        acknowledgeDataSharing: (await told()).provider,
+      });
       expect(on.statusCode, on.body).toBe(200);
       // A Test of the provider, by an admin of its own (the Test is limited per admin).
       const tester = await createUser(ctx, { username: 'llm-window-test', isInstanceAdmin: true });
@@ -1336,26 +1344,6 @@ describe('/system/llm (llm.md §3, §16)', () => {
   });
 
   describe('reviewStatus (A1)', () => {
-    /** What the organisation's own admins are told: `GET /organizations/{id}/ai/review`. */
-    const told = async () =>
-      (
-        await ctx.app.inject({
-          method: 'GET',
-          url: `/api/v0/organizations/${org}/ai/review`,
-          headers: orgAdmin.headers,
-        })
-      ).json();
-    /**
-     * The org admin's save of the organisation's AI review. Switching it on needs
-     * `acknowledgeDataSharing`: the provider its GET names.
-     */
-    const setReview = (payload: Record<string, unknown>) =>
-      ctx.app.inject({
-        method: 'PUT',
-        url: `/api/v0/organizations/${org}/ai/review`,
-        headers: orgAdmin.headers,
-        payload: { scope: 'all', projectIds: [], budgets: DEFAULT_REVIEW_BUDGETS, ...payload },
-      });
     /**
      * The instance admin's view of the organisation's AI review is `expected`, and it is what the
      * organisation's own admins are told.

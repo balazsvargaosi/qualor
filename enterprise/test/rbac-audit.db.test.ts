@@ -134,6 +134,22 @@ const allowLoopbackReceivers = (ctx: TestContext) =>
     VALUES ('webhooks', ${JSON.stringify({ allowHttp: true, allowInternalHosts: true })}::jsonb)
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`);
 
+type HttpMethod = 'GET' | 'PUT' | 'POST' | 'DELETE';
+
+const call = (
+  ctx: TestContext,
+  session: Session,
+  method: HttpMethod,
+  url: string,
+  payload?: unknown,
+) =>
+  ctx.app.inject({
+    method,
+    url: `/api/v0${url}`,
+    headers: session.headers,
+    ...(payload === undefined ? {} : { payload: payload as object }),
+  });
+
 type EventItem = {
   action: string;
   organization: { id: string } | null;
@@ -162,18 +178,8 @@ describe('Qualor Enterprise: audit-log, and the grant routes in core (rbac-audit
   let orgBAdminId: string;
   const streamSecrets: string[] = [];
 
-  const req = (
-    method: 'GET' | 'PUT' | 'POST' | 'DELETE',
-    url: string,
-    session: Session,
-    payload?: unknown,
-  ) =>
-    ctx.app.inject({
-      method,
-      url: `/api/v0${url}`,
-      headers: session.headers,
-      ...(payload === undefined ? {} : { payload: payload as object }),
-    });
+  const req = (method: HttpMethod, url: string, session: Session, payload?: unknown) =>
+    call(ctx, session, method, url, payload);
   const exportLines = (body: string) =>
     body
       .trim()
@@ -622,7 +628,7 @@ describe('Qualor Enterprise: audit-log, and the grant routes in core (rbac-audit
     expect(pending.statusCode).toBe(200);
     now = AFTER_GRACE;
     const period = 'from=2027-01-01T00:00:00Z&to=2027-02-01T00:00:00Z';
-    const routes: ['GET' | 'PUT' | 'POST' | 'DELETE', string][] = [
+    const routes: [HttpMethod, string][] = [
       ['GET', '/ee/audit/events'],
       ['GET', `/ee/audit/export?${period}`],
       ['GET', '/ee/audit/head'],
@@ -711,19 +717,6 @@ describe('audit-log.stream (rbac-audit.md §14.4)', () => {
   const STREAM_TITLE = 'The enterprise feature "audit-log.stream" is not licensed';
   let receiver: Awaited<ReturnType<typeof startReceiver>>;
 
-  const call = (
-    ctx: TestContext,
-    session: Session,
-    method: 'GET' | 'PUT' | 'POST',
-    url: string,
-    payload?: unknown,
-  ) =>
-    ctx.app.inject({
-      method,
-      url: `/api/v0${url}`,
-      headers: session.headers,
-      ...(payload === undefined ? {} : { payload: payload as object }),
-    });
   const settingsRows = async (ctx: TestContext) =>
     (
       await ctx.db.execute<{ key: string; value: string }>(sql`

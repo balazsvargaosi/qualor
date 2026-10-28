@@ -20,6 +20,20 @@ import { communityLimits } from '../limits';
 
 const LICENSED = new Date('2027-01-01T00:00:00Z');
 
+const callAs = (
+  ctx: TestContext,
+  session: Session,
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
+  url: string,
+  payload?: unknown,
+) =>
+  ctx.app.inject({
+    method,
+    url,
+    headers: session.headers,
+    ...(payload === undefined ? {} : { payload: payload as never }),
+  });
+
 interface Me {
   memberships: { organizationId: string; role: string | null; permissions: string[] }[];
   projectGrants: { projectId: string; projectKey: string; organizationId: string; role: string }[];
@@ -84,13 +98,7 @@ describe('roles and project grants (rbac-audit.md §3.2, §6)', () => {
     method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
     url: string,
     payload?: unknown,
-  ) =>
-    ctx.app.inject({
-      method,
-      url,
-      headers: s[who]!.headers,
-      ...(payload === undefined ? {} : { payload: payload as never }),
-    });
+  ) => callAs(ctx, s[who]!, method, url, payload);
 
   const upload = (headers: Record<string, string>, projectKey: string) =>
     ctx.app.inject({
@@ -367,12 +375,7 @@ describe('a community server (rbac-audit.md §6.1)', () => {
     });
 
   const call = (who: string, method: 'GET' | 'POST' | 'PATCH', url: string, payload?: unknown) =>
-    ctx.app.inject({
-      method,
-      url,
-      headers: s[who]!.headers,
-      ...(payload === undefined ? {} : { payload: payload as never }),
-    });
+    callAs(ctx, s[who]!, method, url, payload);
 
   it.each(['viewer', 'project_admin', 'member', 'admin'])('accepts %s', async (role) => {
     const res = await put(ids.eve!, role);
