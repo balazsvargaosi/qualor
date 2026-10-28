@@ -106,10 +106,12 @@ const COMMIT_LIKE = /^[0-9a-f]{7,64}$/i;
  * `CU-abc`, the autolinks a GitHub repository sets up can match an alphanumeric id (`TICKET-abc`),
  * and a GitLab Jira integration can be given a `jira_issue_regex` of its own. All of them link only
  * to what the project or the repository has configured.
- * Written with a lookbehind so that a long word without a hyphen is read in linear time: the
- * hyphen and its digit are looked for first, the letter before them only where they are.
+ * Written so that a long word is read in linear time on every engine: a match starts only where a
+ * part starts (the word's start, or just after a hyphen or an apostrophe), so each part is read
+ * once. A lookbehind (`(?<=\p{L}[^-'’]*)-\p{Nd}`) is linear on Node 24 but not on Node 22, which
+ * the images run: 80 ms for a 20 000-character word.
  */
-export const TRACKER_LIKE = /(?<=\p{L}[^-'’]*)-\p{Nd}/u;
+export const TRACKER_LIKE = /(?:^|[-'’])[^-'’\p{L}]*\p{L}[^-'’]*-\p{Nd}/u;
 /** A combining mark, which changes nothing of a word a provider reads for a link or a reference. */
 const COMBINING_MARKS = /\p{M}/gu;
 /** Where a hash may begin or end inside a plain core: at a hyphen, an apostrophe or a combining mark. */
