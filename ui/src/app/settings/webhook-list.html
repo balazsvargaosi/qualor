@@ -11,7 +11,7 @@
     <section class="card panel" [attr.data-key]="w.id" [attr.aria-label]="w.url">
       <div class="panel-head webhook-head">
         <div class="webhook-title">
-          <code class="webhook-url">{{ w.url }}</code>
+          <code class="webhook-url" [id]="'webhook-name-' + w.id">{{ w.url }}</code>
           <div class="webhook-events">
             @if (w.kind !== 'generic') {
               <span class="badge badge-tag webhook-kind"
@@ -152,7 +152,7 @@
                     class="panel-scroll"
                     tabindex="0"
                     role="group"
-                    [attr.aria-labelledby]="'webhook-deliveries-' + w.id"
+                    [attr.aria-labelledby]="'webhook-deliveries-' + w.id + ' webhook-name-' + w.id"
                   >
                     <table>
                       <thead>

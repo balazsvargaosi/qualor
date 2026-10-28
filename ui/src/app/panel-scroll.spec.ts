@@ -24,13 +24,21 @@ describe('scrollable table wrappers', () => {
   };
   walk(root);
 
+  let mentions = 0;
   const wrappers: { file: string; tag: string; html: string }[] = [];
   for (const file of templates) {
     const html: string = fs.readFileSync(file, 'utf8');
-    for (const m of html.matchAll(/<div\b[^>]*\bclass="panel-scroll"[^>]*>/g)) {
+    mentions += html.split('panel-scroll').length - 1;
+    for (const m of html.matchAll(
+      /<(?:div|section)\b[^>]*\bclass="[^"]*\bpanel-scroll\b[^"]*"[^>]*>/g,
+    )) {
       wrappers.push({ file: path.relative(root, file), tag: m[0], html });
     }
   }
+
+  it('matches every use of the class, in any form', () => {
+    expect(wrappers.length).toBe(mentions);
+  });
 
   it('finds the wrappers', () => {
     expect(wrappers.length).toBeGreaterThanOrEqual(32);

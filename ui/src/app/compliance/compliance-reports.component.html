@@ -190,7 +190,7 @@
       <section
         id="compliance-preview"
         class="card panel compliance-preview"
-        aria-labelledby="compliance-preview-title"
+        aria-labelledby="compliance-preview-caption"
       >
         <div class="panel-head">
           <div>
@@ -233,7 +233,11 @@
             aria-labelledby="compliance-preview-title"
           >
             <table class="compliance-categories">
-              <caption class="visually-hidden" i18n="@@compliance.preview.caption">
+              <caption
+                id="compliance-preview-caption"
+                class="visually-hidden"
+                i18n="@@compliance.preview.caption"
+              >
                 Open findings by category of
                 {{
                   standardTitle(st.id)
