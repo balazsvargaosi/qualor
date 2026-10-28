@@ -288,48 +288,53 @@ describe('the work of matching a glob is bounded', () => {
     }
   });
 
-  it('takes the shapes that cost most over many long paths a tenth of a second each, not minutes', () => {
-    // 50 000 paths of 1 006 characters. These are the globs that were slowest to walk: stars that
-    // look at every position, tokens that take a path nowhere (the walk then costs what looking
-    // at the path does), and `**/` over a path of many segments.
-    const flat = Array.from(
-      { length: 50_000 },
-      (_, i) => `${'a'.repeat(1_000)}${String(i).padStart(6, '0')}`,
-    );
-    const deep = Array.from(
-      { length: 50_000 },
-      (_, i) => `${'a/'.repeat(500)}${String(i).padStart(6, '0')}`,
-    );
-    const shapes: [string, string, string[]][] = [
-      ['?*', '?*', flat],
-      ['?**', '?**', flat],
-      ['?zzz*', '?zzz*', flat],
-      ['zzz*', 'zzz*', flat],
-      ['*? x8', '*?'.repeat(8), flat],
-      ['*a x15 *b', `${'*a'.repeat(15)}*b`, flat],
-      ['*/ x16 x', `${'*/'.repeat(16)}x`, flat],
-      ['**/ x16 x', `${'**/'.repeat(16)}x`, deep],
-      ['**/*a*/**/*b*/x', '**/*a*/**/*b*/x', deep],
-    ];
-    for (const [label, glob, paths] of shapes) {
-      const compiled = compilePathGlob(glob);
-      const work = newGlobWork();
-      const started = performance.now();
-      let walked = 0;
-      for (const path of paths) {
-        compiled.matches(path, work);
-        walked += 1;
-        if (work.exhausted) break;
+  // Under coverage the nine shapes take 4–5 s each in CI, past the unit project's 30 s timeout.
+  it(
+    'takes the shapes that cost most over many long paths a tenth of a second each, not minutes',
+    () => {
+      // 50 000 paths of 1 006 characters. These are the globs that were slowest to walk: stars that
+      // look at every position, tokens that take a path nowhere (the walk then costs what looking
+      // at the path does), and `**/` over a path of many segments.
+      const flat = Array.from(
+        { length: 50_000 },
+        (_, i) => `${'a'.repeat(1_000)}${String(i).padStart(6, '0')}`,
+      );
+      const deep = Array.from(
+        { length: 50_000 },
+        (_, i) => `${'a/'.repeat(500)}${String(i).padStart(6, '0')}`,
+      );
+      const shapes: [string, string, string[]][] = [
+        ['?*', '?*', flat],
+        ['?**', '?**', flat],
+        ['?zzz*', '?zzz*', flat],
+        ['zzz*', 'zzz*', flat],
+        ['*? x8', '*?'.repeat(8), flat],
+        ['*a x15 *b', `${'*a'.repeat(15)}*b`, flat],
+        ['*/ x16 x', `${'*/'.repeat(16)}x`, flat],
+        ['**/ x16 x', `${'**/'.repeat(16)}x`, deep],
+        ['**/*a*/**/*b*/x', '**/*a*/**/*b*/x', deep],
+      ];
+      for (const [label, glob, paths] of shapes) {
+        const compiled = compilePathGlob(glob);
+        const work = newGlobWork();
+        const started = performance.now();
+        let walked = 0;
+        for (const path of paths) {
+          compiled.matches(path, work);
+          walked += 1;
+          if (work.exhausted) break;
+        }
+        const elapsed = performance.now() - started;
+        // The bound ends the search before the paths do, and a path costs at least its length.
+        expect(work.exhausted, label).toBe(true);
+        expect(walked, label).toBeLessThanOrEqual(Math.ceil(MAX_GLOB_STEPS / 1_006));
+        // About 100 ms here at the most; the bound is 500 so that a busy machine, which runs a
+        // dozen test files side by side, does not fail it. The walk before the bound was fixed took
+        // 800 ms for the first of the shapes. Coverage slows this loop 60-fold and more (4–5 s a
+        // shape in CI), so there only the step bound above holds.
+        if (!UNDER_COVERAGE) expect(elapsed, label).toBeLessThan(budgetMs(500));
       }
-      const elapsed = performance.now() - started;
-      // The bound ends the search before the paths do, and a path costs at least its length.
-      expect(work.exhausted, label).toBe(true);
-      expect(walked, label).toBeLessThanOrEqual(Math.ceil(MAX_GLOB_STEPS / 1_006));
-      // About 100 ms here at the most; the bound is 500 so that a busy machine, which runs a
-      // dozen test files side by side, does not fail it. The walk before the bound was fixed took
-      // 800 ms for the first of the shapes. Coverage slows this loop 60-fold and more (4–5 s a
-      // shape in CI), so there only the step bound above holds.
-      if (!UNDER_COVERAGE) expect(elapsed, label).toBeLessThan(budgetMs(500));
-    }
-  });
+    },
+    UNDER_COVERAGE ? 180_000 : undefined,
+  );
 });
