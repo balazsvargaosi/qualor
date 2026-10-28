@@ -12,7 +12,7 @@ All notable changes to Qualor are listed here, newest first. The format follows
 - A word that an em or en dash joins to a code span, as in `page`—and, no longer turns into one code span with the words around it. Each piece of the word is checked on its own, so a link or reference beside the dash still stays inert.
 - An analyzer's message in the summary comment and in the inline note reads as ordinary text, with its code in code spans, instead of one code block with literal backticks. Mentions, references, links and HTML in a message still stay inert.
 - GitHub's secondary rate limit no longer delays reviews posted at the same time: one installation decorates one pull request at a time, and the next waits a moment.
-- A review retries a model provider that answers 5xx or cannot be reached twice instead of once, waiting the time the provider asks for (at most a minute), so one short outage no longer fails the review.
+- A review retries a model provider that answers 5xx, cannot be reached or times out twice instead of once, waiting the time the provider asks for (at most a minute), so one short outage no longer fails the review.
 - Reviews, the connection test, replies and merge request state follow a renamed or moved GitLab project once: GitLab answers the old path with a redirect to the project, and Qualor now follows it on the same GitLab instead of failing the review with an HTTP error.
 - A table that scrolls sideways can be reached and scrolled from the keyboard, and a screen reader announces it by the name of its panel or table.
 
