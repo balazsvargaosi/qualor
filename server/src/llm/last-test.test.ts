@@ -67,7 +67,7 @@ describe('testFingerprint', () => {
           baseUrl: 'https://llm.example/v1',
           fastModel: 'gpt-6-luna',
           jsonMode: 'json_object',
-          keyIv: 'Zml4dHVyZS1pdi0x',
+          keyIv: KEY.iv,
           kind: 'openai',
           maxTokensField: 'max_tokens',
           model: 'gpt-5.6-terra',
