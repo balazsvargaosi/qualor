@@ -110,8 +110,28 @@ async function gzipParts(parts: Iterable<string | Buffer>): Promise<Buffer> {
   return Buffer.concat(out);
 }
 
+/** A snapshot of the merge request `iid` (R22: the one its analysis is of). */
+const snapshotBody = (iid: number) =>
+  gzipSync(
+    snapshotText([fileLine('src/a.ts')], {
+      header: headerLine({
+        mergeRequest: { id: String(iid), title: 'Parse the config', description: null },
+      }),
+    }),
+  );
+
 describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
   let h: IngestHarness;
+  /** The analysis worker's queues, as the harness runs them. */
+  const runIngestion = () =>
+    runUntilIdle(
+      h.ctx.db,
+      {
+        ...jobHandlers({ db: h.ctx.db, upload: h.ctx.config.upload, logger: h.ctx.app.log }),
+        ...gateHandlers({ db: h.ctx.db }),
+      },
+      h.ctx.app.log,
+    );
   let p: IngestProject;
 
   /**
@@ -726,15 +746,6 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
         projectKey: p.key,
         analysisDate: `2026-10-0${n}T10:00:00Z`,
       });
-    /** A snapshot of the merge request `iid` (R22: the one its analysis is of). */
-    const snapshotBody = (iid: number) =>
-      gzipSync(
-        snapshotText([fileLine('src/a.ts')], {
-          header: headerLine({
-            mergeRequest: { id: String(iid), title: 'Parse the config', description: null },
-          }),
-        }),
-      );
     /** Stores and unpacks the snapshot of `analysisId`, of the merge request `iid`, as its job does. */
     const unpackFor = async (analysisId: string, iid: number) => {
       const { snapshotId } = await store(snapshotBody(iid), analysisId);
@@ -759,16 +770,6 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
     /** Uploads a report without processing it: the analysis stays queued. */
     const queuedAnalysis = (iid: number, n: number) =>
       uploadReport(h.ctx, bearer(p.token), p.key, gzipJson(report(iid, n)));
-    /** The analysis worker's queues, as the harness runs them. */
-    const runIngestion = () =>
-      runUntilIdle(
-        h.ctx.db,
-        {
-          ...jobHandlers({ db: h.ctx.db, upload: h.ctx.config.upload, logger: h.ctx.app.log }),
-          ...gateHandlers({ db: h.ctx.db }),
-        },
-        h.ctx.app.log,
-      );
 
     beforeAll(() => {
       mr = 100;
@@ -933,25 +934,8 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
         projectKey: p.key,
         analysisDate: `2026-10-0${n}T10:00:00Z`,
       });
-    const snapshotBody = (iid: number) =>
-      gzipSync(
-        snapshotText([fileLine('src/a.ts')], {
-          header: headerLine({
-            mergeRequest: { id: String(iid), title: 'Parse the config', description: null },
-          }),
-        }),
-      );
     const queuedAnalysis = (iid: number) =>
       uploadReport(h.ctx, bearer(p.token), p.key, gzipJson(report(iid)));
-    const runIngestion = () =>
-      runUntilIdle(
-        h.ctx.db,
-        {
-          ...jobHandlers({ db: h.ctx.db, upload: h.ctx.config.upload, logger: h.ctx.app.log }),
-          ...gateHandlers({ db: h.ctx.db }),
-        },
-        h.ctx.app.log,
-      );
     const logs: unknown[][] = [];
     /** The unpack jobs that are due, as the analysis worker runs them. */
     const runUnpacks = () =>
