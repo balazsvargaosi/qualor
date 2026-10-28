@@ -384,7 +384,8 @@ function location(path: string, line: number | null): string {
  * a line after the first says (gosec's `Severity: …`, or advice) is kept.
  */
 function messageProse(message: string): string {
-  return inlineProse(message.replace(/\s*[\r\n]+\s*/g, ' '), MAX_MESSAGE_CHARS);
+  const lines = message.split(/[\r\n]+/).map((line) => line.trim());
+  return inlineProse(lines.filter((line) => line !== '').join(' '), MAX_MESSAGE_CHARS);
 }
 
 function issueItem(issue: IssueLine, index: number): string[] {
