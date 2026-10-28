@@ -88,6 +88,80 @@ interface Read {
   calls: readonly unknown[];
 }
 
+/** The response as parsed; a failed one, or one that carries an error, is the provider's failure. */
+function completedResponse(raw: unknown): z.infer<typeof responseSchema> {
+  const parsed = responseSchema.safeParse(raw);
+  if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
+  const response = parsed.data;
+  if (response.status === 'failed' || (response.error !== undefined && response.error !== null)) {
+    throw new LlmError('unavailable', NOT_COMPLETED);
+  }
+  return response;
+}
+
+/** Whether the response is incomplete at `max_output_tokens`. */
+function isCutOff(response: z.infer<typeof responseSchema>): boolean {
+  return (
+    response.status === 'incomplete' && response.incomplete_details?.reason === 'max_output_tokens'
+  );
+}
+
+/** Adds the text and the refusal parts of a message to their lists. */
+function sortParts(
+  content: readonly { type: string; text?: string; refusal?: string }[],
+  texts: string[],
+  refusals: string[],
+): void {
+  for (const part of content) {
+    if (part.type === 'output_text') texts.push(part.text ?? '');
+    else if (part.type === 'refusal') refusals.push(part.refusal ?? '');
+  }
+}
+
+/** The text, refusal and call items of the `output`; a malformed item is not understood. */
+function sortItems(output: readonly unknown[]): {
+  texts: string[];
+  refusals: string[];
+  calls: unknown[];
+} {
+  const texts: string[] = [];
+  const refusals: string[] = [];
+  const calls: unknown[] = [];
+  for (const item of output) {
+    const typed = itemSchema.safeParse(item);
+    if (!typed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
+    if (typed.data.type === 'message') {
+      const message = messageSchema.safeParse(item);
+      if (!message.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
+      sortParts(message.data.content, texts, refusals);
+    } else if (typed.data.type === 'function_call') {
+      calls.push(item);
+    }
+  }
+  return { texts, refusals, calls };
+}
+
+/** The joined text; an answer cut off before it wrote anything (while it thought) is no text and no fault. */
+function textOf(texts: readonly string[], cutOff: boolean): string | null {
+  if (texts.length > 0) return texts.join('');
+  return cutOff ? '' : null;
+}
+
+function finishReasonOf(status: unknown, cutOff: boolean): 'length' | 'stop' | null {
+  if (cutOff) return 'length';
+  return status === 'completed' ? 'stop' : null;
+}
+
+/** `input_tokens` holds the cached part, as `prompt_tokens` does: its details say how much (R49). */
+function usageOf(usage: z.infer<typeof responseSchema>['usage']) {
+  if (usage === undefined) return undefined;
+  return {
+    prompt_tokens: usage.input_tokens,
+    completion_tokens: usage.output_tokens,
+    prompt_tokens_details: usage.input_tokens_details,
+  };
+}
+
 /**
  * Reads the answer of POST <baseUrl>/responses:
  * - a failed answer, or one that carries an error, is the provider's failure (`unavailable`, with a
@@ -99,55 +173,24 @@ interface Read {
  *   reason (a content filter, a status it does not know, none) it is `other`.
  */
 function readResponse(raw: unknown): Read {
-  const parsed = responseSchema.safeParse(raw);
-  if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
-  const response = parsed.data;
-  if (response.status === 'failed' || (response.error !== undefined && response.error !== null)) {
-    throw new LlmError('unavailable', NOT_COMPLETED);
-  }
+  const response = completedResponse(raw);
   const { output } = response;
   if (!Array.isArray(output)) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
-  const texts: string[] = [];
-  const refusals: string[] = [];
-  const calls: unknown[] = [];
-  for (const item of output as unknown[]) {
-    const typed = itemSchema.safeParse(item);
-    if (!typed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
-    if (typed.data.type === 'message') {
-      const message = messageSchema.safeParse(item);
-      if (!message.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
-      for (const part of message.data.content) {
-        if (part.type === 'output_text') texts.push(part.text ?? '');
-        else if (part.type === 'refusal') refusals.push(part.refusal ?? '');
-      }
-    } else if (typed.data.type === 'function_call') {
-      calls.push(item);
-    }
-  }
-  const cutOff =
-    response.status === 'incomplete' && response.incomplete_details?.reason === 'max_output_tokens';
+  const { texts, refusals, calls } = sortItems(output as unknown[]);
+  const cutOff = isCutOff(response);
   const { answer, toolCalls } = readChoice({
     model: response.model,
     choices: [
       {
         message: {
-          // An answer cut off before it wrote anything (while it thought) is no text and no fault.
-          content: texts.length > 0 ? texts.join('') : cutOff ? '' : null,
+          content: textOf(texts, cutOff),
           refusal: refusals.length > 0 ? refusals.join('') : null,
           tool_calls: calls.map(asToolCall),
         },
-        finish_reason: cutOff ? 'length' : response.status === 'completed' ? 'stop' : null,
+        finish_reason: finishReasonOf(response.status, cutOff),
       },
     ],
-    // `input_tokens` holds the cached part, as `prompt_tokens` does: its details say how much (R49).
-    usage:
-      response.usage === undefined
-        ? undefined
-        : {
-            prompt_tokens: response.usage.input_tokens,
-            completion_tokens: response.usage.output_tokens,
-            prompt_tokens_details: response.usage.input_tokens_details,
-          },
+    usage: usageOf(response.usage),
   });
   return {
     answer,

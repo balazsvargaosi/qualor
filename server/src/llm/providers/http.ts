@@ -409,28 +409,8 @@ function refusedBy(
   outputLimitField: ProviderConfig['maxTokensField'] | undefined,
 ): LlmError {
   const { status } = refusal;
-  const retryAfter = retryAfterSeconds(refusal.headers);
-  if (status === 429) {
-    return new LlmError('rate_limited', 'The model provider is rate limiting Qualor; try later', {
-      status,
-      retryAfterSeconds: retryAfter,
-    });
-  }
-  // Both keep the code `refused_key`; the status (in the text, the Test answer and the log) tells
-  // a wrong key (401) from a key that may not do this (403: the model, the workspace, billing).
-  if (status === 401) {
-    return new LlmError('refused_key', 'The provider refused the API key (HTTP 401)', { status });
-  }
-  if (status === 403) {
-    return new LlmError(
-      'refused_key',
-      'The provider refused the request (HTTP 403): the key lacks access to this model, or the account has no credit',
-      { status },
-    );
-  }
-  if (status >= 500) {
-    return new LlmError('unavailable', UNREACHABLE, { status, retryAfterSeconds: retryAfter });
-  }
+  const byStatus = refusedByStatus(status, retryAfterSeconds(refusal.headers));
+  if (byStatus !== null) return byStatus;
   // Read once, whatever it is checked for.
   const refused = errorOf(refusal.body);
   if (
@@ -479,6 +459,45 @@ function refusedBy(
       { status },
     );
   }
+  return (
+    refusedTools(config, request, refused, status) ??
+    new LlmError('rejected', refusedText(status), { status })
+  );
+}
+
+/** The refusals that the status alone tells: rate limited, a refused key, a server that failed. */
+function refusedByStatus(status: number, retryAfter: number | null): LlmError | null {
+  if (status === 429) {
+    return new LlmError('rate_limited', 'The model provider is rate limiting Qualor; try later', {
+      status,
+      retryAfterSeconds: retryAfter,
+    });
+  }
+  // Both keep the code `refused_key`; the status (in the text, the Test answer and the log) tells
+  // a wrong key (401) from a key that may not do this (403: the model, the workspace, billing).
+  if (status === 401) {
+    return new LlmError('refused_key', 'The provider refused the API key (HTTP 401)', { status });
+  }
+  if (status === 403) {
+    return new LlmError(
+      'refused_key',
+      'The provider refused the request (HTTP 403): the key lacks access to this model, or the account has no credit',
+      { status },
+    );
+  }
+  if (status >= 500) {
+    return new LlmError('unavailable', UNREACHABLE, { status, retryAfterSeconds: retryAfter });
+  }
+  return null;
+}
+
+/** The refusal of tools, for a request that carries them; null when the tools are not the reason. */
+function refusedTools(
+  config: ProviderConfig,
+  request: unknown,
+  refused: ErrorBody,
+  status: number,
+): LlmError | null {
   // A model that takes tools only through the Responses API says so: the Test passes it on.
   if (
     status === 400 &&
@@ -500,7 +519,7 @@ function refusedBy(
       { status, refusedTools: true },
     );
   }
-  return new LlmError('rejected', refusedText(status), { status });
+  return null;
 }
 
 /** What a request that the provider refused is told, whatever it was refused for. */
@@ -573,12 +592,9 @@ function errorOf(body: Buffer): ErrorBody {
   // Gemini's OpenAI endpoint wraps its error in a list: `[{"error":{"message":"…"}}]`.
   const top = asRecord(Array.isArray(parsed) ? parsed[0] : parsed);
   const detail = asRecord(top?.error) ?? top;
-  const message =
-    typeof detail?.message === 'string'
-      ? detail.message
-      : typeof top?.error === 'string'
-        ? top.error
-        : '';
+  let message = '';
+  if (typeof detail?.message === 'string') message = detail.message;
+  else if (typeof top?.error === 'string') message = top.error;
   return { detail, message };
 }
 

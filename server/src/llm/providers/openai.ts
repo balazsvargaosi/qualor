@@ -103,6 +103,16 @@ export function authHeaders(config: ProviderConfig, apiKey: string | null): Reco
   return headers;
 }
 
+/** Why the turn ended: calls and a refusal outrank the finish reason the provider gave. */
+function finishReasonOf(
+  calls: boolean,
+  refusal: boolean,
+  reason: string | null | undefined,
+): ReturnType<typeof finish> {
+  if (calls) return 'tool';
+  return refusal ? 'refusal' : finish(reason);
+}
+
 /**
  * Reads the first choice of a chat completion: the answer, and the provider's own `tool_calls`,
  * which only a conversation reads further. The Responses wire puts its answer in this shape too
@@ -123,7 +133,7 @@ export function readChoice(raw: unknown): { answer: LlmAnswer; toolCalls: readon
   return {
     answer: {
       text: text ?? '',
-      finishReason: calls ? 'tool' : refusal ? 'refusal' : finish(choice.finish_reason),
+      finishReason: finishReasonOf(calls, refusal, choice.finish_reason),
       usage: usageOf(parsed.data.usage),
       model: parsed.data.model ?? null,
     },
@@ -206,49 +216,27 @@ function callOf(parts: CallParts): unknown {
  * stream ends at `[DONE]`; one that ends before it is unavailable.
  */
 async function assembleChat(events: AsyncIterable<SseEvent>): Promise<unknown> {
-  let model: string | undefined;
-  let content: string | null = null;
-  let refusal: string | null = null;
-  let finishReason: string | null = null;
-  let usage: unknown;
-  const calls = new Map<number, CallParts>();
+  const state: ChatState = {
+    model: undefined,
+    content: null,
+    refusal: null,
+    finishReason: null,
+    usage: undefined,
+    calls: new Map<number, CallParts>(),
+  };
   let done = false;
   for await (const event of events) {
     if (event.data.trim() === '[DONE]') {
       done = true;
       break;
     }
-    const { data } = eventOf(event);
-    const error = event.event === 'error' ? (data?.error ?? data) : data?.error;
-    if (event.event === 'error' || (error !== undefined && error !== null)) {
-      throw errorInStream(serverFailed(error));
-    }
-    const parsed = chunkSchema.safeParse(data);
-    if (!parsed.success) throw notUnderstood();
-    const chunk = parsed.data;
-    if (typeof chunk.model === 'string' && chunk.model !== '') model = chunk.model;
-    if (chunk.usage !== undefined && chunk.usage !== null) usage = chunk.usage;
-    for (const choice of chunk.choices ?? []) {
-      if ((choice.index ?? 0) !== 0) continue;
-      const delta = choice.delta;
-      if (typeof delta?.content === 'string') content = (content ?? '') + delta.content;
-      if (typeof delta?.refusal === 'string') refusal = (refusal ?? '') + delta.refusal;
-      for (const part of delta?.tool_calls ?? []) {
-        const call = calls.get(part.index) ?? {};
-        calls.set(part.index, call);
-        if (call.id === undefined && part.id) call.id = part.id;
-        if (call.type === undefined && part.type) call.type = part.type;
-        if (call.name === undefined && part.function?.name) call.name = part.function.name;
-        const piece = part.function?.arguments;
-        if (typeof piece === 'string') call.arguments = (call.arguments ?? '') + piece;
-      }
-      if (typeof choice.finish_reason === 'string') finishReason = choice.finish_reason;
-    }
+    foldChunk(state, event);
   }
   if (!done) throw cutShort();
+  const { calls } = state;
   const message = {
-    content,
-    refusal,
+    content: state.content,
+    refusal: state.refusal,
     ...(calls.size > 0
       ? {
           tool_calls: [...calls.entries()]
@@ -258,7 +246,63 @@ async function assembleChat(events: AsyncIterable<SseEvent>): Promise<unknown> {
       : {}),
   };
   withinAnswerCap(message);
-  return { model, choices: [{ message, finish_reason: finishReason }], usage };
+  return {
+    model: state.model,
+    choices: [{ message, finish_reason: state.finishReason }],
+    usage: state.usage,
+  };
+}
+
+/** What `assembleChat` has read of a stream so far. */
+interface ChatState {
+  model: string | undefined;
+  content: string | null;
+  refusal: string | null;
+  finishReason: string | null;
+  usage: unknown;
+  calls: Map<number, CallParts>;
+}
+
+type ChunkChoice = NonNullable<z.infer<typeof chunkSchema>['choices']>[number];
+
+/** Folds one event of the stream into `state`; a chunk that is an error, or not understood, throws. */
+function foldChunk(state: ChatState, event: SseEvent): void {
+  const { data } = eventOf(event);
+  const error = event.event === 'error' ? (data?.error ?? data) : data?.error;
+  if (event.event === 'error' || (error !== undefined && error !== null)) {
+    throw errorInStream(serverFailed(error));
+  }
+  const parsed = chunkSchema.safeParse(data);
+  if (!parsed.success) throw notUnderstood();
+  const chunk = parsed.data;
+  if (typeof chunk.model === 'string' && chunk.model !== '') state.model = chunk.model;
+  if (chunk.usage !== undefined && chunk.usage !== null) state.usage = chunk.usage;
+  for (const choice of chunk.choices ?? []) foldChoice(state, choice);
+}
+
+/** Folds the delta of the first choice into `state`; the other choices are not read. */
+function foldChoice(state: ChatState, choice: ChunkChoice): void {
+  if ((choice.index ?? 0) !== 0) return;
+  const delta = choice.delta;
+  if (typeof delta?.content === 'string') state.content = (state.content ?? '') + delta.content;
+  if (typeof delta?.refusal === 'string') state.refusal = (state.refusal ?? '') + delta.refusal;
+  for (const part of delta?.tool_calls ?? []) {
+    const call = state.calls.get(part.index) ?? {};
+    state.calls.set(part.index, call);
+    mergePart(call, part);
+  }
+  if (typeof choice.finish_reason === 'string') state.finishReason = choice.finish_reason;
+}
+
+type CallDelta = NonNullable<NonNullable<ChunkChoice['delta']>['tool_calls']>[number];
+
+/** Merges a delta into its call: the first id, type and name win, the arguments are joined. */
+function mergePart(call: CallParts, part: CallDelta): void {
+  if (call.id === undefined && part.id) call.id = part.id;
+  if (call.type === undefined && part.type) call.type = part.type;
+  if (call.name === undefined && part.function?.name) call.name = part.function.name;
+  const piece = part.function?.arguments;
+  if (typeof piece === 'string') call.arguments = (call.arguments ?? '') + piece;
 }
 
 /** How a conversation's call streams on Chat Completions: the usage asked for, in a last chunk. */

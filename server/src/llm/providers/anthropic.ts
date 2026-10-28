@@ -218,8 +218,7 @@ const SERVER_FAILURES: ReadonlySet<unknown> = new Set(['overloaded_error', 'api_
  *   (`SERVER_FAILURES`), else its refusal.
  */
 async function assembleMessage(events: AsyncIterable<SseEvent>): Promise<unknown> {
-  let message: Record<string, unknown> | null = null;
-  const blocks = new Map<number, BlockParts>();
+  const state: MessageState = { message: null, blocks: new Map<number, BlockParts>() };
   let done = false;
   for await (const event of events) {
     const { type, data } = eventOf(event);
@@ -230,38 +229,12 @@ async function assembleMessage(events: AsyncIterable<SseEvent>): Promise<unknown
       done = true;
       break;
     }
-    if (type === 'message_start') {
-      const started = asRecord(data?.message);
-      if (started === null) throw notUnderstood();
-      message = { ...started };
-    } else if (type === 'content_block_start') {
-      const block = asRecord(data?.content_block);
-      if (block === null) throw notUnderstood();
-      blocks.set(blockIndex(data), { block: { ...block }, json: null });
-    } else if (type === 'content_block_delta' || type === 'content_block_stop') {
-      const parts = blocks.get(blockIndex(data));
-      if (parts === undefined) throw notUnderstood();
-      if (type === 'content_block_stop') {
-        stopBlock(parts);
-        continue;
-      }
-      const delta = asRecord(data?.delta);
-      if (delta?.type === 'text_delta') append(parts.block, 'text', delta.text);
-      else if (delta?.type === 'thinking_delta') append(parts.block, 'thinking', delta.thinking);
-      else if (delta?.type === 'signature_delta') append(parts.block, 'signature', delta.signature);
-      else if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
-        parts.json = (parts.json ?? '') + delta.partial_json;
-      }
-    } else if (type === 'message_delta') {
-      if (message === null) throw notUnderstood();
-      Object.assign(message, asRecord(data?.delta));
-      const counts = countsOf(data?.usage);
-      if (Object.keys(counts).length > 0) message.usage = { ...asRecord(message.usage), ...counts };
-    }
+    foldEvent(state, type, data);
   }
   if (!done) throw cutShort();
+  const { message } = state;
   if (message === null) throw notUnderstood();
-  const content = [...blocks.entries()]
+  const content = [...state.blocks.entries()]
     .sort(([a], [b]) => a - b)
     .map(([, parts]) => {
       stopBlock(parts);
@@ -269,6 +242,54 @@ async function assembleMessage(events: AsyncIterable<SseEvent>): Promise<unknown
     });
   withinAnswerCap(content);
   return { ...message, content };
+}
+
+/** What `assembleMessage` has read of a stream so far. */
+interface MessageState {
+  message: Record<string, unknown> | null;
+  blocks: Map<number, BlockParts>;
+}
+
+/** Folds one event (a start, a delta, a stop) into `state`; an event it cannot place is not understood. */
+function foldEvent(
+  state: MessageState,
+  type: string | null,
+  data: Record<string, unknown> | null,
+): void {
+  if (type === 'message_start') {
+    const started = asRecord(data?.message);
+    if (started === null) throw notUnderstood();
+    state.message = { ...started };
+  } else if (type === 'content_block_start') {
+    const block = asRecord(data?.content_block);
+    if (block === null) throw notUnderstood();
+    state.blocks.set(blockIndex(data), { block: { ...block }, json: null });
+  } else if (type === 'content_block_delta' || type === 'content_block_stop') {
+    const parts = state.blocks.get(blockIndex(data));
+    if (parts === undefined) throw notUnderstood();
+    if (type === 'content_block_stop') stopBlock(parts);
+    else foldBlockDelta(parts, asRecord(data?.delta));
+  } else if (type === 'message_delta') {
+    if (state.message === null) throw notUnderstood();
+    foldMessageDelta(state.message, data);
+  }
+}
+
+/** Adds a `message_delta` to the message: its stop reason and the usage so far. */
+function foldMessageDelta(message: Record<string, unknown>, data: Record<string, unknown> | null) {
+  Object.assign(message, asRecord(data?.delta));
+  const counts = countsOf(data?.usage);
+  if (Object.keys(counts).length > 0) message.usage = { ...asRecord(message.usage), ...counts };
+}
+
+/** Adds the delta of a block to it: its text, its thinking, its signature or a piece of its JSON. */
+function foldBlockDelta(parts: BlockParts, delta: Record<string, unknown> | null): void {
+  if (delta?.type === 'text_delta') append(parts.block, 'text', delta.text);
+  else if (delta?.type === 'thinking_delta') append(parts.block, 'thinking', delta.thinking);
+  else if (delta?.type === 'signature_delta') append(parts.block, 'signature', delta.signature);
+  else if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+    parts.json = (parts.json ?? '') + delta.partial_json;
+  }
 }
 
 /** How a conversation's call streams on the Messages API. */

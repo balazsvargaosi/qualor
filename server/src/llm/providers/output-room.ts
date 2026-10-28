@@ -129,7 +129,8 @@ export async function askWithRoom<T>(
 ): Promise<T> {
   const room = limits.reasoningAllowance ?? 0;
   const pair = pairOf(config);
-  if (!(room > 0) || refusedRooms.has(pair)) return await attempt(limits.maxOutputTokens);
+  const roomWanted = room > 0 && !refusedRooms.has(pair);
+  if (!roomWanted) return await attempt(limits.maxOutputTokens);
   let refusal: LlmError;
   try {
     return await attempt(limits.maxOutputTokens + room);
