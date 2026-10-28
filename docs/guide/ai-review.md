@@ -152,7 +152,7 @@ in the log, and the exit code stays the quality gate's.
   line ends `can call tools` or `cannot call tools, so AI review would fail`, or neither when it
   could not tell.
 - **OpenAI's newest models need the Responses API** for tools with reasoning. `gpt-6.1-sol`,
-  `gpt-5.6-terra` and `gpt-6-luna` were checked. Choose **Responses** under **API** in the
+  `gpt-6.1-terra` and `gpt-6-luna` were checked. Choose **Responses** under **API** in the
   **Connection options** of **Settings → AI provider**
   ([The current models](./ai-assistant.md#the-current-models)). On Chat Completions the review
   fails, and the Test tells you to choose Responses. vLLM, Ollama and Azure deployments stay on Chat

@@ -216,7 +216,7 @@ To keep the server and its database on a network with no route out, as the repos
 ### The current models
 
 - **OpenAI: Chat Completions or Responses.** OpenAI's newest models (`gpt-6.1-sol`,
-  `gpt-5.6-terra` and `gpt-6-luna` were checked) take function tools with reasoning only through
+  `gpt-6.1-terra` and `gpt-6-luna` were checked) take function tools with reasoning only through
   **Responses**. [AI review](./ai-review.md#models-that-work) needs tools, so choose **Responses**
   under **API** for them. The Test tells you when you did not.
 - **Through Responses**, the output limit is always `max_output_tokens`, and the API clamps one that
@@ -262,7 +262,7 @@ the work a tier does. The security reviewer that a sensitive path adds to a smal
 the standard model, as do the reviewers of every larger review.
 
 What an organisation admin confirms to switch AI review on names every model, sorted, such as
-`api.openai.com (gpt-5.6-terra, gpt-6-luna, gpt-6.1-sol)`. Changing, adding or dropping one stops
+`api.openai.com (gpt-6-luna, gpt-6.1-sol, gpt-6.1-terra)`. Changing, adding or dropping one stops
 AI review until an organisation admin confirms again ([The warning](./ai-review.md#the-warning)).
 With prices entered, each tier with its own model needs its own prices
 ([Budgets and limits](#budgets-and-limits)).
