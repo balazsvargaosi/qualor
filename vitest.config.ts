@@ -61,6 +61,7 @@ const keycloak = process.argv.some(
 // instrumentation slows hot loops several-fold. Workers inherit the environment.
 const coverage = process.argv.some((arg) => arg === '--coverage' || arg.startsWith('--coverage.'));
 process.env.QUALOR_TEST_TIME_SCALE ??= coverage ? '5' : '1';
+process.env.QUALOR_TEST_COVERAGE ??= coverage ? '1' : '0';
 
 export default defineConfig({
   test: {

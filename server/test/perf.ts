@@ -12,6 +12,13 @@ export function budgetMs(ms: number): number {
   return ms * (Number.isFinite(scale) && scale > 0 ? scale : 1);
 }
 
+/**
+ * Whether v8 coverage instruments this run (vitest.config.ts sets `QUALOR_TEST_COVERAGE`). Some
+ * hot loops slow down far more than {@link budgetMs}'s scale under it; their tests bound the work
+ * by steps either way and the time only without coverage.
+ */
+export const UNDER_COVERAGE = process.env.QUALOR_TEST_COVERAGE === '1';
+
 let gc: (() => void) | undefined;
 
 /**

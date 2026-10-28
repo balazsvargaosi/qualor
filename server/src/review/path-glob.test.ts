@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { budgetMs } from '../../test/perf';
+import { budgetMs, UNDER_COVERAGE } from '../../test/perf';
 import {
   compilePathGlob,
   likePrefix,
@@ -327,8 +327,9 @@ describe('the work of matching a glob is bounded', () => {
       expect(walked, label).toBeLessThanOrEqual(Math.ceil(MAX_GLOB_STEPS / 1_006));
       // About 100 ms here at the most; the bound is 500 so that a busy machine, which runs a
       // dozen test files side by side, does not fail it. The walk before the bound was fixed took
-      // 800 ms for the first of the shapes.
-      expect(elapsed, label).toBeLessThan(budgetMs(500));
+      // 800 ms for the first of the shapes. Coverage slows this loop 60-fold and more (4–5 s a
+      // shape in CI), so there only the step bound above holds.
+      if (!UNDER_COVERAGE) expect(elapsed, label).toBeLessThan(budgetMs(500));
     }
   });
 });
