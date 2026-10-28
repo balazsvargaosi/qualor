@@ -63,6 +63,13 @@ function gitlabAsk(
   };
 }
 
+/** The state of a pull request: GitHub says `closed` for a merged one too. Null for any other state. */
+function pullState(pull: { state: string; merged: boolean }): 'open' | 'merged' | 'closed' | null {
+  if (pull.state === 'open') return 'open';
+  if (pull.state !== 'closed') return null;
+  return pull.merged ? 'merged' : 'closed';
+}
+
 /**
  * The GitHub question, or null when there is nothing to ask (as {@link gitlabAsk}). GitHub says
  * `closed` for a pull request that was merged too: its `merged` flag tells them apart.
@@ -81,14 +88,7 @@ function githubAsk(
   return async () => {
     await found.client.useRepository(repository);
     const pull = await found.client.pullRequest(number);
-    const state =
-      pull.state === 'open'
-        ? 'open'
-        : pull.state === 'closed'
-          ? pull.merged
-            ? 'merged'
-            : 'closed'
-          : null;
+    const state = pullState(pull);
     if (state === null) return null;
     return { state, draft: pull.draft, headSha: pull.head.sha };
   };

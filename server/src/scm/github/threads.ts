@@ -277,6 +277,27 @@ function change(
   return null;
 }
 
+/** What one thread of Qualor's needs, from its issue. */
+function planThread(
+  ctx: ReviewThreadContext,
+  issue: { branchId: string; status: string; duplicateOf: string | null; engineId: string },
+  { thread, humanReplied }: OwnThread,
+): { counted: boolean; update: ThreadUpdate | null; fixed: boolean } | null {
+  const reviewed = issue.engineId === AI_ENGINE;
+  if (!reviewed && !ctx.analyzers) return null;
+  const onBranch = issue.branchId === ctx.branchId;
+  const open = onBranch && issue.status === 'open' && issue.duplicateOf === null;
+  // The summary counts the analyzers' threads; its AI section speaks for the review's own.
+  const counted = open && !reviewed;
+  if (thread === null) return { counted, update: null, fixed: false };
+  const resolve = change(thread, open, humanReplied, ctx.botLogin);
+  return {
+    counted,
+    update: resolve === null ? null : { threadId: thread.id, resolve, counted },
+    fixed: onBranch && issue.status === 'closed' && !thread.isResolved && humanReplied,
+  };
+}
+
 /**
  * The resolutions and reopenings the threads need, how many of the analyzers' issues are open, and
  * the fixed issues whose open threads someone replied in (`fixed`, the oldest thread first), which
@@ -285,31 +306,23 @@ function change(
  */
 async function planUpdates(
   ctx: ReviewThreadContext,
-  own: ReadonlyMap<string, OwnThread>,
+  ownThreads: ReadonlyMap<string, OwnThread>,
 ): Promise<{ updates: ThreadUpdate[]; commented: number; fixed: string[] }> {
-  const known = await threadIssues(ctx, [...own.keys()]);
+  const known = await threadIssues(ctx, [...ownThreads.keys()]);
   const maxUpdates = ctx.maxThreadUpdates ?? MAX_GITHUB_THREAD_UPDATES;
   const updates: ThreadUpdate[] = [];
   const fixed: string[] = [];
   let commented = 0;
   // In the order of the comments, the oldest first: what the bound leaves for the next job is the
   // same on every run, and newer threads never keep the older ones waiting.
-  for (const [issueId, { thread, humanReplied }] of own) {
+  for (const [issueId, own] of ownThreads) {
     const issue = known.get(issueId);
     if (!issue) continue;
-    const reviewed = issue.engineId === AI_ENGINE;
-    if (!reviewed && !ctx.analyzers) continue;
-    const open =
-      issue.branchId === ctx.branchId && issue.status === 'open' && issue.duplicateOf === null;
-    // The summary counts the analyzers' threads; its AI section speaks for the review's own.
-    const counted = open && !reviewed;
-    if (counted) commented += 1;
-    const resolve = thread === null ? null : change(thread, open, humanReplied, ctx.botLogin);
-    if (thread !== null && resolve !== null && updates.length < maxUpdates) {
-      updates.push({ threadId: thread.id, resolve, counted });
-    }
-    const closed = issue.branchId === ctx.branchId && issue.status === 'closed';
-    if (closed && thread !== null && !thread.isResolved && humanReplied) fixed.push(issueId);
+    const planned = planThread(ctx, issue, own);
+    if (planned === null) continue;
+    if (planned.counted) commented += 1;
+    if (planned.update !== null && updates.length < maxUpdates) updates.push(planned.update);
+    if (planned.fixed) fixed.push(issueId);
   }
   return { updates, commented, fixed };
 }

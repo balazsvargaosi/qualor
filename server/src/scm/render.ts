@@ -516,14 +516,11 @@ export function summaryBody(input: SummaryInput): string {
   const bare = [...head, ...footer(input, words, 0)];
   const room = SUMMARY_MAX_BYTES - Buffer.byteLength(bare.join('\n'), 'utf8') - 2; // the blank line
   const review = input.review ?? null;
+  const vocabulary = input.vocabulary === 'github' ? 'github' : 'gitlab';
   const section =
     review === null
       ? []
-      : aiSummarySection(
-          review,
-          input.vocabulary === 'github' ? 'github' : 'gitlab',
-          Math.min(AI_SECTION_MAX_BYTES, room),
-        );
+      : aiSummarySection(review, vocabulary, Math.min(AI_SECTION_MAX_BYTES, room));
   const tail = section.length === 0 ? [] : ['', ...section];
   for (let listed = Math.min(input.topIssues.length, SUMMARY_TOP_ISSUES); listed >= 0; listed--) {
     const list = input.topIssues.slice(0, listed).flatMap(issueItem);

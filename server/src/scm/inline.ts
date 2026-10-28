@@ -323,53 +323,7 @@ export const postsAiThread = (issue: DesiredAiIssue, note: AiThreadNote): boolea
  */
 export async function reconcileInline(ctx: InlineContext): Promise<InlineReconciled> {
   const threads = ownThreads(ctx.discussions, ctx.botId);
-  const threadIssues = [...threads.keys()];
-  const known =
-    threadIssues.length === 0
-      ? []
-      : await ctx.db
-          .select({
-            id: issues.id,
-            branchId: issues.branchId,
-            status: issues.status,
-            duplicateOf: issues.duplicateOfIssueId,
-            engineId: rules.engineId,
-          })
-          .from(issues)
-          .innerJoin(rules, eq(rules.id, issues.ruleId))
-          .where(and(inArray(issues.id, threadIssues), eq(issues.projectId, ctx.projectId)));
-  const maxUpdates = ctx.maxThreadUpdates ?? MAX_THREAD_UPDATES;
-  let commented = 0;
-  let updates = 0;
-  const fixed = new Set<string>();
-  for (const issue of known) {
-    const thread = threads.get(issue.id);
-    if (!thread) continue;
-    // An analyzer's thread follows the report's line numbers, an AI finding's the reviewed head.
-    const reviewed = issue.engineId === AI_ENGINE;
-    if (!reviewed && !ctx.analyzers) continue;
-    const open =
-      issue.branchId === ctx.branchId && issue.status === 'open' && issue.duplicateOf === null;
-    let resolve: boolean | null = null;
-    if (open && thread.resolvedByQualor) resolve = false;
-    else if (!open && !thread.resolved && !thread.humanReplied) resolve = true;
-    let exists = true;
-    if (resolve !== null && updates < maxUpdates) {
-      updates += 1;
-      exists = await setResolved(ctx, thread.id, resolve);
-    }
-    // The summary counts the analyzers' threads; its AI section speaks for the review's own.
-    if (open && exists && !reviewed) commented += 1;
-    // A fixed issue's thread that a person keeps open is told so, below.
-    const closed = issue.branchId === ctx.branchId && issue.status === 'closed';
-    if (closed && !thread.resolved && thread.humanReplied) fixed.add(issue.id);
-  }
-  // A discussion is listed with all its notes, so a listed thread shows whether it holds the note.
-  await noteFixes(
-    ctx,
-    threads,
-    threadIssues.filter((id) => fixed.has(id)),
-  );
+  let commented = await reconcileOwn(ctx, threads);
 
   // Beyond the page bound a thread may exist unseen: never create a second one (scm.md §4.3).
   if (!ctx.discussionsComplete) return { commented, unplaced: 0, aiNotPosted: [] };
@@ -392,30 +346,159 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
     ),
   });
   if (missing.length === 0 && toCreate.size === 0) return result(0);
-  // The position's SHAs are the merge request's own: a stale diff never gets a thread.
-  const refs = ctx.mr.diff_refs;
-  if (!refs?.base_sha || !refs.head_sha || !refs.start_sha) {
+  const places = await diffPlaces(ctx);
+  if (places === null) {
     for (const issue of toCreate) notPosted.add(issue);
     return result(missing.length);
   }
+  const posted = await postAnalyzerThreads(ctx, missing, places);
+  commented += posted.commented;
+  await postAiThreads(ctx, toCreate, ai, places, notPosted);
+  return result(posted.unplaced);
+}
+
+/** An issue whose thread Qualor has, as the database holds it. */
+interface ThreadIssue {
+  id: string;
+  branchId: string;
+  status: string;
+  duplicateOf: string | null;
+  engineId: string;
+}
+
+/** What the thread of an issue needs: resolving (true), reopening (false), or nothing (null). */
+function resolutionFor(thread: OwnThread, open: boolean): boolean | null {
+  if (open && thread.resolvedByQualor) return false;
+  if (!open && !thread.resolved && !thread.humanReplied) return true;
+  return null;
+}
+
+/**
+ * Settles the thread of one issue: resolved or reopened when it needs it and `mayUpdate`; null when
+ * the issue is an analyzer's and the analyzers are not decorated. Says whether it used an update,
+ * whether the summary counts the thread, and whether the issue is fixed in a thread a person keeps
+ * open (told so, in {@link noteFixes}).
+ */
+async function settleThread(
+  ctx: InlineContext,
+  issue: ThreadIssue,
+  thread: OwnThread,
+  mayUpdate: boolean,
+): Promise<{ updated: boolean; counted: boolean; fixed: boolean } | null> {
+  // An analyzer's thread follows the report's line numbers, an AI finding's the reviewed head.
+  const reviewed = issue.engineId === AI_ENGINE;
+  if (!reviewed && !ctx.analyzers) return null;
+  const onBranch = issue.branchId === ctx.branchId;
+  const open = onBranch && issue.status === 'open' && issue.duplicateOf === null;
+  const resolve = resolutionFor(thread, open);
+  let exists = true;
+  let updated = false;
+  if (resolve !== null && mayUpdate) {
+    updated = true;
+    exists = await setResolved(ctx, thread.id, resolve);
+  }
+  return {
+    updated,
+    // The summary counts the analyzers' threads; its AI section speaks for the review's own.
+    counted: open && exists && !reviewed,
+    // A fixed issue's thread that a person keeps open is told so.
+    fixed: onBranch && issue.status === 'closed' && !thread.resolved && thread.humanReplied,
+  };
+}
+
+/**
+ * Reconciles the threads Qualor has (resolves, reopens, notes the fixes): the number of the
+ * analyzers' open threads, for the summary.
+ */
+async function reconcileOwn(
+  ctx: InlineContext,
+  threads: ReadonlyMap<string, OwnThread>,
+): Promise<number> {
+  const threadIssues = [...threads.keys()];
+  const known =
+    threadIssues.length === 0
+      ? []
+      : await ctx.db
+          .select({
+            id: issues.id,
+            branchId: issues.branchId,
+            status: issues.status,
+            duplicateOf: issues.duplicateOfIssueId,
+            engineId: rules.engineId,
+          })
+          .from(issues)
+          .innerJoin(rules, eq(rules.id, issues.ruleId))
+          .where(and(inArray(issues.id, threadIssues), eq(issues.projectId, ctx.projectId)));
+  const maxUpdates = ctx.maxThreadUpdates ?? MAX_THREAD_UPDATES;
+  let commented = 0;
+  let updates = 0;
+  const fixed = new Set<string>();
+  for (const issue of known) {
+    const thread = threads.get(issue.id);
+    if (!thread) continue;
+    const settled = await settleThread(ctx, issue, thread, updates < maxUpdates);
+    if (settled === null) continue;
+    if (settled.updated) updates += 1;
+    if (settled.counted) commented += 1;
+    if (settled.fixed) fixed.add(issue.id);
+  }
+  // A discussion is listed with all its notes, so a listed thread shows whether it holds the note.
+  await noteFixes(
+    ctx,
+    threads,
+    threadIssues.filter((id) => fixed.has(id)),
+  );
+  return commented;
+}
+
+/** The added lines of a file of the diff, with the diff. */
+interface DiffPlace {
+  diff: GitLabDiff;
+  added: Map<number, string>;
+}
+
+/** Where a thread can be created: the places of the diff by path, and how a position on one is made. */
+interface DiffPlaces {
+  byPath: Map<string, DiffPlace>;
+  position(diff: GitLabDiff, newLine: number): Position;
+}
+type Position = Parameters<InlineContext['client']['createDiscussion']>[3];
+
+/**
+ * The places of the merge request's diff, or null when it has no refs to make a position of: the
+ * position's SHAs are the merge request's own, and a stale diff never gets a thread.
+ */
+async function diffPlaces(ctx: InlineContext): Promise<DiffPlaces | null> {
+  const refs = ctx.mr.diff_refs;
+  if (!refs?.base_sha || !refs.head_sha || !refs.start_sha) return null;
   const shas = { baseSha: refs.base_sha, startSha: refs.start_sha, headSha: refs.head_sha };
   // The diffs are read after the merge request: a push in between can make them newer than
   // `diff_refs`. GitLab then refuses the position (usually a 400), counted as not placed.
   const diffs = await ctx.client.mergeRequestDiffs(ctx.ref, ctx.iid, MAX_DIFF_PAGES);
-  const byPath = new Map<string, { diff: GitLabDiff; added: Map<number, string> }>();
+  const byPath = new Map<string, DiffPlace>();
   for (const diff of diffs.items) {
     if (diff.deleted_file) continue;
     byPath.set(diff.new_path, { diff, added: addedLineTexts(diff.diff) });
   }
-  const position = (diff: GitLabDiff, newLine: number) => ({
+  const position = (diff: GitLabDiff, newLine: number): Position => ({
     ...shas,
     oldPath: diff.old_path,
     newPath: diff.new_path,
     newLine,
   });
+  return { byPath, position };
+}
+
+/** Creates a thread for each of the analyzers' issues the diff has a place for. */
+async function postAnalyzerThreads(
+  ctx: InlineContext,
+  missing: Awaited<ReturnType<typeof desiredInlineIssues>>,
+  places: DiffPlaces,
+): Promise<{ commented: number; unplaced: number }> {
+  let commented = 0;
   let unplaced = 0;
   for (const issue of missing) {
-    const place = byPath.get(issue.path ?? '');
+    const place = places.byPath.get(issue.path ?? '');
     if (!place || issue.line === null || !place.added.has(issue.line)) {
       unplaced += 1;
       continue;
@@ -433,13 +516,24 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
         confidence: issue.confidence,
         url: ctx.issueUrl(issue.id),
       }),
-      position(place.diff, issue.line),
+      places.position(place.diff, issue.line),
     );
     if (created === 'position_rejected') unplaced += 1;
     else commented += 1;
   }
+  return { commented, unplaced };
+}
+
+/** Creates a thread for each AI finding in `toCreate` the diff has a place for; the others go to `notPosted`. */
+async function postAiThreads(
+  ctx: InlineContext,
+  toCreate: ReadonlySet<DesiredAiIssue>,
+  ai: AiThreads | null,
+  places: DiffPlaces,
+  notPosted: Set<DesiredAiIssue>,
+): Promise<void> {
   for (const issue of toCreate) {
-    const place = byPath.get(issue.path);
+    const place = places.byPath.get(issue.path);
     // No place on the diff: listed in the summary (a low one never is: `result` keeps only the
     // severities that get a thread for themselves). The findings to create are the review's (`ai`).
     if (ai === null || place === undefined || !place.added.has(issue.anchorLine)) {
@@ -453,9 +547,8 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
       ctx.ref,
       ctx.iid,
       note.body,
-      position(place.diff, issue.anchorLine),
+      places.position(place.diff, issue.anchorLine),
     );
     if (created === 'position_rejected') notPosted.add(issue);
   }
-  return result(unplaced);
 }
