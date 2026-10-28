@@ -59,12 +59,13 @@ function envValue(env: Env, name: string): string | undefined {
  */
 function configAt(args: readonly string[], from: number): number | null | undefined {
   let config: number | null = null;
-  for (let i = from; i < args.length; i++) {
+  let i = from;
+  while (i < args.length) {
     const takes = OPTIONS.get(args[i] ?? '');
     if (takes === undefined || (takes && i + 1 >= args.length)) return undefined;
-    if (!takes) continue;
-    if (args[i] === '--config') config = i + 1;
-    i += 1;
+    if (takes && args[i] === '--config') config = i + 1;
+    // An option that takes a value is followed by it.
+    i += takes ? 2 : 1;
   }
   return config;
 }
@@ -88,6 +89,43 @@ const isFile = (file: string): boolean => {
   }
 };
 
+/** The one file a configuration extends (none: an empty list); why it cannot be known otherwise. */
+function extendTargets(bytes: Buffer): { targets: string[] } | { why: string } {
+  const parsed = gitleaksExtends(bytes);
+  if ('error' in parsed) return { why: `its configuration ${parsed.error}` };
+  const targets = parsed.paths.filter((p) => p !== '');
+  if (targets.length > 1) return { why: 'its configuration extends more than one file' };
+  return { targets };
+}
+
+/**
+ * One extended file put in `dir` where the run there opens it (see `placeExtends`): its bytes, or
+ * why it cannot be.
+ */
+function placeTarget(
+  target: string,
+  from: string,
+  dir: string,
+  placed: Set<string>,
+): { content: Buffer } | { why: string } {
+  const source = path.resolve(from, target);
+  const content = readConfig(source);
+  if (content === null) return { why: 'a configuration it extends cannot be read' };
+  const opened = path.resolve(dir, target);
+  if (opened === source || placed.has(opened)) return { content };
+  if (opened === dir || !within(dir, opened)) {
+    return { why: 'a configuration it extends lies outside the repository' };
+  }
+  try {
+    mkdirSync(path.dirname(opened), { recursive: true });
+    writeFileSync(opened, content, { flag: 'wx', mode: 0o600 });
+  } catch {
+    return { why: 'a configuration it extends is a file of the merge base too' };
+  }
+  placed.add(opened);
+  return { content };
+}
+
 /**
  * The `[extend]` chain of `top` put where the run in `dir` opens it. The scan's run opened each
  * `path` from `from`, its working directory: a path both runs open alike (an absolute one) stays;
@@ -100,27 +138,12 @@ function placeExtends(top: Buffer, from: string, dir: string): string | null {
   for (let depth = 0; depth < MAX_EXTEND_DEPTH; depth++) {
     const next: Buffer[] = [];
     for (const bytes of level) {
-      const parsed = gitleaksExtends(bytes);
-      if ('error' in parsed) return `its configuration ${parsed.error}`;
-      const targets = parsed.paths.filter((p) => p !== '');
-      if (targets.length > 1) return 'its configuration extends more than one file';
-      for (const target of targets) {
-        const source = path.resolve(from, target);
-        const content = readConfig(source);
-        if (content === null) return 'a configuration it extends cannot be read';
-        next.push(content);
-        const opened = path.resolve(dir, target);
-        if (opened === source || placed.has(opened)) continue;
-        if (opened === dir || !within(dir, opened)) {
-          return 'a configuration it extends lies outside the repository';
-        }
-        try {
-          mkdirSync(path.dirname(opened), { recursive: true });
-          writeFileSync(opened, content, { flag: 'wx', mode: 0o600 });
-        } catch {
-          return 'a configuration it extends is a file of the merge base too';
-        }
-        placed.add(opened);
+      const found = extendTargets(bytes);
+      if ('why' in found) return found.why;
+      for (const target of found.targets) {
+        const result = placeTarget(target, from, dir, placed);
+        if ('why' in result) return result.why;
+        next.push(result.content);
       }
     }
     level = next;

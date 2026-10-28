@@ -109,16 +109,17 @@ interface GitLabContext {
   incomplete: string[];
 }
 
-async function buildReport(
-  settings: Settings,
-  flags: ScanFlags,
-  projectKey: string,
-  endpoint: ServerEndpoint | null,
-  analyzers: readonly Analyzer[],
-  io: CliIO,
-  log: Logger,
-  deps: ScanDeps,
-): Promise<BuiltReport> {
+async function buildReport(inputs: {
+  settings: Settings;
+  flags: ScanFlags;
+  projectKey: string;
+  endpoint: ServerEndpoint | null;
+  analyzers: readonly Analyzer[];
+  io: CliIO;
+  log: Logger;
+  deps: ScanDeps;
+}): Promise<BuiltReport> {
+  const { settings, flags, projectKey, endpoint, analyzers, io, log, deps } = inputs;
   const { root, config } = settings;
   const analysisDate = (deps.now ?? (() => new Date()))();
   const warnings = new Warnings();
@@ -696,7 +697,7 @@ export async function runScan(
   if (endpoint !== null && deps.serverVersion !== null) {
     await (deps.serverVersion ?? checkServerVersion)(endpoint, log);
   }
-  const { report, failed, gitlab } = await buildReport(
+  const { report, failed, gitlab } = await buildReport({
     settings,
     flags,
     projectKey,
@@ -705,7 +706,7 @@ export async function runScan(
     io,
     log,
     deps,
-  );
+  });
   const failedRequired = (): ExitCode => {
     log.error(`required analyzers failed: ${failed.join(', ')}`);
     return EXIT.ANALYZER_FAILED;

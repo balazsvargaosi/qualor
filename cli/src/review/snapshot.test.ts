@@ -33,7 +33,7 @@ const LIMITS: SnapshotInput['limits'] = {
   maxFiles: 50_000,
 };
 const CONFIG = parseConfig({ version: 1, project: { key: 'acme/app' } });
-const TEN = `${Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n')}\n`;
+const TEN = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
 const j = (...parts: string[]) => parts.join('');
 /** A token shape the shared redaction knows, built at run time so no scanner takes it for real. */
 const GH = j('gh', 'p_', 'a1B2'.repeat(9));
@@ -492,7 +492,7 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
 
   it('masks a key block of an instructions file that runs over the cut, whole', async () => {
     // A commented PGP block from byte 50 000 on, its END past the 64 KiB cut.
-    const filler = `${`${'x'.repeat(99)}\n`.repeat(500)}`;
+    const filler = `${'x'.repeat(99)}\n`.repeat(500);
     const body = Array.from({ length: 450 }, (_, i) => FAKE_KEY.line(i));
     const block = [`# ${FAKE_KEY.pgpBegin}`, ...body.map((l) => `# ${l}`), `# ${FAKE_KEY.pgpEnd}`];
     const agents = `${filler}${block.join('\n')}\nafter\n`;
@@ -504,7 +504,7 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
 
   it('redacts an instructions file past its cut, so a secret split over the cut is masked', async () => {
     // 65 512 bytes, then a key split over two lines: its first half ends just within the cut.
-    const filler = `${`${'x'.repeat(99)}\n`.repeat(655)}${'y'.repeat(11)}\n`;
+    const filler = `${'x'.repeat(99)}\n`.repeat(655) + `${'y'.repeat(11)}\n`;
     const split = `${j('const k = "AK', 'IA" +')}\n${j('"', 'Z'.repeat(16), '";')}\ntail\n`;
     const mr = mergeRequest(
       { 'REVIEW.md': `${filler}${split}` },
@@ -560,7 +560,7 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
 
 describe('buildReviewSnapshot: paths it cannot send', () => {
   it('never sends them, not even as an omission, and says how many in one warning', async () => {
-    const long = `${`${'d'.repeat(100)}/`.repeat(11)}f.ts`;
+    const long = `${'d'.repeat(100)}/`.repeat(11) + 'f.ts';
     expect(Buffer.byteLength(long)).toBeGreaterThan(1_024);
     const mr = mergeRequest(
       { 'ok.ts': 'ok\n', [long]: 'long\n' },
@@ -589,7 +589,7 @@ describe('buildReviewSnapshot: paths it cannot send', () => {
 });
 
 describe('buildReviewSnapshot: renames from a path it cannot send', () => {
-  const OTHER = `${Array.from({ length: 10 }, (_, i) => `other ${i + 1}`).join('\n')}\n`;
+  const OTHER = Array.from({ length: 10 }, (_, i) => `other ${i + 1}`).join('\n') + '\n';
 
   it('sends no patch for one, so `rename from` never names the path', async () => {
     const mr = mergeRequest(
@@ -810,10 +810,13 @@ describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
   });
 
   /** A top-level line, then 15 indented ones; the head edits the 11th of those. */
-  const settings = (top: string | null, edited: string) =>
-    `${top === null ? '' : `${top}\n`}${Array.from({ length: 15 }, (_, i) =>
+  const settings = (top: string | null, edited: string) => {
+    const head = top === null ? '' : `${top}\n`;
+    const rows = Array.from({ length: 15 }, (_, i) =>
       i === 10 ? `  k${i}: ${edited}` : `  k${i}: ${i}`,
-    ).join('\n')}\n`;
+    );
+    return `${head}${rows.join('\n')}\n`;
+  };
   const headersOf = (patch: string | null | undefined) =>
     (patch ?? '').split('\n').filter((l) => l.startsWith('@@'));
 

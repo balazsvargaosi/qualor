@@ -234,8 +234,8 @@ function directoryDistances(
     queue.push(dir);
   }
   for (const dir of targets) add(dir);
-  for (let i = 0; i < queue.length; i++) {
-    const dir = queue[i] ?? '';
+  // The queue grows while it is walked: the iterator reads its length at each step.
+  for (const dir of queue) {
     const next = (distance.get(dir) ?? 0) + 1;
     for (const near of links.get(dir) ?? []) {
       if (distance.has(near)) continue;

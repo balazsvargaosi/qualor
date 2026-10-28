@@ -424,6 +424,8 @@ export async function rawRequestWithBody(r: RawRequest): Promise<RawResponse> {
 function exchange(r: RawRequest, socket: net.Socket, head: string): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    /** `settled` turns true inside the handlers the parse calls (`fail`, `finish`). */
+    const isSettled = () => settled;
     let stream: Readable | undefined;
     let bodyStarted = false;
     let sent = 0;
@@ -508,7 +510,7 @@ function exchange(r: RawRequest, socket: net.Socket, head: string): Promise<RawR
 
     /** Consumes `buffer` as far as possible; returns when more bytes are needed. */
     const parse = () => {
-      while (!settled) {
+      while (!isSettled()) {
         if (final === undefined) {
           const end = buffer.indexOf('\r\n\r\n');
           if (end < 0 ? buffer.length > MAX_HEAD_BYTES : end > MAX_HEAD_BYTES) {

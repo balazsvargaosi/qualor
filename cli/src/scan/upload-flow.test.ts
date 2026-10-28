@@ -518,7 +518,7 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
     { timeout: 120_000 },
     async () => {
       /** A scan whose snapshot path's git calls are counted; the clock passes the deadline as call `last` ends. */
-      const scanUntil = async (last: number | null) => {
+      const scanUntil = async (last: number | null, temp: string) => {
         const mr = mrRepo();
         let t = 0;
         let asked = false;
@@ -537,7 +537,6 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
           if (calls.length === last) t = 10 * 60_000;
           return result;
         };
-        const temp = tmp();
         const out = await scan(
           mr.root,
           server,
@@ -545,19 +544,20 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
           { reviewTempRoot: temp, clock: () => t, git },
           gitlabMr(mr.head),
         );
-        return { ...out, server, temp, calls };
+        return { ...out, server, calls };
       };
-      const onTime = await scanUntil(null);
+      const onTime = await scanUntil(null, tmp());
       expect(onTime.server.snapshots).toHaveLength(1);
       // The clock passes the deadline as the build's last git call ends: the build itself ends, and
       // only its end finds the deadline passed.
-      const late = await scanUntil(onTime.calls.length);
+      const lateTemp = tmp();
+      const late = await scanUntil(onTime.calls.length, lateTemp);
       expect(late.calls).toHaveLength(onTime.calls.length);
       expect(late.code, late.stderr).toBe(0);
       expect(late.server.paths).toEqual([...UNTIL_REPORT, CONTEXT, GATE]);
       expect(reviewWarnings(late.stderr)).toEqual([TOO_SLOW]);
       expect(late.stderr).not.toContain('AI review: uploading');
-      expect(readdirSync(late.temp)).toEqual([]);
+      expect(readdirSync(lateTemp)).toEqual([]);
     },
   );
 

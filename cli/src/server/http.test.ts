@@ -30,6 +30,13 @@ async function rejection(p: Promise<unknown>): Promise<CliError> {
   return err;
 }
 
+const ep = (url: string, over: Partial<ServerEndpoint> = {}): ServerEndpoint => ({
+  url,
+  token: TOK,
+  timeoutMs: 5000,
+  ...over,
+});
+
 describe('targetUrl', () => {
   it('keeps the base path prefix and encodes the query', () => {
     expect(targetUrl('https://q.test/qualor', 'api/v0/x', { a: 'b/c', skip: undefined }).href).toBe(
@@ -267,12 +274,6 @@ describe('caBundle', () => {
 
 describe('plan 3A additions', () => {
   const serve = useTestServers();
-  const ep = (url: string, over: Partial<ServerEndpoint> = {}): ServerEndpoint => ({
-    url,
-    token: TOK,
-    timeoutMs: 5000,
-    ...over,
-  });
 
   it('sends basic authentication with the token as user name, or none at all', async () => {
     const s = await serve((_req, res) => json(res, 200, {}));
@@ -389,12 +390,6 @@ describe('plan 3A additions', () => {
 
 describe('fix 8a', () => {
   const serve = useTestServers();
-  const ep = (url: string, over: Partial<ServerEndpoint> = {}): ServerEndpoint => ({
-    url,
-    token: TOK,
-    timeoutMs: 5000,
-    ...over,
-  });
   const caught = async (p: Promise<unknown>): Promise<unknown> => p.catch((e: unknown) => e);
 
   it.each(['a/../b', 'a/./b', '../b', 'a/..', './a', 'a\\..\\b', 'a\\.', '..\\a', 'x/y/..'])(

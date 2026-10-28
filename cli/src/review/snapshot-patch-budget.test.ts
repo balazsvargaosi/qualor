@@ -26,8 +26,10 @@ const LIMITS = {
   maxFiles: 50_000,
 };
 
-const lines = (tag: string, n: number): string =>
-  `${Array.from({ length: n }, (_, i) => `${tag} line ${i}`).join('\n')}\n`;
+const lines = (tag: string, n: number): string => {
+  const rows = Array.from({ length: n }, (_, i) => `${tag} line ${i}`);
+  return `${rows.join('\n')}\n`;
+};
 
 /**
  * A clone whose origin/main is the base commit, and a head that rewrites `a.txt` and `b.txt` of

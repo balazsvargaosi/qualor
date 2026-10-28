@@ -202,6 +202,24 @@ export function withoutFunctionContext(patch: string): string | null {
 }
 
 /**
+ * The index after the hunk body that starts at `from` (`left` its line counts); null when a line
+ * of it is removed and no marker.
+ */
+function markersOnlyHunk(
+  lines: readonly string[],
+  from: number,
+  left: { old: number; new: number },
+): number | null {
+  let i = from;
+  for (; i < lines.length && (left.old > 0 || left.new > 0); i++) {
+    const body = lines[i] ?? '';
+    if (body.startsWith('-') && !MARKER.test(body)) return null;
+    countOff(body, left);
+  }
+  return i;
+}
+
+/**
  * Whether `patch` holds no removed line but markers: each `@@` line is a hunk header it reads,
  * each hunk's `-` lines are markers, and a `-` line outside the hunks is a file header (`--- `,
  * followed by its `+++ ` line). A patch it cannot read so is not sent: it fails closed.
@@ -214,12 +232,12 @@ function onlyMarkersRemoved(patch: string): boolean {
     if (line.startsWith('@@')) {
       const m = HUNK_HEADER.exec(line);
       if (m === null) return false;
-      const left = { old: Number(m[2] ?? '1'), new: Number(m[4] ?? '1') };
-      for (i += 1; i < lines.length && (left.old > 0 || left.new > 0); i++) {
-        const body = lines[i] ?? '';
-        if (body.startsWith('-') && !MARKER.test(body)) return false;
-        countOff(body, left);
-      }
+      const next = markersOnlyHunk(lines, i + 1, {
+        old: Number(m[2] ?? '1'),
+        new: Number(m[4] ?? '1'),
+      });
+      if (next === null) return false;
+      i = next;
       continue;
     }
     const fileHeader = line.startsWith('--- ') && (lines[i + 1] ?? '').startsWith('+++ ');
