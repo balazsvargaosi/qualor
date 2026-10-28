@@ -142,7 +142,8 @@ async function open(fragment: string | null) {
     routes: [{ path: 'projects/:projectId/settings', component: ProjectSettingsPage }],
   });
   const harness = await RouterTestingHarness.create();
-  const url = `/projects/${PROJECT}/settings${fragment === null ? '' : `#${fragment}`}`;
+  const hash = fragment === null ? '' : `#${fragment}`;
+  const url = `/projects/${PROJECT}/settings${hash}`;
   await harness.navigateByUrl(url, ProjectSettingsPage);
   await settle(harness.fixture);
   return { harness, root: harness.routeNativeElement! };

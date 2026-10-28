@@ -41,7 +41,7 @@ describe('OrgContext', () => {
     context.orgs();
     await settle(TestBed.inject(ApplicationRef));
     // A page with unsaved changes asks the person (q-leave-confirm); the switch waits for it.
-    let answer: (leave: boolean) => void = () => undefined;
+    let answer: (leave: boolean) => void = (_value) => undefined;
     let asked = 0;
     const guarded: LeaveGuarded = {
       canLeave: () => {

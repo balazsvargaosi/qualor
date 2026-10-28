@@ -497,7 +497,7 @@ describe('LimitsSection: its draft', () => {
 
   it('keeps an edit made while its save is on its way, unsaved', async () => {
     setup();
-    let answer: (saved: LlmSettings) => void = () => undefined;
+    let answer: (saved: LlmSettings) => void = (_value) => undefined;
     const sent: Budgets[] = [];
     const { fixture, root } = await render({
       saveLimits: (budgets) => {

@@ -839,12 +839,6 @@ describe('thresholdRange', () => {
 });
 
 describe('gates: focus, announcements and route reuse (fix round 1)', () => {
-  function button(root: ParentNode, text: string): HTMLButtonElement {
-    return [...root.querySelectorAll<HTMLButtonElement>('button')].find(
-      (b) => b.textContent?.trim() === text,
-    )!;
-  }
-
   function chooseCoverage(root: HTMLElement, value: string): void {
     const metric = root.querySelector<HTMLSelectElement>('#condition-metric')!;
     metric.value = 'coverage';
@@ -871,14 +865,14 @@ describe('gates: focus, announcements and route reuse (fix round 1)', () => {
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;
     const row = root.querySelector('tr[data-key="g2"]')!;
-    const makeDefault = button(row, 'Make default');
+    const makeDefault = buttonIn(row, 'Make default');
     makeDefault.focus();
     makeDefault.click();
     await settle(fixture);
     // The row kept its element; its "Make default" button is gone, so its first button has focus.
     expect(root.querySelector('tr[data-key="g2"]')).toBe(row);
-    expect(button(row, 'Make default')).toBeUndefined();
-    expect(document.activeElement).toBe(button(row, 'Copy'));
+    expect(buttonIn(row, 'Make default')).toBeUndefined();
+    expect(document.activeElement).toBe(buttonIn(row, 'Copy'));
     expect(root.querySelector('[role="status"]')?.textContent).toContain(
       'Strict is now the default quality gate.',
     );
@@ -892,7 +886,7 @@ describe('gates: focus, announcements and route reuse (fix round 1)', () => {
     const fixture = TestBed.createComponent(GatesPage);
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;
-    button(root, 'Delete').click();
+    buttonIn(root, 'Delete').click();
     await settle(fixture);
     expect(root.querySelector('#confirm-text')?.textContent?.trim()).toBe(
       'Delete the default quality gate "Strict"? The organization is then left without a default gate: every project that uses the default is no longer gated until you make another gate the default.',
@@ -917,15 +911,15 @@ describe('gates: focus, announcements and route reuse (fix round 1)', () => {
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;
     const gamma = root.querySelector('tr[data-key="g3"]')!;
-    const remove = button(root.querySelector('tr[data-key="g2"]')!, 'Delete');
+    const remove = buttonIn(root.querySelector('tr[data-key="g2"]')!, 'Delete');
     remove.focus();
     remove.click();
     await settle(fixture);
-    button(root.querySelector('dialog#confirm-dialog')!, 'Delete').click();
+    buttonIn(root.querySelector('dialog#confirm-dialog')!, 'Delete').click();
     await settle(fixture);
     expect(root.querySelector('tr[data-key="g2"]')).toBeNull();
     expect(root.querySelector('tr[data-key="g3"]')).toBe(gamma);
-    expect(document.activeElement).toBe(button(gamma, 'Copy'));
+    expect(document.activeElement).toBe(buttonIn(gamma, 'Copy'));
     expect(root.querySelector('[role="status"]')?.textContent).toContain(
       'Quality gate Beta deleted.',
     );
@@ -941,7 +935,7 @@ describe('gates: focus, announcements and route reuse (fix round 1)', () => {
     const fixture = TestBed.createComponent(GatesPage);
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;
-    button(root, 'Copy').click();
+    buttonIn(root, 'Copy').click();
     await settle(fixture);
     const sent = server.requestsTo('POST', '/api/v0/quality-gates/g2/copy')[0]?.body as {
       name: string;

@@ -97,8 +97,13 @@ function literalTexts(expression: unknown): string[] {
     for (const [key, value] of Object.entries(node)) {
       if (/span$/i.test(key)) continue;
       for (const child of Array.isArray(value) ? value : [value]) {
-        if (child instanceof AST || child instanceof ASTWithSource) walk(child);
-        else if (child instanceof TemplateLiteralElement) walk(child);
+        if (
+          child instanceof AST ||
+          child instanceof ASTWithSource ||
+          child instanceof TemplateLiteralElement
+        ) {
+          walk(child);
+        }
       }
     }
   };

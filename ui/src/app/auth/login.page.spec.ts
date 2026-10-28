@@ -47,7 +47,7 @@ describe('LoginPage', () => {
   });
 
   it('keeps the submit button focusable while signing in, and sends once', async () => {
-    let answer: (reply: { status: number }) => void = () => undefined;
+    let answer: (reply: { status: number }) => void = (_value) => undefined;
     server.on('POST', '/api/v0/auth/login', () => new Promise((resolve) => (answer = resolve)));
     server.on('GET', '/api/v0/auth/me', { body: me() });
     const { fixture, root } = await render();

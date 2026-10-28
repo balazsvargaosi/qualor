@@ -89,7 +89,7 @@ describe('Shell', () => {
     const fixture = TestBed.createComponent(Shell);
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;
-    let answer: (leave: boolean) => void = () => undefined;
+    let answer: (leave: boolean) => void = (_value) => undefined;
     let asked = 0;
     TestBed.runInInjectionContext(() =>
       TestBed.inject(LeaveGuards).register({

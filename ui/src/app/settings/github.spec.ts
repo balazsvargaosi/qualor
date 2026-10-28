@@ -666,7 +666,7 @@ describe('GitHubPage (github.md §2)', () => {
 
   it('empties the secret fields of a submission ignored while a change runs', async () => {
     const server = setup();
-    let answer: (reply: { status: number; body: unknown }) => void = () => undefined;
+    let answer: (reply: { status: number; body: unknown }) => void = (_value) => undefined;
     server.on(
       'PATCH',
       '/api/v0/scm-connections/g1',

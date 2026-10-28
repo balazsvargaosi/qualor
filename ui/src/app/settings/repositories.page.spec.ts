@@ -155,7 +155,7 @@ describe('RepositoriesPage (scm.md §2.3, github.md §2.3)', () => {
 
   it('drops a check answer when the mapping changed while it was on its way', async () => {
     const server = setup();
-    let answer: (reply: { body: unknown }) => void = () => undefined;
+    let answer: (reply: { body: unknown }) => void = (_value) => undefined;
     server.on(
       'POST',
       '/api/v0/scm-connections/c1/test',
@@ -186,7 +186,7 @@ describe('RepositoriesPage (scm.md §2.3, github.md §2.3)', () => {
 
   it('announces a check’s answer, and drops a refusal for a mapping edited while it was on its way', async () => {
     const server = setup();
-    let answer: (reply: { status?: number; body: unknown }) => void = () => undefined;
+    let answer: (reply: { status?: number; body: unknown }) => void = (_value) => undefined;
     server.on(
       'POST',
       '/api/v0/scm-connections/c1/test',

@@ -24,7 +24,7 @@ describe('KeysetList', () => {
   });
 
   it('clears the items and drops an answer still on its way', async () => {
-    let release: (value: { items: string[]; nextCursor: null }) => void = () => undefined;
+    let release: (value: { items: string[]; nextCursor: null }) => void = (_value) => undefined;
     const list = new KeysetList<string, string>((q) =>
       q === 'slow'
         ? new Promise((resolve) => (release = resolve))
@@ -45,7 +45,7 @@ describe('KeysetList', () => {
   });
 
   it('drops the answer of a search that a newer one replaced', async () => {
-    let release: (value: { items: string[]; nextCursor: null }) => void = () => undefined;
+    let release: (value: { items: string[]; nextCursor: null }) => void = (_value) => undefined;
     const list = new KeysetList<string, string>((q) =>
       q === 'slow'
         ? new Promise((resolve) => (release = resolve))
@@ -82,7 +82,7 @@ describe('KeysetList', () => {
 
   it('keeps the first page of the latest accepted answer only (facets travel with it)', async () => {
     type Page = { items: string[]; nextCursor: string | null; tag: string };
-    let release: (value: Page) => void = () => undefined;
+    let release: (value: Page) => void = (_value) => undefined;
     const list = new KeysetList<string, string, Page>((q, cursor) =>
       q === 'slow'
         ? new Promise((resolve) => (release = resolve))

@@ -18,7 +18,7 @@ describe('unsavedChangesGuard', () => {
     expect(guard({ canLeave: () => true })).toBe(true);
     expect(guard({ canLeave: () => false })).toBe(false);
     // A page with unsaved changes asks the person; the navigation waits for the answer.
-    let answer: (leave: boolean) => void = () => undefined;
+    let answer: (leave: boolean) => void = (_value) => undefined;
     const asked = new Promise<boolean>((resolve) => (answer = resolve));
     const result = guard({ canLeave: () => asked });
     expect(result).toBe(asked);
