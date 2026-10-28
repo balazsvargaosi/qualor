@@ -181,7 +181,7 @@ describe('runLiveCheck against the fake LLM', () => {
       ],
     };
     for (const feature of ['explain', 'triage', 'fix'] as const) {
-      for (let i = 0; i < cases.length; i += 1) fake.enqueue(...replies[feature]);
+      fake.enqueue(...cases.flatMap(() => replies[feature]));
     }
     const { summary, text } = await runLiveCheck({
       url: fake.openAiBaseUrl,

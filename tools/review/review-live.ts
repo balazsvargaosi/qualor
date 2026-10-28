@@ -29,10 +29,12 @@ import { REVIEW_CALL_MIN_TIMEOUT_SECONDS, reviewStreamLimits } from '../../serve
 import { normalBaseUrl, parseInternalHosts } from '../../server/src/scm/url';
 import { hostOf, isNonPublicAddress } from '../../server/src/webhooks/url';
 import {
+  compareText,
   EVAL_DIR,
   formatReport,
   loadCases,
   runEval,
+  type CallRecord,
   type EvalCase,
   type EvalDeps,
   type EvalReport,
@@ -197,6 +199,70 @@ function requireCapPrices(
   }
 }
 
+/** The API of an OpenAI provider (`QUALOR_LIVE_REVIEW_API`); chat completions when empty. */
+function readApi(env: Env): ProviderApi {
+  const rawApi = env.QUALOR_LIVE_REVIEW_API ?? '';
+  const api = rawApi === '' ? 'chat_completions' : rawApi;
+  const knownApi = PROVIDER_APIS.find((candidate) => candidate === api);
+  if (knownApi === undefined) {
+    throw new Error(`QUALOR_LIVE_REVIEW_API must be ${PROVIDER_APIS.join(' or ')}`);
+  }
+  return knownApi;
+}
+
+/** How the key is sent (`QUALOR_LIVE_REVIEW_AUTH`); as a bearer token when empty. */
+function readAuth(env: Env): 'bearer' | 'api-key' {
+  const rawAuth = env.QUALOR_LIVE_REVIEW_AUTH ?? '';
+  const auth = rawAuth === '' ? 'bearer' : rawAuth;
+  if (auth !== 'bearer' && auth !== 'api-key') {
+    throw new Error('QUALOR_LIVE_REVIEW_AUTH must be bearer or api-key');
+  }
+  return auth;
+}
+
+/** The reviews of each case (`QUALOR_LIVE_REVIEW_RUNS`); one when empty. */
+function readRuns(env: Env): number {
+  const rawRuns = env.QUALOR_LIVE_REVIEW_RUNS ?? '';
+  const runs = rawRuns === '' ? 1 : Number(rawRuns);
+  if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) {
+    throw new Error(`QUALOR_LIVE_REVIEW_RUNS must be a whole number from 1 to ${MAX_RUNS}`);
+  }
+  return runs;
+}
+
+/** The context window in tokens (`QUALOR_LIVE_REVIEW_CONTEXT_WINDOW`); null when empty. */
+function readContextWindow(env: Env): number | null {
+  const rawWindow = env.QUALOR_LIVE_REVIEW_CONTEXT_WINDOW ?? '';
+  const window = rawWindow === '' ? null : Number(rawWindow);
+  if (
+    window !== null &&
+    (!Number.isInteger(window) ||
+      window < CONTEXT_WINDOW_MIN_TOKENS ||
+      window > CONTEXT_WINDOW_MAX_TOKENS)
+  ) {
+    throw new Error(
+      `QUALOR_LIVE_REVIEW_CONTEXT_WINDOW must be a whole number of tokens from ${CONTEXT_WINDOW_MIN_TOKENS} to ${CONTEXT_WINDOW_MAX_TOKENS}`,
+    );
+  }
+  return window;
+}
+
+/** The cost cap in USD (`QUALOR_LIVE_REVIEW_MAX_USD`); null when empty. */
+function readCostCap(env: Env): number | null {
+  // Trimmed; a plain decimal only: no hex, no exponent, no sign.
+  const rawCap = (env.QUALOR_LIVE_REVIEW_MAX_USD ?? '').trim();
+  const maxCostUsd = rawCap === '' ? null : Number(rawCap);
+  if (
+    maxCostUsd !== null &&
+    !(/^\d+(\.\d+)?$/.test(rawCap) && maxCostUsd > 0 && maxCostUsd <= MAX_COST_CAP_USD)
+  ) {
+    throw new Error(
+      `QUALOR_LIVE_REVIEW_MAX_USD must be a number of USD above 0 and up to ${MAX_COST_CAP_USD}`,
+    );
+  }
+  return maxCostUsd;
+}
+
 export function readLiveEnv(env: Env): LiveOptions {
   const url = env.QUALOR_LIVE_REVIEW_URL ?? '';
   const model = env.QUALOR_LIVE_REVIEW_MODEL ?? '';
@@ -218,51 +284,17 @@ export function readLiveEnv(env: Env): LiveOptions {
       'QUALOR_LIVE_REVIEW_API_KEY must be 1 to 4096 printable ASCII characters without spaces',
     );
   }
-  const rawApi = env.QUALOR_LIVE_REVIEW_API ?? '';
-  const api = rawApi === '' ? 'chat_completions' : rawApi;
-  const knownApi = PROVIDER_APIS.find((candidate) => candidate === api);
-  if (knownApi === undefined) {
-    throw new Error(`QUALOR_LIVE_REVIEW_API must be ${PROVIDER_APIS.join(' or ')}`);
-  }
-  const rawAuth = env.QUALOR_LIVE_REVIEW_AUTH ?? '';
-  const auth = rawAuth === '' ? 'bearer' : rawAuth;
-  if (auth !== 'bearer' && auth !== 'api-key') {
-    throw new Error('QUALOR_LIVE_REVIEW_AUTH must be bearer or api-key');
-  }
+  const knownApi = readApi(env);
+  const auth = readAuth(env);
   const workspace = env.QUALOR_LIVE_REVIEW_WORKSPACE_ID ?? '';
   if (workspace !== '' && !WORKSPACE_ID_PATTERN.test(workspace)) {
     throw new Error(
       'QUALOR_LIVE_REVIEW_WORKSPACE_ID must be wrkspc_ and then 1 to 64 letters or digits',
     );
   }
-  const rawRuns = env.QUALOR_LIVE_REVIEW_RUNS ?? '';
-  const runs = rawRuns === '' ? 1 : Number(rawRuns);
-  if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) {
-    throw new Error(`QUALOR_LIVE_REVIEW_RUNS must be a whole number from 1 to ${MAX_RUNS}`);
-  }
-  const rawWindow = env.QUALOR_LIVE_REVIEW_CONTEXT_WINDOW ?? '';
-  const window = rawWindow === '' ? null : Number(rawWindow);
-  if (
-    window !== null &&
-    (!Number.isInteger(window) ||
-      window < CONTEXT_WINDOW_MIN_TOKENS ||
-      window > CONTEXT_WINDOW_MAX_TOKENS)
-  ) {
-    throw new Error(
-      `QUALOR_LIVE_REVIEW_CONTEXT_WINDOW must be a whole number of tokens from ${CONTEXT_WINDOW_MIN_TOKENS} to ${CONTEXT_WINDOW_MAX_TOKENS}`,
-    );
-  }
-  // Trimmed; a plain decimal only: no hex, no exponent, no sign.
-  const rawCap = (env.QUALOR_LIVE_REVIEW_MAX_USD ?? '').trim();
-  const maxCostUsd = rawCap === '' ? null : Number(rawCap);
-  if (
-    maxCostUsd !== null &&
-    !(/^\d+(\.\d+)?$/.test(rawCap) && maxCostUsd > 0 && maxCostUsd <= MAX_COST_CAP_USD)
-  ) {
-    throw new Error(
-      `QUALOR_LIVE_REVIEW_MAX_USD must be a number of USD above 0 and up to ${MAX_COST_CAP_USD}`,
-    );
-  }
+  const runs = readRuns(env);
+  const window = readContextWindow(env);
+  const maxCostUsd = readCostCap(env);
   const strongModel = tierModel(env, 'QUALOR_LIVE_REVIEW_STRONG_MODEL');
   const fastModel = tierModel(env, 'QUALOR_LIVE_REVIEW_FAST_MODEL');
   const prices = pricePair(env, 'QUALOR_LIVE_REVIEW_PRICE');
@@ -372,6 +404,22 @@ export interface LiveResult {
   text: string;
 }
 
+/** What a call of `role` that took `ms` is recorded as, once the turn is known. */
+function recorder(
+  role: CallRecord['role'],
+  recordCall: (call: CallRecord) => void,
+): (turn: LlmTurn, ms: number) => void {
+  return (turn, ms) =>
+    recordCall({
+      role,
+      ms,
+      inputTokens: turn.usage.inputTokens ?? 0,
+      outputTokens: turn.usage.outputTokens ?? 0,
+      cacheReadTokens: turn.usage.cacheReadTokens ?? 0,
+      cacheWriteTokens: turn.usage.cacheWriteTokens ?? 0,
+    });
+}
+
 /**
  * Reviews the chosen cases with the provider, one review after the other and each `runs` times.
  * Throws before any call when the URL is refused or a case is unknown, and refuses to return a
@@ -437,35 +485,24 @@ export async function runLive(
           {
             reader,
             policy,
-            send: (conversation) =>
-              senders[modelTier](conversation, (turn, ms) =>
-                recordCall({
-                  role,
-                  ms,
-                  inputTokens: turn.usage.inputTokens ?? 0,
-                  outputTokens: turn.usage.outputTokens ?? 0,
-                  cacheReadTokens: turn.usage.cacheReadTokens ?? 0,
-                  cacheWriteTokens: turn.usage.cacheWriteTokens ?? 0,
-                }),
-              ),
+            send: (conversation) => senders[modelTier](conversation, recorder(role, recordCall)),
             shouldStop: () => Promise.resolve(false),
             contextWindowTokens: o.contextWindowTokens,
           },
         ),
     }),
   });
-  const failed = Object.entries(failures).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const failed = Object.entries(failures).sort(([a], [b]) => compareText(a, b));
   // With a model of its own for a tier, every tier's model is named: the one it runs on.
-  const tiers =
-    ownModel(models, 'strong') === null && ownModel(models, 'fast') === null
-      ? ''
-      : `, strong ${modelFor(models, 'strong')}, fast ${modelFor(models, 'fast')}`;
+  const ownTiers = ownModel(models, 'strong') !== null || ownModel(models, 'fast') !== null;
+  const tiers = ownTiers
+    ? `, strong ${modelFor(models, 'strong')}, fast ${modelFor(models, 'fast')}`
+    : '';
+  const failureText = failed.map(([failure, n]) => `${failure} ${n}`).join(', ');
   const text = [
     `model: ${o.model} (${o.kind})${tiers}`,
     formatReport(report),
-    ...(failed.length === 0
-      ? []
-      : [`provider failures: ${failed.map(([failure, n]) => `${failure} ${n}`).join(', ')}`]),
+    ...(failed.length === 0 ? [] : [`provider failures: ${failureText}`]),
   ].join('\n');
   if (o.apiKey !== null && text.includes(o.apiKey)) {
     throw new Error('The live report would hold the API key; not printed');

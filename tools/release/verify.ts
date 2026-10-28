@@ -49,10 +49,13 @@ export function parseVerifyArgs(argv: readonly string[]): VerifyArgs {
   let dir: string | undefined;
   let key: string | undefined;
   let selfCheck = false;
-  for (let i = 0; i < args.length; i++) {
+  let i = 0;
+  while (i < args.length) {
     const a = args[i] ?? '';
+    i += 1;
     if (a === '--key' && key === undefined) {
-      key = args[++i];
+      key = args[i];
+      i += 1;
       if (key === undefined || key === '' || key.startsWith('--')) throw new Error(VERIFY_USAGE);
     } else if (a === '--self-check' && !selfCheck) selfCheck = true;
     else if (!a.startsWith('-') && a !== '' && dir === undefined) dir = a;

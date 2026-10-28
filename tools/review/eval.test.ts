@@ -222,6 +222,15 @@ function synthetic(o: {
   };
 }
 
+type WrapReason = 'budget' | 'turns' | 'window';
+
+/** A suggestion that replaces `line` with another text. */
+const rewrite = (line: number) => ({
+  startLine: line,
+  endLine: line,
+  lines: [`const line${line} = ${line * 10};`],
+});
+
 /** A seeded problem on these lines of the synthetic file. */
 const problem = (
   line: number,
@@ -798,11 +807,6 @@ describe('runEval scores', () => {
       title,
       suggestion,
     });
-    const rewrite = (line: number) => ({
-      startLine: line,
-      endLine: line,
-      lines: [`const line${line} = ${line * 10};`],
-    });
     const { deps } = scripted({
       said: (c) =>
         c.id === 'seeded'
@@ -830,11 +834,6 @@ describe('runEval scores', () => {
     // Lines 10 and 14 are the merge request's, and each case seeds a problem on line 10.
     const far = synthetic({ id: 'far', expected: [problem(10)] });
     const moved = synthetic({ id: 'moved', expected: [problem(10)] });
-    const rewrite = (line: number) => ({
-      startLine: line,
-      endLine: line,
-      lines: [`const line${line} = ${line * 10};`],
-    });
     const { deps } = scripted({
       said: (c) =>
         c.id === 'far'
@@ -1058,14 +1057,18 @@ describe('runEval scores', () => {
 
     it('counts wrap-ups by why and by role, and the tokens of each stage', async () => {
       // The judge wraps up at the window, the specialists by turns at the budget and at the turn limit.
-      const wrapped: [string, 'budget' | 'turns' | 'window'][] = [];
+      const wrapped: [string, WrapReason][] = [];
       let specialists = 0;
       const { deps, roles } = scripted({
         said: twoSecurity,
         tokens: [2_000, 500],
         shape: (role) => {
           if (role === 'verify') return { wrappedUp: null };
-          const why = role === 'judge' ? 'window' : specialists++ % 2 === 0 ? 'budget' : 'turns';
+          let why: WrapReason = 'window';
+          if (role !== 'judge') {
+            why = specialists % 2 === 0 ? 'budget' : 'turns';
+            specialists += 1;
+          }
           wrapped.push([role, why]);
           return { wrappedUp: why };
         },
@@ -1081,8 +1084,7 @@ describe('runEval scores', () => {
         expectedBy[role] ??= { budget: 0, turns: 0, window: 0 };
         expectedBy[role][why] += 1;
       }
-      const total = (why: 'budget' | 'turns' | 'window') =>
-        wrapped.filter(([, w]) => w === why).length;
+      const total = (why: WrapReason) => wrapped.filter(([, w]) => w === why).length;
       expect(total('budget')).toBeGreaterThan(0);
       expect(total('turns')).toBeGreaterThan(0);
       expect(report.wrapUps).toEqual({
@@ -1103,12 +1105,11 @@ describe('runEval scores', () => {
       const { deps, roles } = scripted({
         said: twoSecurity,
         tokens: [1_000, 100],
-        shape: (role) =>
-          role === 'judge'
-            ? { cacheReadTokens: 600, cacheWriteTokens: 100 }
-            : role === 'verify'
-              ? { cacheReadTokens: 10, cacheWriteTokens: 0 }
-              : { cacheReadTokens: 300, cacheWriteTokens: 50 },
+        shape: (role) => {
+          if (role === 'judge') return { cacheReadTokens: 600, cacheWriteTokens: 100 };
+          if (role === 'verify') return { cacheReadTokens: 10, cacheWriteTokens: 0 };
+          return { cacheReadTokens: 300, cacheWriteTokens: 50 };
+        },
       });
 
       const report = await runEval([synthetic({ id: 'one' })], deps);

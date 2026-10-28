@@ -91,6 +91,12 @@ export interface EvalCase {
 
 type Fail = (message: string) => never;
 
+/** The order of two texts by their UTF-16 code units, as `<` compares them. */
+export const compareText = (a: string, b: string): number => {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+};
+
 interface CaseFile {
   language: string;
   title: string;
@@ -212,6 +218,51 @@ function piecesOf(patch: string, fail: Fail): Map<string, string> {
   return pieces;
 }
 
+type Hunks = NonNullable<ReturnType<typeof parsePatch>>['hunks'];
+
+/** The lines the hunks of `p` make from its base/ `before`; a hunk that does not fit fails. */
+function applyHunks(p: string, hunks: Hunks, before: readonly string[], fail: Fail): string[] {
+  const made: string[] = [];
+  let at = 0;
+  for (const hunk of hunks) {
+    // A hunk with no old line (`-5,0`) goes after the line its start names; any other starts at it.
+    const oldRows = hunk.rows.filter((row) => row.kind !== '+').length;
+    const copyTo = oldRows === 0 ? hunk.oldStart : hunk.oldStart - 1;
+    if (copyTo < at || copyTo > before.length) {
+      return fail(`the hunks of ${p} do not follow its lines in base/`);
+    }
+    for (const line of before.slice(at, copyTo)) made.push(line);
+    at = applyRows(p, hunk.rows, before, copyTo, made, fail);
+  }
+  for (const line of before.slice(at)) made.push(line);
+  return made;
+}
+
+/** The rows of one hunk, applied from line `from` of `before` onto `made`: where it ends. */
+function applyRows(
+  p: string,
+  rows: Hunks[number]['rows'],
+  before: readonly string[],
+  from: number,
+  made: string[],
+  fail: Fail,
+): number {
+  let at = from;
+  for (const row of rows) {
+    if (row.kind === 'removed-marker') {
+      return fail(`the patch of ${p} holds a removed-line marker`);
+    }
+    if (row.kind !== '+') {
+      if (before[at] !== row.text) {
+        return fail(`line ${at + 1} of ${p} in patch.diff differs from base/`);
+      }
+      at += 1;
+    }
+    if (row.kind !== '-') made.push(row.text);
+  }
+  return at;
+}
+
 /**
  * Applies the patch of one file to its base/ lines, and compares what it makes with the head/ file
  * (null: no such file, as when the patch deletes it). The server's parser reads the patch.
@@ -225,32 +276,7 @@ function checkPatchOf(
 ): void {
   const parsed = parsePatch(piece);
   if (parsed === null) return fail(`the patch of ${p} is not a unified diff`);
-  const before = base ?? [];
-  const made: string[] = [];
-  let at = 0;
-  for (const hunk of parsed.hunks) {
-    // A hunk with no old line (`-5,0`) goes after the line its start names; any other starts at it.
-    const oldRows = hunk.rows.filter((row) => row.kind !== '+').length;
-    const copyTo = oldRows === 0 ? hunk.oldStart : hunk.oldStart - 1;
-    if (copyTo < at || copyTo > before.length) {
-      return fail(`the hunks of ${p} do not follow its lines in base/`);
-    }
-    for (const line of before.slice(at, copyTo)) made.push(line);
-    at = copyTo;
-    for (const row of hunk.rows) {
-      if (row.kind === 'removed-marker') {
-        return fail(`the patch of ${p} holds a removed-line marker`);
-      }
-      if (row.kind !== '+') {
-        if (before[at] !== row.text) {
-          return fail(`line ${at + 1} of ${p} in patch.diff differs from base/`);
-        }
-        at += 1;
-      }
-      if (row.kind !== '-') made.push(row.text);
-    }
-  }
-  for (const line of before.slice(at)) made.push(line);
+  const made = applyHunks(p, parsed.hunks, base ?? [], fail);
   if (head === null) {
     if (made.length > 0) {
       fail(`the patch of ${p} has lines of the new side, but head/ has no such file`);
@@ -259,6 +285,24 @@ function checkPatchOf(
   }
   for (let i = 0; i < Math.max(made.length, head.length); i += 1) {
     if (made[i] !== head[i]) return fail(`line ${i + 1} of ${p} differs from head/`);
+  }
+}
+
+/** Fails when a seeded problem is outside `head/`: in a file it does not have, or past its end. */
+function checkExpected(
+  expected: readonly ExpectedProblem[],
+  head: ReadonlyMap<string, string>,
+  fail: Fail,
+): void {
+  for (const problem of expected) {
+    const text = head.get(problem.path);
+    if (text === undefined) return fail(`expected path ${problem.path} is not in head/`);
+    const count = linesOf(text).length;
+    if (problem.lines[1] > count) {
+      return fail(
+        `expected lines ${problem.lines[0]}-${problem.lines[1]} of ${problem.path} are outside the file (${count} lines)`,
+      );
+    }
   }
 }
 
@@ -272,16 +316,7 @@ function readCase(dir: string, id: string): EvalCase {
 
   const head = readTree(path.join(dir, 'head'));
   if (head.size === 0) return fail('head/ has no files');
-  for (const problem of file.expected) {
-    const text = head.get(problem.path);
-    if (text === undefined) return fail(`expected path ${problem.path} is not in head/`);
-    const count = linesOf(text).length;
-    if (problem.lines[1] > count) {
-      return fail(
-        `expected lines ${problem.lines[0]}-${problem.lines[1]} of ${problem.path} are outside the file (${count} lines)`,
-      );
-    }
-  }
+  checkExpected(file.expected, head, fail);
 
   const patchFile = path.join(dir, 'patch.diff');
   if (!existsSync(patchFile)) return fail('patch.diff is missing');
@@ -325,7 +360,7 @@ function readCase(dir: string, id: string): EvalCase {
     clean: file.clean,
     expected: file.expected,
     files: Object.fromEntries(head),
-    changes: [...changes.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+    changes: [...changes.values()].sort((a, b) => compareText(a.path, b.path)),
   };
 }
 
@@ -460,8 +495,10 @@ function withCall(
 /** The stages the tokens are counted by: the specialists, the judge, and the verification. */
 type Stage = 'specialists' | 'judge' | 'verification';
 const STAGES: readonly Stage[] = ['specialists', 'judge', 'verification'];
-const stageOf = (role: ReviewRole): Stage =>
-  role === 'judge' ? 'judge' : role === 'verify' ? 'verification' : 'specialists';
+const stageOf = (role: ReviewRole): Stage => {
+  if (role === 'judge') return 'judge';
+  return role === 'verify' ? 'verification' : 'specialists';
+};
 
 /** What the reviews measure besides their findings, summed over every review of the evaluation. */
 interface Measures {
@@ -821,6 +858,18 @@ function callSpread(values: readonly number[]): EvalReport['callLatencyMs'] {
   };
 }
 
+/** Why no further review starts, or null: the cost cap is reached, or a cost came back unknown. */
+function stopBeforeReview(
+  cap: number | null,
+  done: number,
+  costUsd: number | null,
+): 'unknown_cost' | 'cost_cap' | null {
+  if (cap === null) return null;
+  // A review's cost came back unknown: the cap cannot be kept, so no quiet uncapped run.
+  if (done > 0 && costUsd === null) return 'unknown_cost';
+  return costUsd !== null && costUsd >= cap ? 'cost_cap' : null;
+}
+
 /**
  * Reviews every case `deps.runs` times, one after the other, and scores the reviews: how many
  * seeded problems have a finding on them, with their category and with their thread on their lines;
@@ -859,33 +908,29 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
   let costUsd: number | null = priceOf === null ? null : 0;
   let done = 0;
   const cap = deps.maxCostUsd ?? null;
-  stopped: for (let run = 0; run < runs; run += 1) {
-    for (const c of cases) {
-      // The cap is checked before a review starts: the one running finishes.
-      if (cap !== null && done > 0 && costUsd === null) {
-        // A review's cost came back unknown: the cap cannot be kept, so no quiet uncapped run.
-        report.stoppedAtUnknownCost = true;
-        break stopped;
-      }
-      if (cap !== null && costUsd !== null && costUsd >= cap) {
-        report.stoppedAtCostCap = true;
-        break stopped;
-      }
-      const started = now();
-      const review = await reviewCase(c, deps, priceOf, measures);
-      latencies.push(now() - started);
-      report.tokens.input += review.input;
-      report.tokens.output += review.output;
-      costUsd = costUsd === null || review.costUsd === null ? null : costUsd + review.costUsd;
-      if (review.kind === 'failed') {
-        report.failed[review.reason] = (report.failed[review.reason] ?? 0) + 1;
-      }
-      const score = scoreReview(c, review.kind === 'reviewed' ? review.found : []);
-      addTally(report.total, score);
-      addTally((report.languages[c.language] ??= emptyTally()), score);
-      done += 1;
-      deps.progress?.(done, planned, { ...report.tokens });
+  // Every case, once for each run, one run after the other.
+  for (const c of Array.from({ length: runs }, () => cases).flat()) {
+    // The cap is checked before a review starts: the one running finishes.
+    const stop = stopBeforeReview(cap, done, costUsd);
+    report.stoppedAtUnknownCost = stop === 'unknown_cost';
+    report.stoppedAtCostCap = stop === 'cost_cap';
+    if (stop !== null) break;
+    const started = now();
+    const review = await reviewCase(c, deps, priceOf, measures);
+    latencies.push(now() - started);
+    report.tokens.input += review.input;
+    report.tokens.output += review.output;
+    costUsd = costUsd === null || review.costUsd === null ? null : costUsd + review.costUsd;
+    if (review.kind === 'failed') {
+      report.failed[review.reason] = (report.failed[review.reason] ?? 0) + 1;
     }
+    const score = scoreReview(c, review.kind === 'reviewed' ? review.found : []);
+    addTally(report.total, score);
+    const tally = report.languages[c.language] ?? emptyTally();
+    report.languages[c.language] = tally;
+    addTally(tally, score);
+    done += 1;
+    deps.progress?.(done, planned, { ...report.tokens });
   }
   // Reviews made: fewer than cases times runs when the cost cap stopped the evaluation.
   report.reviews = done;
@@ -915,8 +960,10 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
 // ─── Printing ────────────────────────────────────────────────────────────────
 
 /** `x/y (p%)`; `(-)` without a y. */
-const ratio = (x: number, y: number): string =>
-  `${x}/${y} (${y === 0 ? '-' : `${Math.round((100 * x) / y)}%`})`;
+const ratio = (x: number, y: number): string => {
+  const percent = y === 0 ? '-' : `${Math.round((100 * x) / y)}%`;
+  return `${x}/${y} (${percent})`;
+};
 
 const COLUMNS = ['recall', 'category', 'anchors', 'suggestions', 'false findings'];
 
@@ -951,7 +998,7 @@ export function formatReport(report: EvalReport): string {
       .join('  ')
       .trimEnd(),
   );
-  const failed = Object.entries(report.failed).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const failed = Object.entries(report.failed).sort(([a], [b]) => compareText(a, b));
   const failedCount = failed.reduce((sum, [, n]) => sum + n, 0);
   const failedWhy = failed.map(([reason, n]) => `${reason} ${n}`).join(', ');
   const latency = report.latencyMs;
@@ -960,11 +1007,12 @@ export function formatReport(report: EvalReport): string {
   const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
   const byRole = Object.entries(wrapUps.byRole)
     .map(([role, n]) => [role, (n?.budget ?? 0) + (n?.turns ?? 0) + (n?.window ?? 0)] as const)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(([a], [b]) => compareText(a, b))
     .map(([role, n]) => `${role} ${n}`)
     .join(', ');
   const stage = (name: Stage): string =>
     `${name} ${count(cache.byStage[name].read)}/${count(cache.byStage[name].write)}`;
+  const roles = byRole === '' ? '' : ` (${byRole})`;
   const lines = [
     'AI review evaluation',
     `${plural(report.cases, 'case')} (${report.clean} clean), ${plural(report.runs, 'run')} each, ${plural(report.reviews, 'review')}`,
@@ -994,7 +1042,7 @@ export function formatReport(report: EvalReport): string {
           `model calls: ${report.calls}; per call: median ${seconds(callLatency.median)}, p95 ${seconds(callLatency.p95)}, max ${seconds(callLatency.max)}; largest input ${count(report.maxCallInputTokens)} tokens`,
         ]),
     `verification: ${verification.run} run (${verification.confirmed} confirmed, ${verification.needsValidation} needs validation, ${verification.rejectedOrUnread} rejected or unread), ${verification.starved} found the review's tool calls used up (the floor gave them ${TOOL_LIMITS.verifyCallsFloor})`,
-    `wrap-ups: ${wrapUps.budget} at the token budget, ${wrapUps.turns} at the turn limit, ${wrapUps.window} at the context window${byRole === '' ? '' : ` (${byRole})`}`,
+    `wrap-ups: ${wrapUps.budget} at the token budget, ${wrapUps.turns} at the turn limit, ${wrapUps.window} at the context window${roles}`,
     `tokens by stage: specialists ${count(stageTokens.specialists)}, judge ${count(stageTokens.judge)}, verification ${count(stageTokens.verification)}`,
     `cache: ${count(cache.read)} read, ${count(cache.write)} written (hit rate ${cache.hitRate === null ? '-' : (100 * cache.hitRate).toFixed(1)} % of input); ${STAGES.map(stage).join(', ')}`,
     `reviews with shortened lists: ${report.listsShortened}`,
