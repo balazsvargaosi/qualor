@@ -173,9 +173,8 @@ export async function applyProfiles(
       );
       continue;
     }
-    let id: string | null = null;
-    let created = false;
-    let updating = false;
+    // What was done before a failure, which the failed row says (partly created, partly updated).
+    const progress = { id: null as string | null, created: false, updating: false };
     try {
       const found = same[0];
       if (found === undefined) {
@@ -185,8 +184,8 @@ export async function applyProfiles(
           continue;
         }
         const made = await api.createProfile(orgId, p.name, language);
-        id = made.id;
-        created = true;
+        progress.id = made.id;
+        progress.created = true;
         // Explicit, never the database default.
         await api.setProfileUnknownRules(made.id, UNKNOWN_RULES);
         for (const row of p.rows) await api.setProfileRule(made.id, row);
@@ -197,7 +196,7 @@ export async function applyProfiles(
         done('created', null, made.id);
         continue;
       }
-      id = found.id;
+      progress.id = found.id;
       const rows = await api.profileRows(found.id);
       const rowsEqual = sameRows(rows, p.rows);
       const unknownEqual = found.unknownRules === UNKNOWN_RULES;
@@ -215,7 +214,7 @@ export async function applyProfiles(
         }
         outcome = o.dryRun ? 'would_update' : 'updated';
         if (!o.dryRun) {
-          updating = true;
+          progress.updating = true;
           if (!unknownEqual) await api.setProfileUnknownRules(found.id, UNKNOWN_RULES);
           const wanted = new Set(p.rows.map((r) => r.ruleKey));
           const current = new Map(rows.map((r) => [r.ruleKey, r]));
@@ -237,7 +236,7 @@ export async function applyProfiles(
       }
       done(outcome, null, found.id);
     } catch (err) {
-      done('failed', `${failure(err)}${partly(created, updating)}`, id);
+      done('failed', `${failure(err)}${partly(progress.created, progress.updating)}`, progress.id);
       if (fatal(err)) throw err;
     }
   }
@@ -293,9 +292,8 @@ export async function applyGates(
       done('conflict', 'name_ambiguous', null);
       continue;
     }
-    let id: string | null = null;
-    let created = false;
-    let updating = false;
+    // What was done before a failure, which the failed row says (partly created, partly updated).
+    const progress = { id: null as string | null, created: false, updating: false };
     try {
       const found = same[0];
       if (found === undefined) {
@@ -305,8 +303,8 @@ export async function applyGates(
           continue;
         }
         const made = await api.createGate(orgId, g.name);
-        id = made.id;
-        created = true;
+        progress.id = made.id;
+        progress.created = true;
         for (const c of wanted) await api.addCondition(made.id, c);
         if (wantsDefault) {
           await api.setDefaultGate(made.id);
@@ -315,7 +313,7 @@ export async function applyGates(
         done('created', null, made.id);
         continue;
       }
-      id = found.id;
+      progress.id = found.id;
       const have = new Set(found.conditions.map(condKey));
       const equal =
         found.conditions.length === wanted.length && wanted.every((c) => have.has(condKey(c)));
@@ -331,7 +329,7 @@ export async function applyGates(
         }
         outcome = o.dryRun ? 'would_update' : 'updated';
         if (!o.dryRun) {
-          updating = true;
+          progress.updating = true;
           const byMetric = new Map(found.conditions.map((c) => [c.metric, c]));
           const wantedMetrics = new Set(wanted.map((c) => c.metric));
           // Deletions first: a metric is unique per gate (409 CONDITION_EXISTS).
@@ -354,7 +352,7 @@ export async function applyGates(
       }
       done(outcome, null, found.id);
     } catch (err) {
-      done('failed', `${failure(err)}${partly(created, updating)}`, id);
+      done('failed', `${failure(err)}${partly(progress.created, progress.updating)}`, progress.id);
       if (fatal(err)) throw err;
     }
   }

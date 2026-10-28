@@ -367,7 +367,6 @@ describe('SonarClient.pages (import-sonarqube.md §5.2)', () => {
       (p) => p.components,
       (c) => c.key,
       'project page',
-      RESULT_WINDOW,
       { window: 30, pageSize: 10 },
     );
     expect(r).toMatchObject({ total: 25, complete: true });
@@ -385,7 +384,6 @@ describe('SonarClient.pages (import-sonarqube.md §5.2)', () => {
       (p) => p.components,
       (c) => c.key,
       'project page',
-      RESULT_WINDOW,
       { window: 20, pageSize: 10 },
     );
     expect(r).toMatchObject({ total: 35, complete: false });
@@ -411,8 +409,7 @@ describe('SonarClient.pages (import-sonarqube.md §5.2)', () => {
       (p) => p.components,
       (c) => c.key,
       'project page',
-      12,
-      { pageSize: 10 },
+      { maxItems: 12, pageSize: 10 },
     );
     expect(r.items).toHaveLength(12);
     expect(r.complete).toBe(false);
@@ -431,7 +428,7 @@ describe('SonarClient.pages (import-sonarqube.md §5.2)', () => {
         (p) => p.components,
         (c) => c.key,
         'project page',
-        max,
+        { maxItems: max },
       ),
     ).rejects.toBeInstanceOf(CliError);
     expect(fake.requests.length).toBe(before);
@@ -456,7 +453,6 @@ describe('SonarClient.pages (import-sonarqube.md §5.2)', () => {
       (p) => p.components,
       (c) => c.key,
       'project page',
-      RESULT_WINDOW,
       { pageSize: 10 },
     );
     expect(client.warnings.map((w) => w.code)).toContain('SONARQUBE_RESULTS_CHANGED');
@@ -471,7 +467,6 @@ describe('SonarClient.pages (import-sonarqube.md §5.2)', () => {
         (p) => p.components,
         (c) => c.key,
         'project page',
-        RESULT_WINDOW,
         { pageSize: 2 },
       );
 

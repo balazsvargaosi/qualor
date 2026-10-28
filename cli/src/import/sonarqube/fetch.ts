@@ -105,7 +105,6 @@ export async function fetchProfiles(
       (page) => activeRules(page, p.key),
       (r) => r.key,
       'rule page',
-      RESULT_WINDOW,
       bounds,
     );
     const rules = active.items.flatMap((r) => (r.rule === null ? [] : [r.rule]));
@@ -129,8 +128,7 @@ export async function fetchProfiles(
       (page) => page.rules.map((r) => r.key),
       (k) => k,
       'rule page',
-      MAX_INACTIVE,
-      bounds,
+      { ...bounds, maxItems: MAX_INACTIVE },
     );
     if (!inactive.complete) {
       c.warn(
@@ -179,7 +177,6 @@ export async function listProjects(
       (p) => p.components,
       (p) => p.key,
       'project page',
-      RESULT_WINDOW,
       bounds,
     );
     if (!r.complete) {
@@ -345,8 +342,7 @@ async function readIssues(
       (p) => p.issues,
       (i) => i.key,
       'issue page',
-      max,
-      { window, pageSize },
+      { maxItems: max, window, pageSize },
     );
   const completeRules = new Set<string>();
   /** Rules of the query the facet does not list: none of them has an issue, or unknown. */
@@ -628,7 +624,6 @@ async function rulesOnServer(
           (page) => page.rules.map((r) => r.key),
           (k) => k,
           'rule page',
-          RESULT_WINDOW,
           bounds,
         )
         .then(

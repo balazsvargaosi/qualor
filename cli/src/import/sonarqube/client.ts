@@ -230,10 +230,10 @@ export class SonarClient {
     pick: (page: P) => readonly T[],
     keyOf: (item: T) => string,
     what: string,
-    maxItems: number = RESULT_WINDOW,
-    bounds: { window?: number; pageSize?: number } = {},
+    bounds: { maxItems?: number; window?: number; pageSize?: number } = {},
   ): Promise<{ items: T[]; total: number; complete: boolean; stable: boolean }> {
-    if (!(maxItems > 0)) {
+    const maxItems = bounds.maxItems ?? RESULT_WINDOW;
+    if (Number.isNaN(maxItems) || maxItems <= 0) {
       throw new CliError(
         EXIT.SERVER,
         `internal error: a read of ${what}s must allow at least one item (${String(maxItems)})`,
