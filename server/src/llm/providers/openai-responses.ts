@@ -89,7 +89,7 @@ interface Read {
 }
 
 /** The response as parsed; a failed one, or one that carries an error, is the provider's failure. */
-function completedResponse(raw: unknown): z.infer<typeof responseSchema> {
+function unfailedResponse(raw: unknown): z.infer<typeof responseSchema> {
   const parsed = responseSchema.safeParse(raw);
   if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
   const response = parsed.data;
@@ -107,7 +107,7 @@ function isCutOff(response: z.infer<typeof responseSchema>): boolean {
 }
 
 /** Adds the text and the refusal parts of a message to their lists. */
-function sortParts(
+function collectParts(
   content: readonly { type: string; text?: string; refusal?: string }[],
   texts: string[],
   refusals: string[],
@@ -119,7 +119,7 @@ function sortParts(
 }
 
 /** The text, refusal and call items of the `output`; a malformed item is not understood. */
-function sortItems(output: readonly unknown[]): {
+function splitItems(output: readonly unknown[]): {
   texts: string[];
   refusals: string[];
   calls: unknown[];
@@ -133,7 +133,7 @@ function sortItems(output: readonly unknown[]): {
     if (typed.data.type === 'message') {
       const message = messageSchema.safeParse(item);
       if (!message.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
-      sortParts(message.data.content, texts, refusals);
+      collectParts(message.data.content, texts, refusals);
     } else if (typed.data.type === 'function_call') {
       calls.push(item);
     }
@@ -147,6 +147,7 @@ function textOf(texts: readonly string[], cutOff: boolean): string | null {
   return cutOff ? '' : null;
 }
 
+/** `length` for an answer cut off at the output limit, `stop` for a completed one, else none. */
 function finishReasonOf(status: unknown, cutOff: boolean): 'length' | 'stop' | null {
   if (cutOff) return 'length';
   return status === 'completed' ? 'stop' : null;
@@ -173,10 +174,10 @@ function usageOf(usage: z.infer<typeof responseSchema>['usage']) {
  *   reason (a content filter, a status it does not know, none) it is `other`.
  */
 function readResponse(raw: unknown): Read {
-  const response = completedResponse(raw);
+  const response = unfailedResponse(raw);
   const { output } = response;
   if (!Array.isArray(output)) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
-  const { texts, refusals, calls } = sortItems(output as unknown[]);
+  const { texts, refusals, calls } = splitItems(output as unknown[]);
   const cutOff = isCutOff(response);
   const { answer, toolCalls } = readChoice({
     model: response.model,
