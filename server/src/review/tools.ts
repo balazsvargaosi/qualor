@@ -312,27 +312,27 @@ const ARGUMENT_HINTS: Record<string, string> = {
   dir: 'a directory path, as a string',
 };
 
+/** The arguments an issue names, each with what it should be. */
+function namedArguments(issue: z.ZodIssue): { name: string; hint: string | undefined }[] {
+  if (issue.code === 'unrecognized_keys') {
+    return issue.keys.map((key) => ({
+      name: key.slice(0, 40).replace(/[^\w-]/g, '?'),
+      hint: 'not an argument of this tool',
+    }));
+  }
+  const name = issue.path[0];
+  const text = typeof name === 'string' ? name : '';
+  return [{ name: text, hint: ARGUMENT_HINTS[text] }];
+}
+
 /** `invalid arguments: <which>`: the names of the arguments that do not match, never their values. */
 function invalidArguments(error: z.ZodError): ToolAnswer {
-  const named: { name: string; hint: string | undefined }[] = [];
-  for (const issue of error.issues) {
-    if (issue.code === 'unrecognized_keys') {
-      for (const key of issue.keys) {
-        const name = key.slice(0, 40).replace(/[^\w-]/g, '?');
-        named.push({ name, hint: 'not an argument of this tool' });
-      }
-    } else {
-      const name = issue.path[0];
-      const text = typeof name === 'string' ? name : '';
-      named.push({ name: text, hint: ARGUMENT_HINTS[text] });
-    }
-  }
+  const named = error.issues.flatMap(namedArguments);
   const [only] = named;
   if (named.length === 1 && only !== undefined) {
     if (only.name === '') return fixed('invalid arguments: expected an object');
-    return fixed(
-      `invalid arguments: ${only.name}${only.hint === undefined ? '' : ` (${only.hint})`}`,
-    );
+    const hint = only.hint === undefined ? '' : ` (${only.hint})`;
+    return fixed(`invalid arguments: ${only.name}${hint}`);
   }
   const names = [...new Set(named.map((n) => n.name || 'expected an object'))];
   return fixed(`invalid arguments: ${names.join(', ')}`);
@@ -365,13 +365,9 @@ async function takeKept<T, U>(
   let limit = want + 1;
   for (;;) {
     const page = await load(limit);
-    for (; seen < page.items.length; seen += 1) {
-      const item = page.items[seen];
-      if (item === undefined) break;
-      const kept = await keep(item);
-      if (kept !== null) items.push(kept);
-      if (items.length > want) return { items: items.slice(0, want), over: true, cut: false };
-    }
+    const looked = await keepFrom(page.items, seen, keep, items, want);
+    seen = looked.seen;
+    if (looked.over) return { items: items.slice(0, want), over: true, cut: false };
     if (!page.truncated) return { items, over: false, cut: false };
     // Fewer items than asked for, and more to come: the reader cannot find more (a search it ended
     // early), and asking for more would give the same answer.
@@ -379,6 +375,28 @@ async function takeKept<T, U>(
     if (limit >= maxFetch) return { items, over: false, cut: true };
     limit = Math.min(limit * 4, maxFetch);
   }
+}
+
+/**
+ * Looks at the items of a page from `from` on, in order, and adds what `keep` makes of them to
+ * `items`: where it got to, and whether there are now more than `want` results (it stops there).
+ */
+async function keepFrom<T, U>(
+  page: readonly T[],
+  from: number,
+  keep: (item: T) => U | null | Promise<U | null>,
+  items: U[],
+  want: number,
+): Promise<{ seen: number; over: boolean }> {
+  let seen = from;
+  for (; seen < page.length; seen += 1) {
+    const item = page[seen];
+    if (item === undefined) break;
+    const kept = await keep(item);
+    if (kept !== null) items.push(kept);
+    if (items.length > want) return { seen, over: true };
+  }
+  return { seen, over: false };
 }
 
 const withoutCr = (line: string): string => (line.endsWith('\r') ? line.slice(0, -1) : line);

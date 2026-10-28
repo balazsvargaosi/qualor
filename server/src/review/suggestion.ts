@@ -44,10 +44,8 @@ export function checkReviewSuggestion(
 ): { ok: true } | { ok: false; problem: SuggestionProblem } {
   const fail = (problem: SuggestionProblem) => ({ ok: false as const, problem });
   const { startLine, endLine } = s;
-  if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine)) return fail('range');
-  if (startLine < 1 || endLine < startLine) return fail('range');
-  if (endLine - startLine + 1 > ANSWER_LIMITS.suggestionReplacedLines) return fail('range');
-  if (s.lines.length > ANSWER_LIMITS.suggestionLines) return fail('size');
+  const shape = shapeProblem(s);
+  if (shape !== null) return fail(shape);
   for (let line = startLine; line <= endLine; line += 1) {
     if (!change.added.has(line)) return fail('not_added');
   }
@@ -59,21 +57,40 @@ export function checkReviewSuggestion(
   for (let line = startLine; line <= endLine; line += 1) {
     original.push(lineWithoutCarriageReturn(text.line(line - 1)));
   }
-  if (original.some((line) => line.includes(REDACTED))) return fail('masked_line');
+  const problem = writtenProblem(s, original);
+  return problem === null ? { ok: true } : fail(problem);
+}
+
+/** What is wrong with the range and the size of a suggestion, before any file is read; null when nothing. */
+function shapeProblem(s: ReviewSuggestion): 'range' | 'size' | null {
+  const { startLine, endLine } = s;
+  if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine)) return 'range';
+  if (startLine < 1 || endLine < startLine) return 'range';
+  if (endLine - startLine + 1 > ANSWER_LIMITS.suggestionReplacedLines) return 'range';
+  if (s.lines.length > ANSWER_LIMITS.suggestionLines) return 'size';
+  return null;
+}
+
+/** What is wrong with the lines replaced (masked, unusable) and the lines written; null when nothing. */
+function writtenProblem(
+  s: ReviewSuggestion,
+  original: readonly string[],
+): SuggestionProblem | null {
+  if (original.some((line) => line.includes(REDACTED))) return 'masked_line';
   // The model was shown such a line cut, and may write no line this long: it cannot be put back whole.
   if (original.some((line) => line.length > FIX_BOUNDS.maxLineChars)) {
-    return fail('source_line_unusable');
+    return 'source_line_unusable';
   }
   if (s.lines.length === original.length && s.lines.every((line, i) => line === original[i])) {
-    return fail('unchanged');
+    return 'unchanged';
   }
   for (const line of s.lines) {
     const problem = suggestionLineProblem(line);
-    if (problem !== null) return fail(problem);
+    if (problem !== null) return problem;
   }
   // Line by line misses a secret split over lines; the redaction of the whole text catches it.
-  if (redactText(s.lines.join('\n')).count > 0) return fail('secret');
-  return { ok: true };
+  if (redactText(s.lines.join('\n')).count > 0) return 'secret';
+  return null;
 }
 
 /**

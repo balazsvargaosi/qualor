@@ -41,11 +41,10 @@ const masker = new Masker();
 afterAll(() => masker.close());
 
 let callCount = 0;
-const call = (name: string, args: unknown): LlmToolCall => ({
-  id: `call-${(callCount += 1)}`,
-  name,
-  arguments: args,
-});
+const call = (name: string, args: unknown): LlmToolCall => {
+  callCount += 1;
+  return { id: `call-${callCount}`, name, arguments: args };
+};
 const newPolicy = (over: Partial<ToolPolicy> = {}): ToolPolicy => ({
   excludePaths: [],
   budget: {
