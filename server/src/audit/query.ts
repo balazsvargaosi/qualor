@@ -116,7 +116,7 @@ export async function* exportAuditLines(
   filter: AuditFilter & { from: Date; to: Date },
 ): AsyncIterable<string> {
   const span = filter.to.getTime() - filter.from.getTime();
-  if (!(span > 0) || span > MAX_EXPORT_DAYS * DAY_MS) {
+  if (Number.isNaN(span) || span <= 0 || span > MAX_EXPORT_DAYS * DAY_MS) {
     throw validationFailed([
       {
         path: 'query.to',

@@ -182,11 +182,11 @@ function lingerThenClose(
       lastBytes = currentBytes;
       lastProgressAt = now;
     }
-    if (currentBytes - startBytes > maxBytes) {
-      giveUp();
-    } else if (now - lastProgressAt >= idleMs) {
-      giveUp();
-    } else if (now - startedAt >= totalMs) {
+    if (
+      currentBytes - startBytes > maxBytes ||
+      now - lastProgressAt >= idleMs ||
+      now - startedAt >= totalMs
+    ) {
       giveUp();
     }
   }, pollMs);

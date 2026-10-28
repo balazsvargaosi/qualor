@@ -7,7 +7,9 @@ import { auditRoutes, eventsQuery, exportQuery } from './audit-routes';
 
 /** A gate a test opens by hand. */
 function gate(): { wait: Promise<void>; open: () => void } {
-  let open = () => {};
+  let open = () => {
+    // Replaced as soon as the promise below starts.
+  };
   const wait = new Promise<void>((resolve) => {
     open = resolve;
   });

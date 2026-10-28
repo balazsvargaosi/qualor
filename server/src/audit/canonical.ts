@@ -10,14 +10,17 @@ const isLow = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
  * would no longer hash to the stored hash).
  */
 export function isStorableText(text: string): boolean {
-  for (let i = 0; i < text.length; i += 1) {
+  let i = 0;
+  while (i < text.length) {
     const code = text.charCodeAt(i);
     if (code === 0) return false;
     if (isHigh(code)) {
       if (!isLow(text.charCodeAt(i + 1))) return false;
-      i += 1;
+      i += 2;
     } else if (isLow(code)) {
       return false;
+    } else {
+      i += 1;
     }
   }
   return true;
@@ -27,14 +30,16 @@ export function isStorableText(text: string): boolean {
 export function toStorableText(text: string): string {
   if (isStorableText(text)) return text;
   let out = '';
-  for (let i = 0; i < text.length; i += 1) {
+  let i = 0;
+  while (i < text.length) {
     const code = text.charCodeAt(i);
     if (isHigh(code) && isLow(text.charCodeAt(i + 1))) {
       out += text.slice(i, i + 2);
-      i += 1;
+      i += 2;
     } else {
       out +=
         code === 0 || isHigh(code) || isLow(code) ? String.fromCharCode(0xfffd) : text.charAt(i);
+      i += 1;
     }
   }
   return out;

@@ -67,7 +67,7 @@ export const exportQuery = z
   .strictObject({ ...filterQuery, from: isoDate, to: isoDate })
   .superRefine((q, issues) => {
     const span = Date.parse(q.to) - Date.parse(q.from);
-    if (!(span > 0) || span > MAX_EXPORT_DAYS * DAY_MS) {
+    if (Number.isNaN(span) || span <= 0 || span > MAX_EXPORT_DAYS * DAY_MS) {
       issues.addIssue({
         code: 'custom',
         path: ['to'],

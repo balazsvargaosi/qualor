@@ -223,11 +223,14 @@ function alignLine(f: readonly Item[], c: readonly Item[]): [number, number][] {
       continue;
     }
     const pairs: [number, number][] = [];
-    for (let i = n, j = m; i > 0; j--) {
+    let i = n;
+    let j = m;
+    while (i > 0) {
       if (took[i * width + j]) {
         pairs.push(findingsShorter ? [i - 1, j - 1] : [j - 1, i - 1]);
         i--;
       }
+      j--;
     }
     best = { mismatches, cost: total, pairs };
   }
@@ -301,7 +304,10 @@ function layoutsOf(
     const t = of(index);
     const line = t?.line ?? 0;
     let parts = byLine.get(line);
-    if (!parts) byLine.set(line, (parts = []));
+    if (!parts) {
+      parts = [];
+      byLine.set(line, parts);
+    }
     parts.push(`${t?.column ?? 0}${SEP}${t?.message ?? ''}`);
   }
   const layouts = new Map<number, string>();
@@ -323,7 +329,10 @@ function groupsOf(
     const t = of(index);
     const line = t?.line ?? 0;
     let items = byLine.get(line);
-    if (!items) byLine.set(line, (items = []));
+    if (!items) {
+      items = [];
+      byLine.set(line, items);
+    }
     items.push({
       index,
       column: t?.column ?? 0,
@@ -492,7 +501,10 @@ export function matchFindings(
       if (matched.has(i)) return;
       const key = keyOf(f);
       let b = buckets.get(key);
-      if (!b) buckets.set(key, (b = { findings: [], candidates: [] }));
+      if (!b) {
+        b = { findings: [], candidates: [] };
+        buckets.set(key, b);
+      }
       b.findings.push(i);
     });
     candidates.forEach((c, i) => {

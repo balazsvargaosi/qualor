@@ -38,7 +38,8 @@ function ownerProblem(
   info: { mode: number; uid: number },
   fs: PluginFileSystem,
 ): string | null {
-  if ((info.mode & WRITABLE_BY_OTHERS) !== 0) return `${what} is writable by group or others`;
+  const writableByOthers = (info.mode & WRITABLE_BY_OTHERS) !== 0;
+  if (writableByOthers) return `${what} is writable by group or others`;
   if (info.uid !== 0 && info.uid !== fs.uid) {
     return `${what} is not owned by root or the server's user`;
   }

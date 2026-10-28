@@ -165,7 +165,10 @@ export async function loadProfileSet(
   for (const row of loaded?.settings ?? []) {
     if (!inChains.has(row.profileId)) continue;
     let forProfile = settings.get(row.profileId);
-    if (!forProfile) settings.set(row.profileId, (forProfile = new Map()));
+    if (!forProfile) {
+      forProfile = new Map();
+      settings.set(row.profileId, forProfile);
+    }
     forProfile.set(row.ruleId, {
       active: row.active,
       severityOverride: (row.severityOverride as Severity | null) ?? null,

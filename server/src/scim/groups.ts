@@ -159,21 +159,22 @@ async function membersOf(
   const out = new Map<string, { value: string; display: string | null }[]>(
     groupIds.map((id) => [id, []]),
   );
-  if (groupIds.length === 0) return out;
-  const rows = await tx
-    .select({
-      groupId: scimGroupMembers.groupId,
-      value: identities.id,
-      displayName: users.displayName,
-      userName: identities.scimUserName,
-    })
-    .from(scimGroupMembers)
-    .innerJoin(identities, eq(identities.id, scimGroupMembers.identityId))
-    .innerJoin(users, eq(users.id, identities.userId))
-    .where(inArray(scimGroupMembers.groupId, [...groupIds]))
-    .orderBy(asc(scimGroupMembers.createdAt), asc(identities.id));
-  for (const r of rows) {
-    out.get(r.groupId)?.push({ value: r.value, display: r.displayName ?? r.userName });
+  if (groupIds.length > 0) {
+    const rows = await tx
+      .select({
+        groupId: scimGroupMembers.groupId,
+        value: identities.id,
+        displayName: users.displayName,
+        userName: identities.scimUserName,
+      })
+      .from(scimGroupMembers)
+      .innerJoin(identities, eq(identities.id, scimGroupMembers.identityId))
+      .innerJoin(users, eq(users.id, identities.userId))
+      .where(inArray(scimGroupMembers.groupId, [...groupIds]))
+      .orderBy(asc(scimGroupMembers.createdAt), asc(identities.id));
+    for (const r of rows) {
+      out.get(r.groupId)?.push({ value: r.value, display: r.displayName ?? r.userName });
+    }
   }
   return out;
 }

@@ -219,7 +219,10 @@ export function duplicationByFile(report: Report): Map<string, FileDuplicationCo
     for (const block of group.blocks) {
       if (!lengths.has(block.path)) continue;
       let list = blocksByFile.get(block.path);
-      if (!list) blocksByFile.set(block.path, (list = []));
+      if (!list) {
+        list = [];
+        blocksByFile.set(block.path, list);
+      }
       list.push([block.startLine, block.endLine]);
     }
   }
