@@ -1617,7 +1617,7 @@ describe('safeProse: the model’s words made inert', () => {
     expect(prose(devanagari)).toBe(devanagari);
     // A mark after a digit, or one with nothing before it, is no part of a word.
     expect(prose(`5${acute} ${acute}x`)).toBe(`\` 5${acute} \` \` ${acute}x \``);
-    // The dashes of running text, by themselves; stuck to a word they are not plain.
+    // The dashes of running text, by themselves; a dash that joins two pieces is below.
     expect(prose('a — b – c')).toBe('a — b – c');
     expect(prose('— start')).toBe('— start');
     // A dash that joins two pieces keeps them plain, each checked on its own.

@@ -278,19 +278,21 @@ function proseWordAt(text: string, at: number): { out: string; next: number } {
   if (isPlainProse(word)) return { out: word, next: end };
   // An em or en dash between two pieces: each piece is read on its own (the second from its start,
   // so that a span of the model's after the dash stays one), and the dash stays plain.
-  // (A range of hashes is no join: it stays one span.)
-  for (let i = 0; i < word.length && !PROSE_RANGE.test(word); i += 1) {
-    if (word.charAt(i) === '`') break;
-    if (i === 0) continue;
-    if (!PROSE_DASHES.has(word.charAt(i))) continue;
-    const join = dashJoinEnd(word, i);
-    if (join >= word.length) break;
-    const head = word.slice(0, i);
-    const rest = proseWordAt(text, at + join);
-    return {
-      out: `${isPlainProse(head) ? head : wordSpan(head)}${word.slice(i, join)}${rest.out}`,
-      next: rest.next,
-    };
+  // A range of hashes is no join: it stays one span.
+  if (!PROSE_RANGE.test(word)) {
+    for (let i = 0; i < word.length; i += 1) {
+      if (word.charAt(i) === '`') break;
+      if (i === 0) continue;
+      if (!PROSE_DASHES.has(word.charAt(i))) continue;
+      const join = dashJoinEnd(word, i);
+      if (join >= word.length) break;
+      const head = word.slice(0, i);
+      const rest = proseWordAt(text, at + join);
+      return {
+        out: `${isPlainProse(head) ? head : wordSpan(head)}${word.slice(i, join)}${rest.out}`,
+        next: rest.next,
+      };
+    }
   }
   return { out: wordSpan(word), next: end };
 }
