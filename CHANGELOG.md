@@ -190,7 +190,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
   whose `libbrotli1` git's libcurl links, fixes CVE-2026-111497 there too (DLA-4855-1), with
   Debian's current security updates of openssl, expat, pcre2, PHP 8.2 and ca-certificates.
 - Dependencies: `@modelcontextprotocol/server` and `client` 2.3.0, `@angular/*` 22.2.1, `vite`
-  8.3.3, `vitest` 5.0.3 and `fastify` 5.12.6, which fix published advisories in these packages.
+  8.3.3, `vitest` 5.0.3, `fastify` 5.12.6 and `zod` 4.6.7, which fix published advisories in these
+  packages.
 
 ## [0.11.0] - 2026-10-19
 
