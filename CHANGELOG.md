@@ -6,6 +6,10 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A word that an em or en dash joins to a code span, as in `page`—and, no longer turns into one code span with the words around it. Each piece of the word is checked on its own, so a link or reference beside the dash still stays inert.
+
 ## [0.12.0] - 2026-10-28
 
 ### Added

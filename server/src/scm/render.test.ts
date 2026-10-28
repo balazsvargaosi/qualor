@@ -1338,9 +1338,9 @@ describe('safeProse: the model’s words made inert', () => {
   it('2–3 stays plain', () => {
     expect(prose('Lines 2–3 changed, see 10–12.')).toBe('Lines 2–3 changed, see 10–12.');
     expect(prose('(5–6)')).toBe('(5–6)');
-    // A range of hashes, a dash with a letter and a hyphen are no number range.
+    // A range of hashes and a dash with nothing after it are no number range; a dash joining a letter and a number is prose.
     expect(prose('1234567–1234890')).toBe('` 1234567–1234890 `');
-    expect(prose('a–3')).toBe('` a–3 `');
+    expect(prose('a–3')).toBe('a–3');
     expect(prose('2–')).toBe('` 2– `');
   });
 
@@ -1620,7 +1620,18 @@ describe('safeProse: the model’s words made inert', () => {
     // The dashes of running text, by themselves; stuck to a word they are not plain.
     expect(prose('a — b – c')).toBe('a — b – c');
     expect(prose('— start')).toBe('— start');
-    expect(prose('a—b a–b')).toBe('` a—b ` ` a–b `');
+    // A dash that joins two pieces keeps them plain, each checked on its own.
+    expect(prose('a—b a–b')).toBe('a—b a–b');
+    expect(prose('omits the last `page`—and all rows')).toBe(
+      'omits the last ` page `—and all rows',
+    );
+    expect(prose('the last page—and all rows')).toBe('the last page—and all rows');
+    expect(prose('2–3 x-1')).toBe(`2–3 ${prose('x-1')}`);
+    // Whatever a provider links beside a dash is still in a span of its own.
+    expect(prose('x—#1')).toBe('x—` #1 `');
+    expect(prose('see—JIRA-12')).toBe('see—` JIRA-12 `');
+    expect(prose('a—https://example.com/x')).toBe('a—` https://example.com/x `');
+    expect(prose('a–`#1`')).toBe('a–` #1 `');
     expect(prose('wait… what… really?!')).toBe('wait… what… really?!');
     // An ellipsis closes a word, it does not make one.
     expect(prose('… x')).toBe('` … ` x');
@@ -1901,6 +1912,8 @@ describe('safeProse: the model’s words made inert', () => {
       '`a`//`b`',
       '`a`@`b`',
       '/`b`',
+      '—',
+      '–',
     ];
     const next = seededRandom(20_261_024);
     for (let round = 0; round < 3_000; round += 1) {
