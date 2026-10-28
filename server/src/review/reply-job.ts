@@ -138,6 +138,29 @@ type Seen = { thread: ReadThread; posted: number | null } & (
   { decided: Decided } | { round: PendingRound }
 );
 
+/** What a reply that changed no status came to: nothing posted, or an answer, of the AI review's finding or not. */
+function unchangedOutcome(noteId: number | null, issue: ReplyIssue): ReplyOutcome {
+  if (noteId === null) return 'acknowledged';
+  return issue.engine === AI_ENGINE ? 'answered' : 'explained';
+}
+
+/**
+ * Whether a request is left once the decision is known: the answer to post, or the thread to
+ * resolve. A verdict that is not `keep` with no answer posted always has one: the resolution, or,
+ * in a thread resolved meanwhile, the post that says what its row changed.
+ */
+function requestLeft(decision: Decided, seen: Seen): boolean {
+  if (decision.verdict === 'keep') return seen.posted === null && decision.answer !== '';
+  return seen.posted === null || !seen.thread.resolved;
+}
+
+/** What a row in a thread needs, once the checks before the first go are passed. */
+interface Ready {
+  issue: ReplyIssue;
+  side: ThreadSide;
+  replyDeps: ReplyDeps;
+}
+
 /**
  * The row's issue as the reply conversation is told of it, when it is an issue of the row's
  * project; null when it is not, or is gone. Its lines and line hash are the issue row's, and an AI
@@ -329,31 +352,18 @@ class ReplyJob extends JobSteps {
       return this.failInternal(taken, 'the row has no thread, no issue or no merge request');
     }
     const row: ReplyInThread = { ...taken, threadId: taken.threadId, issueId: taken.issueId };
-    const settings = await readLlmSettings(db);
-    const provider = settings.provider;
-    if (provider === null || !reviewActive(settings, target.project).active) {
-      return this.end(row, { status: 'skipped', reason: 'inactive' });
-    }
-    const replyDeps = this.replyDeps(row, settings, target);
-    if (row.verdict === null && (await replyTokensLeft(replyDeps, provider)) <= 0) {
-      return this.end(row, { status: 'skipped', reason: 'budget_spent' });
-    }
-    // A row the model has yet to decide waits for a model provider that is failing for every caller
-    // before anything is read from GitLab or GitHub or masked. Only a job that can be the probe of
-    // a half-open circuit goes on.
-    if (row.verdict === null && !this.deps.llmCircuit.wouldPass(provider.baseUrl)) {
-      return this.waitForModel(row, provider.baseUrl);
-    }
-    const issue = await issueOf(db, row);
-    if (issue === null) return this.failInternal(row, 'the issue is not of the project of the row');
-    // With no decision yet, nothing is read or sent for a round that a newer one covers.
-    if (row.verdict === null && (await coveredByNewer(db, row))) return this.end(row, SUPERSEDED);
+    return this.answerInThread(row, target);
+  }
 
-    const side = this.sideOf(row, target);
-    if (side === 'gone') return this.end(row, THREAD_GONE);
-    if (side === 'unusable') {
-      return this.failInternal(row, 'the SCM connection of the project cannot be used');
-    }
+  /**
+   * Answers a reply in its thread: the checks that can end the row first, then what the first go
+   * reads, the model's decision, and the rest of the answer.
+   */
+  private async answerInThread(row: ReplyInThread, target: Target): Promise<void> {
+    const { db } = this.deps;
+    const ready = await this.checked(row, target);
+    if (ready === null) return;
+    const { issue, side, replyDeps } = ready;
     const seen = await this.throughCircuit(row, side, () => this.read(row, target, issue, side));
     if (seen === WAITING) return;
     if (seen === CLOSED) return this.end(row, { status: 'skipped', reason: 'closed' });
@@ -373,18 +383,59 @@ class ReplyJob extends JobSteps {
 
     // The rest posts the answer and resolves the thread, as far as either is left to do. When
     // anything is, the rest goes through the circuit as one go, the status change with it, once the
-    // issue is found the project's again: a row that waits for the circuit has changed nothing. A
-    // verdict that is not `keep` with no answer posted always has a request left: the resolution,
-    // or, in a thread resolved meanwhile, the post that says what its row changed.
-    const asks =
-      decision.verdict === 'keep'
-        ? seen.posted === null && decision.answer !== ''
-        : seen.posted === null || !seen.thread.resolved;
-    if (!asks) return this.finish(row, issue, side, seen, decision);
+    // issue is found the project's again: a row that waits for the circuit has changed nothing.
+    if (!requestLeft(decision, seen)) return this.finish(row, issue, side, seen, decision);
     if ((await issueOf(db, row)) === null) {
       return this.failInternal(row, 'the issue is not of the project of the row');
     }
     await this.throughCircuit(row, side, () => this.finish(row, issue, side, seen, decision));
+  }
+
+  /**
+   * The checks before anything is read from the provider: that AI review is on, that the row has
+   * tokens and a model that is up, that its issue and thread are still there. The row is ended here
+   * when one fails, and the result is null.
+   */
+  private async checked(row: ReplyInThread, target: Target): Promise<Ready | null> {
+    const { db } = this.deps;
+    const settings = await readLlmSettings(db);
+    const provider = settings.provider;
+    if (provider === null || !reviewActive(settings, target.project).active) {
+      await this.end(row, { status: 'skipped', reason: 'inactive' });
+      return null;
+    }
+    const replyDeps = this.replyDeps(row, settings, target);
+    if (row.verdict === null && (await replyTokensLeft(replyDeps, provider)) <= 0) {
+      await this.end(row, { status: 'skipped', reason: 'budget_spent' });
+      return null;
+    }
+    // A row the model has yet to decide waits for a model provider that is failing for every caller
+    // before anything is read from GitLab or GitHub or masked. Only a job that can be the probe of
+    // a half-open circuit goes on.
+    if (row.verdict === null && !this.deps.llmCircuit.wouldPass(provider.baseUrl)) {
+      await this.waitForModel(row, provider.baseUrl);
+      return null;
+    }
+    const issue = await issueOf(db, row);
+    if (issue === null) {
+      await this.failInternal(row, 'the issue is not of the project of the row');
+      return null;
+    }
+    // With no decision yet, nothing is read or sent for a round that a newer one covers.
+    if (row.verdict === null && (await coveredByNewer(db, row))) {
+      await this.end(row, SUPERSEDED);
+      return null;
+    }
+    const side = this.sideOf(row, target);
+    if (side === 'gone') {
+      await this.end(row, THREAD_GONE);
+      return null;
+    }
+    if (side === 'unusable') {
+      await this.failInternal(row, 'the SCM connection of the project cannot be used');
+      return null;
+    }
+    return { issue, side, replyDeps };
   }
 
   /**
@@ -538,9 +589,7 @@ class ReplyJob extends JobSteps {
       }
     }
 
-    const outcome: ReplyOutcome =
-      changed ??
-      (noteId === null ? 'acknowledged' : issue.engine === AI_ENGINE ? 'answered' : 'explained');
+    const outcome: ReplyOutcome = changed ?? unchangedOutcome(noteId, issue);
     return this.end(row, { status: 'done', outcome });
   }
 
