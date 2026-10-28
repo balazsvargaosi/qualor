@@ -4,14 +4,14 @@ import { XSS_RULE_TEXT } from './seed-data';
 test('the rules the organization met, searchable, with descriptions as text', async ({ page }) => {
   await page.goto('/rules');
   await expect(page).toHaveTitle('Rules · Qualor');
-  await page.getByRole('searchbox', { name: 'Search rules' }).fill('eqeqeq');
+  await page.getByRole('searchbox', { name: 'Search rules' }).fill('no-img-element');
   await page.getByRole('button', { name: 'Search' }).click();
   await expect(page.locator('tbody tr')).toHaveCount(1);
-  await page.getByText('Require === and !==').click();
+  await page.getByText('Prevent usage of the img element').click();
   await expect(page.getByText(XSS_RULE_TEXT)).toBeVisible();
   await expect(page.getByRole('link', { name: 'Rule documentation' })).toHaveAttribute(
     'href',
-    'https://eslint.org/docs/latest/rules/eqeqeq',
+    'https://nextjs.org/docs/messages/no-img-element',
   );
   await expect(page.getByRole('link', { name: 'Rule documentation' })).toHaveAttribute(
     'rel',

@@ -19,8 +19,9 @@ export const LEGACY = { key: 'acme/legacy-billing', name: 'Legacy Billing' };
 export const MERGE_REQUEST = { id: '42', source: 'feature/refund-limits' };
 
 /** An issue message and a rule description that carry HTML; both must stay text. */
-export const XSS_MESSAGE = 'Avoid <img src=x onerror="alert(1)"> in refund notes';
-export const XSS_RULE_TEXT = '<script>alert("rule")</script>';
+export const XSS_MESSAGE =
+  'Using <img src="/receipt.png" onerror="alert(1)"> could result in slower LCP and higher bandwidth. Consider using <Image /> from next/image to automatically optimize images.';
+export const XSS_RULE_TEXT = '<img src="/logo.png" onerror="alert(\x27rule\x27)">';
 /**
  * The open issue of Payments API with three related locations (seed.ts): src/refunds/limits.ts:10,
  * src/payments/gateway.ts:88–92 and src/payments/gateway.ts:140.

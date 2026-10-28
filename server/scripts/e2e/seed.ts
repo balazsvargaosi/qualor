@@ -22,10 +22,12 @@ export interface SeedCredentials {
   alicePassword: string;
 }
 
-export const XSS_MESSAGE = 'Avoid <img src=x onerror="alert(1)"> in refund notes';
+export const XSS_MESSAGE =
+  'Using <img src="/receipt.png" onerror="alert(1)"> could result in slower LCP and higher bandwidth. Consider using <Image /> from next/image to automatically optimize images.';
 /** The open issue with related locations (ui/e2e/seed-data.ts RELATED_ISSUE_MESSAGE). */
 const RELATED_ISSUE_MESSAGE = 'Detected eval() with a non-literal argument.';
-const XSS_DESCRIPTION = 'Compare with `===`.\n\n<script>alert("rule")</script> **never** `==`.';
+const XSS_DESCRIPTION =
+  'Prefer **next/image** over <img src="/logo.png" onerror="alert(\'rule\')"> so images are optimized and lazy-loaded.';
 const REPORT_CONTENT_TYPE = 'application/vnd.qualor.report+json';
 
 class Client {
@@ -98,9 +100,18 @@ const ENGINES: Report['engines'] = [
     durationMs: 8_400,
     rules: [
       {
+        id: '@next/next/no-img-element',
+        name: 'Prevent usage of the img element',
+        shortDescription: XSS_DESCRIPTION,
+        helpUri: 'https://nextjs.org/docs/messages/no-img-element',
+        defaultSeverity: 'medium',
+        quality: 'reliability',
+        languages: ['typescript', 'javascript'],
+      },
+      {
         id: 'eqeqeq',
         name: 'Require === and !==',
-        shortDescription: XSS_DESCRIPTION,
+        shortDescription: 'Compare with `===` and `!==`, never `==` or `!=`.',
         helpUri: 'https://eslint.org/docs/latest/rules/eqeqeq',
         defaultSeverity: 'medium',
         quality: 'reliability',
@@ -396,7 +407,7 @@ const PAYMENTS_SECOND: FindingSpec[] = [
 const PAYMENTS_THIRD: FindingSpec[] = [
   {
     engine: 'eslint',
-    rule: 'eqeqeq',
+    rule: '@next/next/no-img-element',
     path: 'src/refunds/limits.ts',
     line: 44,
     message: XSS_MESSAGE,
@@ -621,7 +632,7 @@ export async function seedDemo(base: string, credentials: SeedCredentials): Prom
     ...common,
     version: '1.4.0',
     date: '2026-09-15T09:00:00Z',
-    revision: 'c'.repeat(40),
+    revision: '3f9a1c7e5b2d80a46c1e93d7f2b5a08e4c6d1b97',
     firstAnalysis: false,
     files: paymentsFiles(1, true),
     findings: [...PAYMENTS_BASE, ...PAYMENTS_SECOND, ...PAYMENTS_THIRD],

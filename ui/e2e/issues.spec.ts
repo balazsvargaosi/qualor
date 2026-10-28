@@ -56,7 +56,7 @@ test('an issue: rule text stays text, a status change needs its comment, history
   await expect(page.getByRole('heading', { level: 2 })).toHaveText(XSS_MESSAGE);
   await expect(page.getByText(XSS_RULE_TEXT)).toBeVisible();
   const docs = page.getByRole('link', { name: 'Rule documentation' });
-  await expect(docs).toHaveAttribute('href', 'https://eslint.org/docs/latest/rules/eqeqeq');
+  await expect(docs).toHaveAttribute('href', 'https://nextjs.org/docs/messages/no-img-element');
   await expect(docs).toHaveAttribute('rel', 'noopener noreferrer');
   await expect(docs).toHaveAttribute('target', '_blank');
   await expectAccessible(page);
