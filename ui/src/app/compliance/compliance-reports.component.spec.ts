@@ -23,6 +23,14 @@ const BRANCHES = [
   { id: '0190a6c2-0000-7000-8000-0000000000b1', name: 'main', isMain: true },
 ];
 
+/** The name `aria-labelledby` gives `el`: the texts of the elements it names, in order. */
+function labelOf(root: HTMLElement, el: Element | null | undefined): string {
+  const ids = el?.getAttribute('aria-labelledby')?.split(/\s+/) ?? [];
+  return ids
+    .map((id) => root.querySelector(`[id="${id}"]`)?.textContent?.replace(/\s+/g, ' ').trim())
+    .join(' ');
+}
+
 /** The trimmed text of each header and data cell of a table row. */
 function cellTexts(row: Element): (string | undefined)[] {
   return [...row.querySelectorAll('th, td')].map((c) => c.textContent?.trim());
@@ -314,6 +322,11 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
       'CWE Top 25 2025',
     ]);
     expect(switcher[0]?.getAttribute('aria-pressed')).toBe('true');
+    // The preview is named by its heading; its scrolling table by the table's caption.
+    expect(labelOf(root, preview)).toBe('Summary');
+    expect(labelOf(root, preview.querySelector('.panel-scroll'))).toBe(
+      'Open findings by category of OWASP Top 10 2021',
+    );
     const categoryRows = () =>
       [...preview.querySelectorAll('.compliance-categories tbody tr')].map(cellTexts);
     expect(categoryRows()[0]?.slice(0, 9)).toEqual([

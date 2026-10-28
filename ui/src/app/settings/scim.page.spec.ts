@@ -98,6 +98,14 @@ async function render() {
   return { fixture, root: fixture.nativeElement as HTMLElement };
 }
 
+/** The name `aria-labelledby` gives `el`: the texts of the elements it names, in order. */
+function labelOf(root: HTMLElement, el: Element | null | undefined): string {
+  const ids = el?.getAttribute('aria-labelledby')?.split(/\s+/) ?? [];
+  return ids
+    .map((id) => root.querySelector(`[id="${id}"]`)?.textContent?.replace(/\s+/g, ' ').trim())
+    .join(' ');
+}
+
 function button(root: HTMLElement, text: string): HTMLButtonElement {
   return [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === text)!;
 }
@@ -181,6 +189,14 @@ describe('ScimPage (sso-scim.md §12, §18)', () => {
     expect(table).toContain('Sep 20, 2026, 10:00 AM UTC');
     expect(table).toContain('Not used yet');
     expect(table).toContain('Revoked');
+  });
+
+  it('names each connection by its name, and its token table by the name and Tokens', async () => {
+    setup();
+    const { root } = await render();
+    const panel = root.querySelector(`section[data-key="${CONNECTION}"]`);
+    expect(labelOf(root, panel)).toBe('Acme SSO');
+    expect(labelOf(root, panel?.querySelector('.panel-scroll'))).toBe('Acme SSO Tokens');
   });
 
   it("creates a token in its connection's New token dialog, which shows it once", async () => {

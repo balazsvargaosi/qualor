@@ -43,7 +43,7 @@
       <section
         class="card panel"
         [attr.data-key]="c.id"
-        [attr.aria-labelledby]="'scim-title-' + c.id + ' scim-tokens-caption-' + c.id"
+        [attr.aria-labelledby]="'scim-title-' + c.id"
       >
         <div class="panel-head connection-head">
           <div class="connection-title">
@@ -88,7 +88,7 @@
           class="panel-scroll"
           tabindex="0"
           role="group"
-          [attr.aria-labelledby]="'scim-title-' + c.id"
+          [attr.aria-labelledby]="'scim-title-' + c.id + ' scim-tokens-caption-' + c.id"
         >
           <table [id]="'scim-tokens-' + c.id">
             <caption
