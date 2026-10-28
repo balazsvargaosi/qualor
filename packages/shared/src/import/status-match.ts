@@ -318,7 +318,13 @@ class CursorHeap {
     const h = this.heap;
     const top = h[0];
     const last = h.pop();
-    if (top === undefined || last === undefined || h.length === 0) return top;
+    if (top !== undefined && last !== undefined && h.length > 0) this.siftDown(last);
+    return top;
+  }
+
+  /** Puts `last` at the root and moves it down to where the heap order holds again. */
+  private siftDown(last: Cursor): void {
+    const h = this.heap;
     h[0] = last;
     for (let i = 0; ;) {
       const a = 2 * i + 1;
@@ -333,7 +339,6 @@ class CursorHeap {
       h[i] = t;
       i = m;
     }
-    return top;
   }
 }
 
@@ -639,15 +644,16 @@ export function matchStatuses(
       const alone = sizes.get(g) === 1;
       let one = -1;
       let many = false;
-      scan: for (const run of reach.get(g) ?? []) {
+      for (const run of reach.get(g) ?? []) {
         for (const ci of run.cands) {
           if ((!alone && forced[ci] === level) || ci === one) continue;
           if (one !== -1) {
             many = true;
-            break scan;
+            break;
           }
           one = ci;
         }
+        if (many) break;
       }
       if (one === -1 || many) {
         markAmbiguous(g);

@@ -105,7 +105,9 @@ export function ratio(numerator: number, denominator: number): number | null {
   return Math.round((numerator / denominator) * 1000) / 10;
 }
 
-const RATING: Record<Severity, 1 | 2 | 3 | 4 | 5> = {
+type Rating = 1 | 2 | 3 | 4 | 5;
+
+const RATING: Record<Severity, Rating> = {
   info: 1,
   low: 2,
   medium: 3,
@@ -113,8 +115,8 @@ const RATING: Record<Severity, 1 | 2 | 3 | 4 | 5> = {
   blocker: 5,
 };
 
-export function ratingFromSeverities(severities: Iterable<Severity>): 1 | 2 | 3 | 4 | 5 {
-  let worst: 1 | 2 | 3 | 4 | 5 = 1;
+export function ratingFromSeverities(severities: Iterable<Severity>): Rating {
+  let worst: Rating = 1;
   for (const s of severities) if (RATING[s] > worst) worst = RATING[s];
   return worst;
 }
