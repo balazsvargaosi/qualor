@@ -91,6 +91,21 @@ function workerEntry(): { url: URL; execArgv: string[] } {
   };
 }
 
+/** A promise, and the functions that settle it. */
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: () => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 const messageOf = (error: unknown): string => {
   if (error instanceof Error) return error.message;
   return typeof error === 'string' ? error : 'unknown error';
@@ -320,7 +335,7 @@ export class Masker {
       resourceLimits: { maxOldGenerationSizeMb: this.heapMb },
     });
     this.started += 1;
-    const { promise: ready, resolve: loaded, reject: failed } = Promise.withResolvers<void>();
+    const { promise: ready, resolve: loaded, reject: failed } = deferred();
     // Awaited by whoever needs the worker; if nobody does, a failure is not an unhandled rejection.
     ready.catch(() => undefined);
     const startTimer = setTimeout(

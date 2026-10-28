@@ -426,7 +426,7 @@ function settlePriors(
   priors: ReviewContext['prior'],
   outcome: Pick<Reviewed, 'prior' | 'shownPriorIds'>,
   known: {
-    named: ReadonlySet<string>;
+    named: ReadonlySet<string | null>;
     raisedAgain: ReadonlySet<string>;
     changes: ReadonlyMap<string, ReviewableChange>;
   },

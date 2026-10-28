@@ -202,6 +202,13 @@ export interface PipelineDeps {
   providerKey: string | null;
 }
 
+/** The tier of a review of this many changed lines in this many files. */
+function tierOf(changedLines: number, files: number): ReviewTier {
+  if (changedLines <= TIER_LIMITS.trivialLines) return 'trivial';
+  if (changedLines <= TIER_LIMITS.liteLines && files <= TIER_LIMITS.liteFiles) return 'lite';
+  return 'full';
+}
+
 /**
  * The tier of a review and its specialists, in their order: by the lines the reviewed changes add
  * and remove, and their number. A reviewed change that looks security-sensitive adds the security
@@ -215,12 +222,7 @@ export function planReview(reviewed: readonly ReviewableChange[]): {
 } {
   const changedLines = reviewed.reduce((sum, change) => sum + change.changedLines, 0);
   const files = reviewed.length;
-  const tier: ReviewTier =
-    changedLines <= TIER_LIMITS.trivialLines
-      ? 'trivial'
-      : changedLines <= TIER_LIMITS.liteLines && files <= TIER_LIMITS.liteFiles
-        ? 'lite'
-        : 'full';
+  const tier = tierOf(changedLines, files);
   const chosen = new Set<Specialist>(TIER_SPECIALISTS[tier]);
   if (reviewed.some((change) => change.sensitive)) chosen.add('security');
   return { tier, specialists: SPECIALISTS.filter((s) => chosen.has(s)), changedLines, files };
@@ -571,6 +573,98 @@ const isSerious = (finding: JudgedFinding): boolean =>
   finding.category === 'security' &&
   (finding.severity === 'critical' || finding.severity === 'major');
 
+/** How a review ends when a conversation does not give an answer. */
+type StageEnd = typeof STOPPED | { kind: 'failed'; reason: 'provider_error' | 'provider_no_tools' };
+
+/** The end of the review that the end of a slot is. */
+function endOf(asked: Extract<Asked<unknown>, { kind: 'stopped' | 'failed' }>): StageEnd {
+  return asked.kind === 'stopped' ? STOPPED : { kind: 'failed', reason: asked.reason };
+}
+
+/**
+ * The specialists, one after the other: the ones that ran, and the findings they gave, labelled.
+ * The review's end when a conversation stopped or failed.
+ */
+async function runSpecialists(
+  context: ReviewContext,
+  specialists: readonly Specialist[],
+  review: Review,
+  stage: StageTokens,
+): Promise<{ ran: Specialist[]; labelled: LabelledFinding[] } | StageEnd> {
+  const ran: Specialist[] = [];
+  const labelled: LabelledFinding[] = [];
+  const shown = specialistData(context);
+  for (const specialist of specialists) {
+    const asked = await review.ask(specialist, shown, specialistAnswerSchema, stage);
+    if (asked.kind === 'stopped' || asked.kind === 'failed') return endOf(asked);
+    if (asked.kind === 'no_tokens') continue;
+    if (asked.kind === 'window_full') {
+      // It adds nothing, and the review notes the window (`ask`).
+      if (asked.ran) ran.push(specialist);
+      continue;
+    }
+    ran.push(specialist);
+    if (asked.kind === 'unread') {
+      review.note('reviewer_unreadable');
+      continue;
+    }
+    const first = labelled.length;
+    labelled.push(
+      ...asked.value.findings.map((found, i) => ({
+        id: `s${first + i + 1}`,
+        reviewer: specialist,
+        finding: reviewFindingOf(found),
+      })),
+    );
+  }
+  return { ran, labelled };
+}
+
+/**
+ * Verifies the serious findings, one conversation each, at most MAX_VERIFICATIONS of them, with
+ * `tokens` shared between them: the verdicts, by finding. The review's end when a conversation
+ * stopped or failed.
+ */
+async function verifySerious(
+  review: Review,
+  serious: readonly JudgedFinding[],
+  tokens: number,
+  onPhase: (phase: ReviewPhase) => Promise<void>,
+): Promise<Map<JudgedFinding, VerifyVerdict> | StageEnd> {
+  const verdicts = new Map<JudgedFinding, VerifyVerdict>();
+  if (serious.length === 0) return verdicts;
+  await onPhase('verification');
+  if (serious.length > MAX_VERIFICATIONS) review.note('verification_capped');
+  const checked = serious.slice(0, MAX_VERIFICATIONS);
+  const verification = new StageTokens(tokens, checked.length);
+  for (const finding of checked) {
+    const told = await review.ask('verify', verifyData(finding), verifyAnswerSchema, verification);
+    if (told.kind === 'stopped' || told.kind === 'failed') return endOf(told);
+    // Not verified: the finding stays as the judge left it (a window that had no room for the
+    // check is noted by `ask`).
+    if (told.kind === 'unread') review.note('reviewer_unreadable');
+    if (told.kind === 'answer') verdicts.set(finding, told.value.verdict);
+  }
+  return verdicts;
+}
+
+/** The findings after their verdicts: a rejected one is gone, one that needs validation is less certain. */
+function withVerdicts(
+  kept: readonly JudgedFinding[],
+  verdicts: ReadonlyMap<JudgedFinding, VerifyVerdict>,
+): JudgedFinding[] {
+  return kept.flatMap((finding): JudgedFinding[] => {
+    const verdict = verdicts.get(finding);
+    if (verdict === undefined) return [finding];
+    if (verdict === 'rejected') return [];
+    return [
+      verdict === 'needs_validation'
+        ? { ...finding, confidence: 'medium', verification: verdict }
+        : { ...finding, verification: verdict },
+    ];
+  });
+}
+
 /**
  * Reviews the merge request the context is of, with `budget` tokens shared out between its stages
  * (the header above): each conversation is given its tokens, and keeps room in them for its
@@ -606,32 +700,9 @@ export async function runReviewPipeline(
     shareOf(budget, STAGE_SHARES.specialists),
     plan.specialists.length,
   );
-  const ran: Specialist[] = [];
-  const labelled: LabelledFinding[] = [];
-  const shown = specialistData(context);
-  for (const specialist of plan.specialists) {
-    const asked = await review.ask(specialist, shown, specialistAnswerSchema, specialists);
-    if (asked.kind === 'stopped') return STOPPED;
-    if (asked.kind === 'failed') return { kind: 'failed', reason: asked.reason };
-    if (asked.kind === 'no_tokens') continue;
-    if (asked.kind === 'window_full') {
-      // It adds nothing, and the review notes the window (`ask`).
-      if (asked.ran) ran.push(specialist);
-      continue;
-    }
-    ran.push(specialist);
-    if (asked.kind === 'unread') {
-      review.note('reviewer_unreadable');
-      continue;
-    }
-    for (const found of asked.value.findings) {
-      labelled.push({
-        id: `s${labelled.length + 1}`,
-        reviewer: specialist,
-        finding: reviewFindingOf(found),
-      });
-    }
-  }
+  const reviewed = await runSpecialists(context, plan.specialists, review, specialists);
+  if ('kind' in reviewed) return reviewed;
+  const { ran, labelled } = reviewed;
 
   // The judge, with its own share and what the specialists left of theirs: what they spent past
   // what they were given is not taken from it. Its data takes a third of its share, and of its cap
@@ -649,8 +720,7 @@ export async function runReviewPipeline(
   );
   const judge = new StageTokens(judgeShare + specialists.unspent(), 1);
   const asked = await review.ask('judge', judgeShown, judgeAnswerSchema, judge);
-  if (asked.kind === 'stopped') return STOPPED;
-  if (asked.kind === 'failed') return { kind: 'failed', reason: asked.reason };
+  if (asked.kind === 'stopped' || asked.kind === 'failed') return endOf(asked);
   if (asked.kind === 'window_full') return JUDGE_WINDOW_FULL;
   if (asked.kind !== 'answer') return NOT_JUDGED;
   const answer = asked.value;
@@ -675,44 +745,17 @@ export async function runReviewPipeline(
   // The serious security findings, critical first, each verified alone, with the verification's
   // own share and what the judge left of its tokens: what the stages before it overspent is not
   // taken from it.
-  const verdicts = new Map<JudgedFinding, VerifyVerdict>();
   const serious = kept
     .filter(isSerious)
     .sort((a, b) => Number(b.severity === 'critical') - Number(a.severity === 'critical'));
-  if (serious.length > 0) {
-    await onPhase('verification');
-    if (serious.length > MAX_VERIFICATIONS) review.note('verification_capped');
-    const checked = serious.slice(0, MAX_VERIFICATIONS);
-    const verification = new StageTokens(
-      shareOf(budget, STAGE_SHARES.verification) + judge.unspent(),
-      checked.length,
-    );
-    for (const finding of checked) {
-      const told = await review.ask(
-        'verify',
-        verifyData(finding),
-        verifyAnswerSchema,
-        verification,
-      );
-      if (told.kind === 'stopped') return STOPPED;
-      if (told.kind === 'failed') return { kind: 'failed', reason: told.reason };
-      // Not verified: the finding stays as the judge left it (a window that had no room for the
-      // check is noted by `ask`).
-      if (told.kind === 'unread') review.note('reviewer_unreadable');
-      if (told.kind === 'answer') verdicts.set(finding, told.value.verdict);
-    }
-  }
-
-  const findings = kept.flatMap((finding): JudgedFinding[] => {
-    const verdict = verdicts.get(finding);
-    if (verdict === undefined) return [finding];
-    if (verdict === 'rejected') return [];
-    return [
-      verdict === 'needs_validation'
-        ? { ...finding, confidence: 'medium', verification: verdict }
-        : { ...finding, verification: verdict },
-    ];
-  });
+  const verdicts = await verifySerious(
+    review,
+    serious,
+    shareOf(budget, STAGE_SHARES.verification) + judge.unspent(),
+    onPhase,
+  );
+  if ('kind' in verdicts) return verdicts;
+  const findings = withVerdicts(kept, verdicts);
   return {
     kind: 'reviewed',
     tier: plan.tier,
