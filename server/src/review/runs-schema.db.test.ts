@@ -61,7 +61,7 @@ function reasonsAllowedFor(status: ReviewRunStatus): readonly (string | null)[] 
   return [null];
 }
 
-describe('review_runs and review_runs and review_findings (6I-3, migration 0016_review_runs)', () => {
+describe('review_runs and review_findings (6I-3, migration 0016_review_runs)', () => {
   let t: TestDatabase;
   let organizationId: string;
   let projectId: string;
