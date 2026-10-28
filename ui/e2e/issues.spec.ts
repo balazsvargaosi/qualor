@@ -1,5 +1,5 @@
 import { expect, expectAccessible, test } from './fixtures';
-import { MERGE_REQUEST, PAYMENTS, XSS_MESSAGE, XSS_RULE_TEXT } from './seed-data';
+import { AI_FINDING, MERGE_REQUEST, PAYMENTS, XSS_MESSAGE, XSS_RULE_TEXT } from './seed-data';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/projects');
@@ -128,6 +128,8 @@ test('the issues of a merge request change status in bulk', async ({ page }) => 
     .getByLabel('Branch')
     .selectOption({ label: `!${MERGE_REQUEST.id} ${MERGE_REQUEST.source} → main` });
   await expect(page).toHaveURL(/branch=/);
+  // The merge request's own list, not main's still on screen: its AI finding is only there.
+  await expect(page.getByRole('link', { name: AI_FINDING.message })).toBeVisible();
   await page.getByLabel('Select all issues on this page').check();
   await expect(page.getByText(/\d+ issues selected/)).toBeVisible();
   await page.getByLabel('New status').selectOption({ label: 'Resolve' });
