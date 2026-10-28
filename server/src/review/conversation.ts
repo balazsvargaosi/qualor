@@ -47,8 +47,8 @@ export const CONVERSATION_LIMITS = {
 export const CONVERSATION_RETRIES = {
   /** Retries after a rate limit, each after the provider's Retry-After. */
   rateLimited: 2,
-  /** Retries in all after a timeout or an unreachable provider. */
-  transient: 1,
+  /** Retries in all after a timeout, a 5xx answer or an unreachable provider. */
+  transient: 2,
   /** The waits, in seconds, when the provider named none: llm.md §14's backoff. */
   backoffSeconds: [5, 30],
   minWaitSeconds: 1,
@@ -310,7 +310,8 @@ export function refusedForTools(err: LlmError, tools: readonly LlmToolSpec[]): b
  * The seconds to wait before trying a failed call again, counted against the retries of that call
  * (`retried`), or null when it is not tried again: a rate limit waits what the provider asked, but
  * never more than a minute and never less than a second, and twice at most; a timeout or an
- * unreachable provider waits the backoff, once in all; anything else is not tried again.
+ * unavailable provider waits what the provider asked (same bounds) or else the backoff, twice in
+ * all; anything else is not tried again.
  */
 function retryWait(
   err: LlmError,
@@ -326,8 +327,9 @@ function retryWait(
     (err.failure === 'timeout' || err.failure === 'unavailable') &&
     retried.transient < CONVERSATION_RETRIES.transient
   ) {
+    const asked = err.retryAfterSeconds ?? backoffSeconds[retried.transient] ?? maxWaitSeconds;
     retried.transient += 1;
-    return backoffSeconds[0];
+    return Math.min(maxWaitSeconds, Math.max(minWaitSeconds, asked));
   }
   return null;
 }

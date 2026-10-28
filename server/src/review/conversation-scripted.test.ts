@@ -752,6 +752,7 @@ describe('runConversation with a scripted provider', () => {
         callTurn([call('c1')], { usage: unknown }),
         new LlmError('timeout', 'The model did not answer within 60 s'),
         new LlmError('unavailable', 'The model provider could not be reached'),
+        new LlmError('unavailable', 'The model provider could not be reached'),
       );
       const result = await runConversation(s.input);
       expect(result).toMatchObject({ kind: 'failed', reason: 'provider_error', turns: 1 });
@@ -769,14 +770,14 @@ describe('runConversation with a scripted provider', () => {
       status: 200,
     });
 
-    it('is charged for a call that timed out, and again for the retry that timed out', async () => {
-      const s = scripted(timeout, timeout);
+    it('is charged for a call that timed out, and again for each retry that timed out', async () => {
+      const s = scripted(timeout, timeout, timeout);
       // Characters of two, three and four bytes: the guess is made from the bytes.
       s.input.user = 'é€😀'.repeat(100);
       expect(await runConversation(s.input)).toEqual({
         kind: 'failed',
         reason: 'provider_error',
-        inputTokens: quarterOfBytes(s.seen[0]!) + quarterOfBytes(s.seen[1]!),
+        inputTokens: [0, 1, 2].reduce((n, i) => n + quarterOfBytes(s.seen[i]!), 0),
         outputTokens: 0,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
@@ -913,21 +914,37 @@ describe('runConversation with a scripted provider', () => {
       expect(await runConversation(failing.input)).not.toHaveProperty('circuitOpen');
     });
 
-    it('timeouts and unavailable providers share one retry', async () => {
+    it('timeouts and unavailable providers share two retries', async () => {
       const timeout = new LlmError('timeout', 'The model did not answer within 60 s');
       const unavailable = new LlmError('unavailable', 'The model provider could not be reached');
-      const both = scripted(timeout, unavailable, turn('done'));
+      const both = scripted(timeout, unavailable, timeout, turn('done'));
       expect(await runConversation(both.input)).toMatchObject({
         kind: 'failed',
         reason: 'provider_error',
       });
-      expect(both.sleeps).toEqual([5_000]);
-      expect(both.seen).toHaveLength(2);
+      expect(both.sleeps).toEqual([5_000, 30_000]);
+      expect(both.seen).toHaveLength(3);
 
       const once = scripted(timeout, turn('done'));
       expect(await runConversation(once.input)).toMatchObject({ kind: 'answer' });
       expect(once.sleeps).toEqual([5_000]);
     });
+
+    it.each([
+      [12, 12_000],
+      [600, 60_000],
+    ])(
+      'an unavailable provider is retried after its Retry-After of %i s',
+      async (asked, waited) => {
+        const unavailable = new LlmError('unavailable', 'busy', {
+          status: 503,
+          retryAfterSeconds: asked,
+        });
+        const s = scripted(unavailable, unavailable, turn('done'));
+        expect(await runConversation(s.input)).toMatchObject({ kind: 'answer' });
+        expect(s.sleeps).toEqual([waited, waited]);
+      },
+    );
 
     it('a key that is not scoped to a workspace is not retried, and fails the conversation as a provider error', async () => {
       const s = scripted(

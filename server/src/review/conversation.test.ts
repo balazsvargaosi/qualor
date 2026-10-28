@@ -1614,12 +1614,12 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       },
     );
 
-    it.each(KINDS)('an unavailable provider is retried once (%s)', async (kind) => {
-      fake.enqueue(failure(kind, 503), failure(kind, 500));
+    it.each(KINDS)('an unavailable provider is retried twice (%s)', async (kind) => {
+      fake.enqueue(failure(kind, 503), failure(kind, 500), failure(kind, 502));
       const failed = await run(kind);
       expect(failed.result).toMatchObject({ kind: 'failed', reason: 'provider_error' });
-      expect(failed.sleeps).toEqual([5_000]);
-      expect(fake.requests).toHaveLength(2);
+      expect(failed.sleeps).toEqual([5_000, 30_000]);
+      expect(fake.requests).toHaveLength(3);
 
       fake.requests.length = 0;
       fake.enqueue(failure(kind, 502), textTurn(kind, '{"findings":[]}'));
