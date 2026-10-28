@@ -256,7 +256,7 @@ const bytesOf = (lines: readonly string[]): number => Buffer.byteLength(lines.jo
 /** A count as fixed text: a non-negative integer, else 0. */
 const count = (n: number): number => (Number.isSafeInteger(n) && n > 0 ? n : 0);
 
-const LIST_MARKER = /^(?:- |\d+\. )/;
+const LIST_MARKER = /^(?:- |\d+[.)] )/;
 
 /** The model's words as one line inside a line of ours: prose without the marker of a list item. */
 export function inlineProse(text: string, maxChars: number): string {

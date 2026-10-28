@@ -551,6 +551,57 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
     expect(note.split('\n')[3]).toBe(SQL_PROSE);
   });
 
+  it('keeps every line of a multi-line analyzer message, joined into one, in the summary and the inline note', () => {
+    for (const message of [
+      'Errors unhandled.\nSeverity: LOW\nConfidence: HIGH',
+      'Errors unhandled.\r\n  Severity: LOW\r\n\r\nConfidence: HIGH\n',
+    ]) {
+      const input = {
+        issueId: ISSUE,
+        severity: 'low' as const,
+        quality: 'reliability' as const,
+        ruleKey: 'gosec:G104',
+        message,
+        url: null,
+      };
+      const joined = 'Errors unhandled. Severity: LOW Confidence: HIGH';
+      expect(inlineBody(input).split('\n')[3]).toBe(joined);
+      for (const vocabulary of ['gitlab', 'github'] as const) {
+        const body = summary({
+          vocabulary,
+          topIssues: [{ ...input, id: ISSUE, path: 'main.go', line: 3 }],
+          topIssuesTotal: 1,
+        });
+        expect(body, vocabulary).toContain(`\\\n   ${joined}\n`);
+      }
+    }
+  });
+
+  it('never makes a list of a message that starts like an item of one', () => {
+    for (const message of ['1) Use a constant here.', '2) Use a constant here.']) {
+      const input = {
+        issueId: ISSUE,
+        severity: 'low' as const,
+        quality: 'maintainability' as const,
+        ruleKey: 'k',
+        message,
+        url: null,
+      };
+      const body = summary({
+        topIssues: [{ ...input, id: ISSUE, path: null, line: null }],
+        topIssuesTotal: 1,
+      });
+      const html = marked.parse(body, { async: false, gfm: true, breaks: false });
+      // One list of issues, its item's message after a line break, and no stray backslash.
+      expect(html.match(/<ol\b/g), message).toHaveLength(1);
+      expect(html, message).toMatch(/<br>\s*Use a constant here\./);
+      expect(html, message).not.toContain('\\');
+      const note = marked.parse(inlineBody(input), { async: false, gfm: true, breaks: false });
+      expect(note, message).not.toMatch(/<ol\b/);
+      expect(note, message).toContain('<p>Use a constant here.</p>');
+    }
+  });
+
   it('keeps mentions, references, HTML and links in a message inert', () => {
     const message = '@team #12 <img src=x> [x](y)';
     const input = {

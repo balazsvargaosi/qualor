@@ -379,6 +379,14 @@ function location(path: string, line: number | null): string {
   return line === null ? path : `${path}:${line}`;
 }
 
+/**
+ * An analyzer's message as one line of prose. Its lines are joined by a space first, so that what
+ * a line after the first says (gosec's `Severity: …`, or advice) is kept.
+ */
+function messageProse(message: string): string {
+  return inlineProse(message.replace(/\s*[\r\n]+\s*/g, ' '), MAX_MESSAGE_CHARS);
+}
+
 function issueItem(issue: IssueLine, index: number): string[] {
   const icon = Object.hasOwn(SEVERITY_ICON, issue.severity)
     ? SEVERITY_ICON[issue.severity]
@@ -397,7 +405,7 @@ function issueItem(issue: IssueLine, index: number): string[] {
   else if (where !== null) parts.push(where);
   // A trailing backslash is a CommonMark hard break: the message goes on its own line on GitLab
   // and in a GitHub check run, where a single line break renders as a space.
-  return [`${parts.join(' · ')}\\`, `   ${inlineProse(issue.message, MAX_MESSAGE_CHARS)}`];
+  return [`${parts.join(' · ')}\\`, `   ${messageProse(issue.message)}`];
 }
 
 /**
@@ -555,7 +563,7 @@ export function inlineBody(input: InlineInput): string {
         ruleKeyMarkdown(input.ruleKey, input.helpUri),
       ].join(' · '),
       '',
-      inlineProse(input.message, MAX_MESSAGE_CHARS),
+      messageProse(input.message),
       ...(link === null ? [] : ['', link]),
     ],
     INLINE_MAX_BYTES,
