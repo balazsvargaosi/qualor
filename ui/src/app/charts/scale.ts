@@ -35,7 +35,7 @@ export interface TimeTick {
 
 /** Month starts for two months or more (at most `max`), else every 1, 2, 7 or 14 UTC days. */
 export function timeTicks(start: number, end: number, max = 6): TimeTick[] {
-  if (!(end > start)) return [];
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return [];
   if (end - start >= 60 * DAY) {
     const first = new Date(start);
     const months: number[] = [];

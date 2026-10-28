@@ -85,6 +85,34 @@ export interface ProviderChange {
 export type SaveProvider = (change: ProviderChange) => Promise<LlmSettings>;
 
 type Errors = Partial<Record<Field, string>>;
+
+/** The address and the model names of the draft, trimmed; the ones refused are marked. */
+function modelNamesOf(d: Draft, refuse: (field: Field) => void) {
+  const baseUrl = d.url.trim();
+  if (!isHttpUrl(baseUrl)) refuse('url');
+  const model = d.model.trim();
+  if (!MODEL_NAME.test(model)) refuse('model');
+  // A tier's model is optional: empty is sent as null, and the tier uses the model above.
+  const strongModel = d.tiers ? d.strongModel.trim() : '';
+  const fastModel = d.tiers ? d.fastModel.trim() : '';
+  if (strongModel !== '' && !MODEL_NAME.test(strongModel)) refuse('strong-model');
+  if (fastModel !== '' && !MODEL_NAME.test(fastModel)) refuse('fast-model');
+  return { baseUrl, model, strongModel, fastModel };
+}
+
+/** The draft's timeout, context window and temperature; the ones refused are marked. */
+function limitsOf(d: Draft, refuse: (field: Field) => void) {
+  const timeoutSeconds = parseWhole(d.timeout, 5, 600);
+  if (timeoutSeconds === null) refuse('timeout');
+  // Empty is the default: sent as null. Anything else is a whole number within the bounds.
+  const windowText = d.contextWindow.trim();
+  const contextWindowTokens =
+    windowText === '' ? null : parseWhole(windowText, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX);
+  if (windowText !== '' && contextWindowTokens === null) refuse('context-window');
+  const temperature = temperatureOf(d);
+  if (Number.isNaN(temperature)) refuse('temperature');
+  return { timeoutSeconds, contextWindowTokens, temperature };
+}
 /** The fields inside Connection options: a refusal of one opens the fold. */
 const OPTION_FIELDS: readonly Field[] = ['timeout', 'context-window', 'temperature'];
 
@@ -136,6 +164,16 @@ interface LineView {
   before: string;
   model: string;
   after: string;
+}
+const LINE_ICONS: Record<LineView['tone'], IconName> = {
+  ok: 'check',
+  bad: 'cross',
+  unknown: 'minus',
+};
+/** How a model fared in a Test: it failed or does not call tools, does, or was not checked. */
+function lineToneOf(m: { toolCalling: string; failed: boolean }): LineView['tone'] {
+  if (m.failed || m.toolCalling === 'not_supported') return 'bad';
+  return m.toolCalling === 'supported' ? 'ok' : 'unknown';
 }
 /** The question the pause dialog asks while it is open. */
 interface PauseQuestion {
@@ -371,28 +409,33 @@ export class ProviderSection {
       };
     });
   });
+  /** The chips of an OpenAI-compatible provider's own options. */
+  private openaiChips(d: Draft): { text: string; set: boolean }[] {
+    const t = this.texts;
+    const chips = [
+      {
+        text: d.api === 'responses' ? t.responses : t.chat,
+        set: d.api !== 'chat_completions',
+      },
+      {
+        text: d.auth === 'api-key' ? t.apiKeyHeader : t.bearer,
+        set: d.auth !== 'bearer',
+      },
+      { text: d.json ? this.chipTexts.jsonOn : this.chipTexts.jsonOff, set: !d.json },
+    ];
+    if (d.api === 'chat_completions') {
+      chips.push({
+        text: d.maxTokensField === 'max_tokens' ? t.maxTokens : t.maxCompletionTokens,
+        set: d.maxTokensField !== defaultOutputLimitField(d.url),
+      });
+    }
+    return chips;
+  }
   /** The connection options as chips while the fold is closed; one other than the default is set. */
   protected readonly chips = computed(() => {
     const d = this.draft();
-    const t = this.texts;
     const chips: { text: string; set: boolean }[] = [];
-    if (d.kind === 'openai') {
-      chips.push({
-        text: d.api === 'responses' ? t.responses : t.chat,
-        set: d.api !== 'chat_completions',
-      });
-      chips.push({
-        text: d.auth === 'api-key' ? t.apiKeyHeader : t.bearer,
-        set: d.auth !== 'bearer',
-      });
-      chips.push({ text: d.json ? this.chipTexts.jsonOn : this.chipTexts.jsonOff, set: !d.json });
-      if (d.api === 'chat_completions') {
-        chips.push({
-          text: d.maxTokensField === 'max_tokens' ? t.maxTokens : t.maxCompletionTokens,
-          set: d.maxTokensField !== defaultOutputLimitField(d.url),
-        });
-      }
-    }
+    if (d.kind === 'openai') chips.push(...this.openaiChips(d));
     const seconds = parseWhole(d.timeout, 0, Number.MAX_SAFE_INTEGER);
     const n = seconds === null ? d.timeout.trim() : formatWhole(seconds, this.locale);
     chips.push({
@@ -822,30 +865,14 @@ export class ProviderSection {
       refuse('kind');
       return { errors };
     }
-    const baseUrl = d.url.trim();
-    if (!isHttpUrl(baseUrl)) refuse('url');
-    const model = d.model.trim();
-    if (!MODEL_NAME.test(model)) refuse('model');
-    // A tier's model is optional: empty is sent as null, and the tier uses the model above.
-    const strongModel = d.tiers ? d.strongModel.trim() : '';
-    const fastModel = d.tiers ? d.fastModel.trim() : '';
-    if (strongModel !== '' && !MODEL_NAME.test(strongModel)) refuse('strong-model');
-    if (fastModel !== '' && !MODEL_NAME.test(fastModel)) refuse('fast-model');
+    const { baseUrl, model, strongModel, fastModel } = modelNamesOf(d, refuse);
     const keyProblem = this.keyProblem(d);
     if (keyProblem !== null) errors.key = keyProblem;
     const workspaceId = d.workspaceId.trim();
     if (d.kind === 'anthropic' && workspaceId !== '' && !WORKSPACE_ID.test(workspaceId)) {
       refuse('workspace-id');
     }
-    const timeoutSeconds = parseWhole(d.timeout, 5, 600);
-    if (timeoutSeconds === null) refuse('timeout');
-    // Empty is the default: sent as null. Anything else is a whole number within the bounds.
-    const windowText = d.contextWindow.trim();
-    const contextWindowTokens =
-      windowText === '' ? null : parseWhole(windowText, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX);
-    if (windowText !== '' && contextWindowTokens === null) refuse('context-window');
-    const temperature = temperatureOf(d);
-    if (Number.isNaN(temperature)) refuse('temperature');
+    const { timeoutSeconds, contextWindowTokens, temperature } = limitsOf(d, refuse);
     const pricing = pricingOf(d, refuse);
     if (Object.keys(errors).length > 0 || timeoutSeconds === null) return { errors };
     const provider: NonNullable<LlmBody['provider']> = {
@@ -1002,13 +1029,8 @@ export class ProviderSection {
         ? $localize`:@@aiProvider.test.byYou:${when}:when:, by you.`
         : $localize`:@@aiProvider.test.byAdmin:${when}:when:, by an instance admin.`,
       lines: models.map((m): LineView => {
-        const tone =
-          m.failed || m.toolCalling === 'not_supported'
-            ? 'bad'
-            : m.toolCalling === 'supported'
-              ? 'ok'
-              : 'unknown';
-        const icon: IconName = tone === 'ok' ? 'check' : tone === 'bad' ? 'cross' : 'minus';
+        const tone = lineToneOf(m);
+        const icon = LINE_ICONS[tone];
         return { tier: m.tier, tone, icon, ...withModel(m.line) };
       }),
       // How many models failed of how many, which the template words as a plural of the total.

@@ -902,27 +902,7 @@ export class AiReviewPage implements LeaveGuarded {
     origin: SaveOrigin,
   ): Promise<void> {
     if (err instanceof ApiError && err.status === 409) {
-      if (err.code === 'AI_REVIEW_CONSENT_REQUIRED' || err.code === 'AI_REVIEW_PROVIDER_CHANGED') {
-        // The settings are read again (the edits are kept), and the dialog shows the provider now.
-        const fresh = await this.reread(id, generation);
-        if (generation !== this.generation) return;
-        if (fresh?.available && fresh.provider) {
-          this.askConsent(err.code === 'AI_REVIEW_PROVIDER_CHANGED');
-          return;
-        }
-        // The dialog stays closed, and the page says why: AI went meanwhile, or the read failed
-        // (which `reread` said).
-        if (fresh !== null) this.error.set(aiUnavailableText());
-        this.heading().nativeElement.focus();
-        return;
-      }
-      if (err.code === 'AI_DISABLED') {
-        await this.reread(id, generation);
-        if (generation !== this.generation) return;
-        this.error.set(aiReviewRefusal(err));
-        this.heading().nativeElement.focus();
-        return;
-      }
+      if (await this.refusedByState(err, id, generation)) return;
     }
     const refusedBudgets: AiReviewBudgetErrors = {};
     for (const path of Object.keys(fieldErrors(err))) {
@@ -942,6 +922,32 @@ export class AiReviewPage implements LeaveGuarded {
       this.error.set(message);
       this.heading().nativeElement.focus();
     }
+  }
+
+  /** The 409s that mean the settings changed under the page; true when one of them was handled. */
+  private async refusedByState(err: ApiError, id: string, generation: number): Promise<boolean> {
+    if (err.code === 'AI_REVIEW_CONSENT_REQUIRED' || err.code === 'AI_REVIEW_PROVIDER_CHANGED') {
+      // The settings are read again (the edits are kept), and the dialog shows the provider now.
+      const fresh = await this.reread(id, generation);
+      if (generation !== this.generation) return true;
+      if (fresh?.available && fresh.provider) {
+        this.askConsent(err.code === 'AI_REVIEW_PROVIDER_CHANGED');
+        return true;
+      }
+      // The dialog stays closed, and the page says why: AI went meanwhile, or the read failed
+      // (which `reread` said).
+      if (fresh !== null) this.error.set(aiUnavailableText());
+      this.heading().nativeElement.focus();
+      return true;
+    }
+    if (err.code === 'AI_DISABLED') {
+      await this.reread(id, generation);
+      if (generation !== this.generation) return true;
+      this.error.set(aiReviewRefusal(err));
+      this.heading().nativeElement.focus();
+      return true;
+    }
+    return false;
   }
 
   /**

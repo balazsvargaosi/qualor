@@ -81,10 +81,10 @@ export function settingsProblemText(
  * the AI provider page has the choice it names in its Connection options.
  */
 export function testHintText(code: TestHintCode): string {
-  switch (code) {
-    case 'USE_RESPONSES_API':
-      return $localize`:@@ai.test.useResponses:This model takes tools only through the Responses API: choose Responses in Connection options.`;
-  }
+  const text: Record<TestHintCode, string> = {
+    USE_RESPONSES_API: $localize`:@@ai.test.useResponses:This model takes tools only through the Responses API: choose Responses in Connection options.`,
+  };
+  return text[code];
 }
 
 /** One model's line after a Test of several models: the model, how it fared, and the words for it. */

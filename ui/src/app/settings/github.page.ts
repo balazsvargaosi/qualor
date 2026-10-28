@@ -63,6 +63,35 @@ interface RowError {
  * App's form (a long configuration form, so on the page) in setting rows; a deletion asks in the
  * page's dialog instead of `confirm()`.
  */
+/** What a save of the App's address, key or webhook secret says, by what it changed. */
+function savedText(s: {
+  changed: boolean;
+  drop: boolean;
+  secret: string;
+  secretStored: boolean;
+  baseUrl: string;
+  appId: string;
+}): string {
+  const { baseUrl, appId } = s;
+  if (s.changed) {
+    if (s.drop) {
+      return $localize`:@@github.urlChangedSecretRemoved:The App now uses ${baseUrl}:url:, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`;
+    }
+    if (s.secret === '') return $localize`:@@github.urlChanged:The App now uses ${baseUrl}:url:.`;
+    return s.secretStored
+      ? $localize`:@@github.urlChangedSecretReplaced:The App now uses ${baseUrl}:url:, and its webhook secret was replaced.`
+      : $localize`:@@github.urlChangedSecretSet:The App now uses ${baseUrl}:url:, and its webhook secret was set.`;
+  }
+  if (s.drop) {
+    return $localize`:@@github.keyReplacedSecretRemoved:The private key of App ${appId}:appId: was replaced, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`;
+  }
+  if (s.secret === '')
+    return $localize`:@@github.keyReplaced:The private key of App ${appId}:appId: was replaced.`;
+  return s.secretStored
+    ? $localize`:@@github.keyAndSecretReplaced:The private key and the webhook secret of App ${appId}:appId: were replaced.`
+    : $localize`:@@github.keyReplacedSecretSet:The private key of App ${appId}:appId: was replaced, and its webhook secret was set.`;
+}
+
 @Component({
   selector: 'q-github-page',
   imports: [DateTimePipe, Icon, RouterLink],
@@ -344,21 +373,7 @@ export class GitHubPage {
         // A secret typed here replaces the stored one, or is the first where none was stored (the
         // field is shown either way).
         this.announcement.set(
-          changed
-            ? drop
-              ? $localize`:@@github.urlChangedSecretRemoved:The App now uses ${updated.baseUrl}:url:, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`
-              : secret === ''
-                ? $localize`:@@github.urlChanged:The App now uses ${updated.baseUrl}:url:.`
-                : secretStored
-                  ? $localize`:@@github.urlChangedSecretReplaced:The App now uses ${updated.baseUrl}:url:, and its webhook secret was replaced.`
-                  : $localize`:@@github.urlChangedSecretSet:The App now uses ${updated.baseUrl}:url:, and its webhook secret was set.`
-            : drop
-              ? $localize`:@@github.keyReplacedSecretRemoved:The private key of App ${appId}:appId: was replaced, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`
-              : secret === ''
-                ? $localize`:@@github.keyReplaced:The private key of App ${appId}:appId: was replaced.`
-                : secretStored
-                  ? $localize`:@@github.keyAndSecretReplaced:The private key and the webhook secret of App ${appId}:appId: were replaced.`
-                  : $localize`:@@github.keyReplacedSecretSet:The private key of App ${appId}:appId: was replaced, and its webhook secret was set.`,
+          savedText({ changed, drop, secret, secretStored, baseUrl: updated.baseUrl, appId }),
         );
       },
       (err) => {

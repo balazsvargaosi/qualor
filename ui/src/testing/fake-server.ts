@@ -766,12 +766,9 @@ export class FakeAiReview {
 
   answer(organizationId: string): OrgAiReview {
     const stored = this.of(organizationId);
-    const unavailableReason =
-      this.provider === null
-        ? 'no_provider'
-        : this.organizationEnabled
-          ? null
-          : 'organization_disabled';
+    let unavailableReason: OrgAiReview['unavailableReason'] = null;
+    if (this.provider === null) unavailableReason = 'no_provider';
+    else if (!this.organizationEnabled) unavailableReason = 'organization_disabled';
     return {
       available: unavailableReason === null,
       unavailableReason,

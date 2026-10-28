@@ -20,13 +20,11 @@ import { inputValue, isChecked } from './forms';
 import { Icon } from './icon';
 import { SEARCH_DELAY_MS } from './user-picker';
 
-type Project = ItemOf<'/api/v0/projects'>;
-
 /**
  * A project the picker adds, as the list carried it: a list of chosen projects shows its name and
  * key, and may read more of it (a project created after the page loaded its own list is only here).
  */
-export type PickedProject = Project;
+export type PickedProject = ItemOf<'/api/v0/projects'>;
 
 /** The most projects one answer lists; typing narrows the rest (never the whole organisation). */
 const LIMIT = 20;
@@ -69,7 +67,7 @@ export class ProjectPicker {
   /** The ids already in the page's list. */
   readonly chosen = input.required<readonly string[]>();
   /** Why the page cannot take a project, or null when it can. */
-  readonly unavailable = input<(p: Project) => string | null>(() => null);
+  readonly unavailable = input<(p: PickedProject) => string | null>(() => null);
   readonly add = output<PickedProject[]>();
 
   private readonly uid = `project-picker-${++pickers}`;
@@ -81,7 +79,7 @@ export class ProjectPicker {
   protected readonly open = signal(false);
   protected readonly query = signal('');
   protected readonly state = signal<State>('idle');
-  protected readonly projects = signal<readonly Project[]>([]);
+  protected readonly projects = signal<readonly PickedProject[]>([]);
   protected readonly errorText = signal('');
   /** The projects ticked so far, by id, in the order they were ticked. */
   protected readonly ticked = signal<ReadonlyMap<string, PickedProject>>(new Map());
@@ -136,7 +134,7 @@ export class ProjectPicker {
     this.timer = setTimeout(() => void this.fetch(text.trim()), SEARCH_DELAY_MS);
   }
 
-  protected tick(project: Project, event: Event): void {
+  protected tick(project: PickedProject, event: Event): void {
     const ticked = new Map(this.ticked());
     if (isChecked(event)) ticked.set(project.id, project);
     else ticked.delete(project.id);

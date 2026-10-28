@@ -49,6 +49,47 @@ export function selectionSummary(
   return summary;
 }
 
+/** The sentence for a selection that can be reviewed whole. */
+function allReviewableText(
+  s: SelectionSummary,
+  scope: AiReviewScope,
+  organization: string,
+  total: string,
+): string {
+  if (scope === 'all') {
+    return s.total === 1
+      ? $localize`:@@orgAi.summary.allProjectsOne:The 1 project of ${organization}:org: will be reviewed.`
+      : $localize`:@@orgAi.summary.allProjects:All ${total}:count: projects of ${organization}:org: will be reviewed.`;
+  }
+  return s.total === 1
+    ? $localize`:@@orgAi.summary.allSelectedOne:1 selected project will be reviewed.`
+    : $localize`:@@orgAi.summary.allSelected:${total}:count: selected projects will be reviewed.`;
+}
+
+/** What keeps some projects from being reviewed, as a list of counts: not linked, excluded. */
+function notReviewableParts(
+  s: SelectionSummary,
+  n: (count: number) => string,
+  locale: string,
+): string {
+  return new Intl.ListFormat(locale, { type: 'unit', style: 'long' }).format([
+    ...(s.notLinked > 0
+      ? [
+          s.notLinked === 1
+            ? $localize`:@@orgAi.summary.notLinkedOne:1 not linked to a repository`
+            : $localize`:@@orgAi.summary.notLinked:${n(s.notLinked)}:count: not linked to a repository`,
+        ]
+      : []),
+    ...(s.excluded > 0
+      ? [
+          s.excluded === 1
+            ? $localize`:@@orgAi.summary.excludedOne:1 excluded from AI`
+            : $localize`:@@orgAi.summary.excluded:${n(s.excluded)}:count: excluded from AI`,
+        ]
+      : []),
+  ]);
+}
+
 /**
  * The summary in one sentence, in counts rather than names so it reads the same for any number
  * of projects: "1 of 3 selected projects can be reviewed: 1 not linked to a repository, 1 excluded
@@ -68,32 +109,8 @@ export function summaryText(
       ? $localize`:@@orgAi.summary.noProjects:${organization}:org: has no project yet.`
       : $localize`:@@orgAi.summary.none:No project is selected yet: choose projects below first.`;
   }
-  if (s.reviewable === s.total) {
-    if (scope === 'all') {
-      return s.total === 1
-        ? $localize`:@@orgAi.summary.allProjectsOne:The 1 project of ${organization}:org: will be reviewed.`
-        : $localize`:@@orgAi.summary.allProjects:All ${total}:count: projects of ${organization}:org: will be reviewed.`;
-    }
-    return s.total === 1
-      ? $localize`:@@orgAi.summary.allSelectedOne:1 selected project will be reviewed.`
-      : $localize`:@@orgAi.summary.allSelected:${total}:count: selected projects will be reviewed.`;
-  }
-  const parts = new Intl.ListFormat(locale, { type: 'unit', style: 'long' }).format([
-    ...(s.notLinked > 0
-      ? [
-          s.notLinked === 1
-            ? $localize`:@@orgAi.summary.notLinkedOne:1 not linked to a repository`
-            : $localize`:@@orgAi.summary.notLinked:${n(s.notLinked)}:count: not linked to a repository`,
-        ]
-      : []),
-    ...(s.excluded > 0
-      ? [
-          s.excluded === 1
-            ? $localize`:@@orgAi.summary.excludedOne:1 excluded from AI`
-            : $localize`:@@orgAi.summary.excluded:${n(s.excluded)}:count: excluded from AI`,
-        ]
-      : []),
-  ]);
+  if (s.reviewable === s.total) return allReviewableText(s, scope, organization, total);
+  const parts = notReviewableParts(s, n, locale);
   if (scope === 'all') {
     return s.total === 1
       ? $localize`:@@orgAi.summary.someAllOne:${reviewable}:reviewable: of the 1 project of ${organization}:org: can be reviewed: ${parts}:parts:.`

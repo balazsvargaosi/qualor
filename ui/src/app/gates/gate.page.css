@@ -46,6 +46,8 @@
 /* A row's reason wraps within its column instead of widening it. */
 .cond-edit .field-error {
   contain: inline-size;
+  display: block;
+  margin-top: 6px;
 }
 .cond-fields {
   display: flex;
@@ -58,10 +60,6 @@
 }
 .cond-unit {
   color: var(--text-muted);
-}
-.cond-edit .field-error {
-  display: block;
-  margin-top: 6px;
 }
 .actions-col {
   width: 1px;

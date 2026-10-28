@@ -259,18 +259,7 @@ export class GitLabPage {
       ];
       target?.focus();
     };
-    const refusal: [RowError['field'], string] | null =
-      typed === ''
-        ? ['url', badUrl()]
-        : !token
-          ? ['token', changed ? tokenForNewUrl() : badToken()]
-          : secret !== '' && drop
-            ? ['newSecret', secretAndDrop()]
-            : secret !== '' && !WEBHOOK_SECRET.test(secret)
-              ? ['newSecret', badSecret()]
-              : changed && secretStored && secret === '' && !drop
-                ? ['newSecret', secretForNewUrl()]
-                : null;
+    const refusal = updateRefusal({ typed, token, changed, secret, drop, secretStored });
     if (refusal) {
       refuse(...refusal);
       return;
@@ -282,23 +271,11 @@ export class GitLabPage {
         const updated = await this.patch(connection, {
           ...(changed ? { baseUrl: typed } : {}),
           token,
-          ...(secret !== '' ? { webhookSecret: secret } : drop ? { webhookSecret: null } : {}),
+          ...secretPatch(secret, drop),
         });
         if (generation !== this.orgGeneration) return;
         if (dropField) dropField.checked = false;
-        this.announcement.set(
-          changed
-            ? drop
-              ? $localize`:@@gitlab.urlChangedSecretRemoved:The connection now points at ${updated.baseUrl}:url:, and its webhook secret was removed: replies and commands are answered at the next analysis.`
-              : secret !== ''
-                ? $localize`:@@gitlab.urlChangedSecretReplaced:The connection now points at ${updated.baseUrl}:url:, and its webhook secret was replaced.`
-                : $localize`:@@gitlab.urlChanged:The connection now points at ${updated.baseUrl}:url:.`
-            : drop
-              ? $localize`:@@gitlab.tokenReplacedSecretRemoved:The token of ${updated.baseUrl}:url: was replaced, and its webhook secret was removed: replies and commands are answered at the next analysis.`
-              : secret !== ''
-                ? $localize`:@@gitlab.tokenAndSecretReplaced:The token and the webhook secret of ${updated.baseUrl}:url: were replaced.`
-                : $localize`:@@gitlab.tokenReplaced:The token of ${updated.baseUrl}:url: was replaced.`,
-        );
+        this.announcement.set(updatedText({ changed, drop, secret, baseUrl: updated.baseUrl }));
       },
       (err) => {
         const fields = fieldErrors(err);
@@ -513,4 +490,48 @@ function badSecret(): string {
 
 function secretForNewUrl(): string {
   return $localize`:@@gitlab.secretForNewUrl:Changing the address needs the webhook secret again, or tick "Drop the webhook secret".`;
+}
+
+/** What an update of a connection is refused for before it is sent, and on which field; or null. */
+function updateRefusal(u: {
+  typed: string;
+  token: string;
+  changed: boolean;
+  secret: string;
+  drop: boolean;
+  secretStored: boolean;
+}): [RowError['field'], string] | null {
+  if (u.typed === '') return ['url', badUrl()];
+  if (!u.token) return ['token', u.changed ? tokenForNewUrl() : badToken()];
+  if (u.secret !== '' && u.drop) return ['newSecret', secretAndDrop()];
+  if (u.secret !== '' && !WEBHOOK_SECRET.test(u.secret)) return ['newSecret', badSecret()];
+  if (u.changed && u.secretStored && u.secret === '' && !u.drop) {
+    return ['newSecret', secretForNewUrl()];
+  }
+  return null;
+}
+
+/** The webhook secret part of an update: the new secret, its removal, or none. */
+function secretPatch(secret: string, drop: boolean): { webhookSecret?: string | null } {
+  if (secret !== '') return { webhookSecret: secret };
+  return drop ? { webhookSecret: null } : {};
+}
+
+/** What a saved update says, by what it changed. */
+function updatedText(u: { changed: boolean; drop: boolean; secret: string; baseUrl: string }) {
+  const { baseUrl } = u;
+  if (u.changed) {
+    if (u.drop) {
+      return $localize`:@@gitlab.urlChangedSecretRemoved:The connection now points at ${baseUrl}:url:, and its webhook secret was removed: replies and commands are answered at the next analysis.`;
+    }
+    if (u.secret !== '')
+      return $localize`:@@gitlab.urlChangedSecretReplaced:The connection now points at ${baseUrl}:url:, and its webhook secret was replaced.`;
+    return $localize`:@@gitlab.urlChanged:The connection now points at ${baseUrl}:url:.`;
+  }
+  if (u.drop) {
+    return $localize`:@@gitlab.tokenReplacedSecretRemoved:The token of ${baseUrl}:url: was replaced, and its webhook secret was removed: replies and commands are answered at the next analysis.`;
+  }
+  if (u.secret !== '')
+    return $localize`:@@gitlab.tokenAndSecretReplaced:The token and the webhook secret of ${baseUrl}:url: were replaced.`;
+  return $localize`:@@gitlab.tokenReplaced:The token of ${baseUrl}:url: was replaced.`;
 }

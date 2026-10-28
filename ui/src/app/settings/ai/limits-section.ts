@@ -375,16 +375,17 @@ function budgetsOf(
     if (value === null) errors[field] = refusal(field);
     return value ?? 0;
   };
+  const readCost = (): number | null => {
+    if (!d.costSet) return null;
+    if (storedCost.value !== null && d.cost === storedCost.text) return storedCost.value;
+    return read('budget-cost');
+  };
   const budgets: Budgets = {
     explainPerDay: read('budget-explain'),
     triagePerDay: read('budget-triage'),
     fixPerDay: read('budget-fix'),
     tokensPerDay: read('budget-tokens'),
-    costPerDayUsd: !d.costSet
-      ? null
-      : storedCost.value !== null && d.cost === storedCost.text
-        ? storedCost.value
-        : read('budget-cost'),
+    costPerDayUsd: readCost(),
     perUserPerHour: read('budget-user'),
     reviewTokensPerOrganizationPerDay: d.capSet ? read('budget-review') : null,
   };
