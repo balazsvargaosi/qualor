@@ -12,6 +12,7 @@ import {
   VIEWER_PROJECT_PERMISSIONS,
 } from '../../testing/fake-server';
 import { SessionStore } from '../auth/session';
+import { CurrentProject } from '../project/current-project';
 import { type Issue, IssuesPage } from './issues.page';
 
 /** The project, with a maintainer's permissions on it (rbac-audit.md §16). */
@@ -595,5 +596,50 @@ describe('IssuesPage', () => {
     expect(server.requestsTo('GET', '/api/v0/issues')[0]?.query.get('branchId')).toBe(far);
     const select = root.querySelector<HTMLSelectElement>('#issues-branch')!;
     expect(select.selectedOptions[0]?.textContent).toBe('!7 feature/x → main');
+  });
+
+  it('shows the merge request of ?branch= in the project band, with its issue count, and the main branch again after', async () => {
+    const mr = '0190a6c2-0000-7000-8000-0000000000c3';
+    server.on('GET', '/api/v0/projects/p1/branches', {
+      body: page([
+        {
+          id: 'b-main',
+          projectId: 'p1',
+          kind: 'branch',
+          name: 'main',
+          isMain: true,
+          mrSourceBranch: null,
+          mrTargetBranch: null,
+          mrTitle: null,
+          mrUrl: null,
+          lastAnalysisId: null,
+          lastAnalyzedAt: null,
+          gateStatus: null,
+          measures: { issues: 9 },
+        },
+        {
+          id: mr,
+          projectId: 'p1',
+          kind: 'merge_request',
+          name: '7',
+          isMain: false,
+          mrSourceBranch: 'feature/x',
+          mrTargetBranch: 'main',
+          mrTitle: null,
+          mrUrl: null,
+          lastAnalysisId: null,
+          lastAnalyzedAt: null,
+          gateStatus: null,
+          measures: { issues: 2 },
+        },
+      ]),
+    });
+    await TestBed.inject(Router).navigateByUrl(`/?branch=${mr}`);
+    const { fixture } = await render();
+    const store = TestBed.inject(CurrentProject);
+    expect(store.shownBranch()?.id).toBe(mr);
+    expect(store.shownBranch()?.issues).toBe(2);
+    fixture.destroy();
+    expect(store.shownBranch()).toBeNull();
   });
 });

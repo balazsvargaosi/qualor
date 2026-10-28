@@ -267,7 +267,12 @@
                 [routerLink]="file.commands"
                 [queryParams]="file.queryParams"
                 [fragment]="file.fragment"
-                ><code>{{ i.path }}{{ i.startLine ? ':' + i.startLine : '' }}</code></a
+                ><code
+                  >{{ i.path
+                  }}<span class="details-line">{{
+                    i.startLine ? ':' + i.startLine : ''
+                  }}</span></code
+                ></a
               >
             </dd>
           }

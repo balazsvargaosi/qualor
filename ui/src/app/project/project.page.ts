@@ -86,8 +86,10 @@ export class ProjectPage {
   protected readonly complianceTab = computed(() =>
     this.info.projectTabs().some((t) => t.id === 'compliance'),
   );
-  /** The main branch's open issues, the Issues tab's count. */
+  /** The open issues of the branch the band shows, else of the main branch: the Issues tab's count. */
   protected readonly issueCount = computed(() => {
+    const shown = this.shown();
+    if (shown) return shown.issues;
     const value = this.current()?.mainBranch?.measures['issues'];
     return typeof value === 'number' ? value : null;
   });

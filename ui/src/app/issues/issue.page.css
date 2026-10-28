@@ -95,6 +95,9 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+.details-line {
+  white-space: nowrap;
+}
 .issue-actions textarea {
   width: 100%;
   min-height: 5.5rem;

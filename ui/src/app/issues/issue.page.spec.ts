@@ -12,6 +12,7 @@ import {
   VIEWER_PROJECT_PERMISSIONS,
 } from '../../testing/fake-server';
 import { SessionStore } from '../auth/session';
+import { CurrentProject } from '../project/current-project';
 import { safeHelpUri } from '../shared/links';
 import { type IssueDetail, IssuePage, readSnippet } from './issue.page';
 
@@ -228,6 +229,43 @@ describe('IssuePage', () => {
     );
     expect(terms).toEqual(['Severity', 'Status', 'Type', 'Software quality', 'Rule', 'First seen']);
     expect(root.querySelector('.code-window')).toBeNull();
+  });
+
+  it('keeps the line number whole: it sits in its own no-wrap span after the path', async () => {
+    const { root } = await render();
+    const code = root.querySelector('a.details-file code');
+    expect(code?.textContent).toBe('src/refunds/limits.ts:44');
+    const line = code?.querySelector('span.details-line');
+    expect(line?.textContent).toBe(':44');
+    expect(getComputedStyle(line!).whiteSpace).toBe('nowrap');
+  });
+
+  it('shows the merge request the issue is on in the project band, and lets go on destroy', async () => {
+    server.on('GET', '/api/v0/projects/p1/branches', {
+      body: page([
+        {
+          id: 'b1',
+          projectId: 'p1',
+          kind: 'merge_request',
+          name: '42',
+          isMain: false,
+          mrSourceBranch: 'feature/x',
+          mrTargetBranch: 'main',
+          mrTitle: null,
+          mrUrl: null,
+          lastAnalysisId: null,
+          lastAnalyzedAt: null,
+          gateStatus: 'passed',
+          measures: { issues: 3 },
+        },
+      ]),
+    });
+    const { fixture } = await render();
+    const store = TestBed.inject(CurrentProject);
+    expect(store.shownBranch()?.id).toBe('b1');
+    expect(store.shownBranch()?.issues).toBe(3);
+    fixture.destroy();
+    expect(store.shownBranch()).toBeNull();
   });
 
   it('links the File entry to the file page at the line, also without a snippet', async () => {

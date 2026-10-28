@@ -333,6 +333,20 @@ export class IssuesPage {
 
   constructor() {
     effect(() => this.project.use(this.projectId()));
+    // The band names a merge request the list is showing, and the Issues tab counts its issues.
+    effect(() => {
+      const id = this.branchId();
+      const view = this.branches.hasValue()
+        ? this.branches.value().find((b) => b.id === id)
+        : undefined;
+      const shown = view
+        ? branchView(view)
+        : this.extraBranch.hasValue()
+          ? this.extraBranch.value()
+          : null;
+      this.project.showBranch(shown && shown.id === id && !shown.isMain ? shown : null);
+    });
+    inject(DestroyRef).onDestroy(() => this.project.showBranch(null));
     effect(() => {
       const branchId = this.branchId();
       const filters = this.filters();

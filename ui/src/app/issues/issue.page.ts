@@ -199,6 +199,13 @@ export class IssuePage {
   protected readonly inputValue = inputValue;
 
   constructor() {
+    // The band names the merge request the issue is on, as on its overview, and the Issues tab
+    // counts that branch's issues.
+    effect(() => {
+      const branch = this.branch.hasValue() ? this.branch.value() : null;
+      this.project.showBranch(branch && !branch.isMain ? branch : null);
+    });
+    inject(DestroyRef).onDestroy(() => this.project.showBranch(null));
     effect(() => {
       // A malformed issue id asks the server nothing, the project included.
       if (this.validId()) this.project.use(this.projectId());

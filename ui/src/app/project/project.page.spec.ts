@@ -47,6 +47,7 @@ const MR: BranchView = {
   mrUrl: 'https://gitlab.example.com/acme/x/-/merge_requests/42',
   gateStatus: 'passed',
   lastAnalysisId: null,
+  issues: 3,
 };
 
 describe('ProjectPage', () => {
@@ -192,6 +193,24 @@ describe('ProjectPage', () => {
     expect(root.querySelector('.tab-count')?.getAttribute('aria-hidden')).toBe('true');
   });
 
+  it('counts the issues of the branch it shows, and the main branch again after', async () => {
+    server.on('GET', `/api/v0/projects/${ID}`, {
+      body: { ...PROJECT, mainBranch: { ...PROJECT.mainBranch, measures: { issues: 7 } } },
+    });
+    const fixture = TestBed.createComponent(ProjectPage);
+    fixture.componentRef.setInput('projectId', ID);
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    const store = TestBed.inject(CurrentProject);
+    expect(root.querySelector('.tab-count')?.textContent?.trim()).toBe('7');
+    store.showBranch(MR);
+    await settle(fixture);
+    expect(root.querySelector('.tab-count')?.textContent?.trim()).toBe('3');
+    store.showBranch(null);
+    await settle(fixture);
+    expect(root.querySelector('.tab-count')?.textContent?.trim()).toBe('7');
+  });
+
   it('names the branch or merge request an overview shows, with its own gate and link', async () => {
     server.on('GET', `/api/v0/projects/${ID}`, { body: PROJECT });
     const fixture = TestBed.createComponent(ProjectPage);
@@ -236,6 +255,7 @@ describe('ProjectPage', () => {
       mrUrl: null,
       gateStatus: 'failed',
       lastAnalysisId: null,
+      issues: null,
     });
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;

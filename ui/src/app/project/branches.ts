@@ -60,6 +60,13 @@ export interface BranchView {
   gateStatus: string | null;
   /** The last succeeded analysis (never a failed or stale upload); null before the first. */
   lastAnalysisId: string | null;
+  /** The branch's open issues (its `issues` measure), or null when it has none measured yet. */
+  issues: number | null;
+}
+
+function issuesOf(measures: Record<string, number | null> | undefined): number | null {
+  const value = measures?.['issues'];
+  return typeof value === 'number' ? value : null;
 }
 
 export function branchView(branch: Branch): BranchView {
@@ -72,6 +79,7 @@ export function branchView(branch: Branch): BranchView {
     mrUrl: branch.mrUrl,
     gateStatus: branch.gateStatus,
     lastAnalysisId: branch.lastAnalysisId,
+    issues: issuesOf(branch.measures),
   };
 }
 
@@ -91,6 +99,7 @@ export async function mainBranchView(api: Api, projectId: string): Promise<Branc
     mrUrl: null,
     gateStatus: main.gateStatus,
     lastAnalysisId: main.lastAnalysisId,
+    issues: issuesOf(main.measures),
   };
 }
 
