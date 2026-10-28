@@ -48,21 +48,6 @@ interface RowError {
   message: string;
 }
 
-/**
- * GitHub (github.md §2), for org admins: the organisation's GitHub App connections (the API root,
- * the App id, and the private key and optional webhook secret, which are write-only: read from
- * their fields once, sent once, never kept in the page's state, never shown, and emptied from the
- * page at every submission), a test of each against an `owner/repo` (with a warning beside a passed
- * one that lists what the App's installation lacks), and the changes the API allows (a new key, and
- * with it a new address; the App id; the webhook secret set or removed).
- * Test answers and refusals are shown in the page's own words (§5.4). Projects are mapped on the
- * GitLab tab, which maps to either provider.
- *
- * Step 8 of the redesign (spec §7.8): each App a panel whose pill says how its last test here went
- * (the server keeps no state), with its facts, the test and a quiet Delete; its forms and the new
- * App's form (a long configuration form, so on the page) in setting rows; a deletion asks in the
- * page's dialog instead of `confirm()`.
- */
 /** What a save of the App's address, key or webhook secret says, by what it changed. */
 function savedText(s: {
   changed: boolean;
@@ -92,6 +77,21 @@ function savedText(s: {
     : $localize`:@@github.keyReplacedSecretSet:The private key of App ${appId}:appId: was replaced, and its webhook secret was set.`;
 }
 
+/**
+ * GitHub (github.md §2), for org admins: the organisation's GitHub App connections (the API root,
+ * the App id, and the private key and optional webhook secret, which are write-only: read from
+ * their fields once, sent once, never kept in the page's state, never shown, and emptied from the
+ * page at every submission), a test of each against an `owner/repo` (with a warning beside a passed
+ * one that lists what the App's installation lacks), and the changes the API allows (a new key, and
+ * with it a new address; the App id; the webhook secret set or removed).
+ * Test answers and refusals are shown in the page's own words (§5.4). Projects are mapped on the
+ * GitLab tab, which maps to either provider.
+ *
+ * Step 8 of the redesign (spec §7.8): each App a panel whose pill says how its last test here went
+ * (the server keeps no state), with its facts, the test and a quiet Delete; its forms and the new
+ * App's form (a long configuration form, so on the page) in setting rows; a deletion asks in the
+ * page's dialog instead of `confirm()`.
+ */
 @Component({
   selector: 'q-github-page',
   imports: [DateTimePipe, Icon, RouterLink],
