@@ -1,3 +1,4 @@
+import { noAnswerYet } from '../../testing/pending';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import {
@@ -1187,7 +1188,7 @@ describe('WebhooksPage: answers that arrive after the context changed', () => {
   it('drops the answer of an addition made for the previous organization', async () => {
     const server = setupTwoOrgs();
     server.on('GET', '/api/v0/webhooks', { body: page([]) });
-    let answer: (reply: { status: number; body: unknown }) => void = (_value) => undefined;
+    let answer: (reply: { status: number; body: unknown }) => void = noAnswerYet;
     server.on('POST', '/api/v0/webhooks', () => new Promise((resolve) => (answer = resolve)));
     const fixture = TestBed.createComponent(WebhooksPage);
     await settle(fixture);

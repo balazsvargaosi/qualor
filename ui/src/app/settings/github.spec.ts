@@ -1,3 +1,4 @@
+import { noAnswerYet } from '../../testing/pending';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import {
@@ -666,7 +667,7 @@ describe('GitHubPage (github.md §2)', () => {
 
   it('empties the secret fields of a submission ignored while a change runs', async () => {
     const server = setup();
-    let answer: (reply: { status: number; body: unknown }) => void = (_value) => undefined;
+    let answer: (reply: { status: number; body: unknown }) => void = noAnswerYet;
     server.on(
       'PATCH',
       '/api/v0/scm-connections/g1',

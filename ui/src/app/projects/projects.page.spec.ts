@@ -1,3 +1,4 @@
+import { noAnswerYet } from '../../testing/pending';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import {
@@ -196,7 +197,7 @@ describe('ProjectsPage', () => {
   });
 
   it('keeps "Load more" focusable while the next page loads', async () => {
-    let answer: (reply: { body: unknown }) => void = (_value) => undefined;
+    let answer: (reply: { body: unknown }) => void = noAnswerYet;
     server.on('GET', '/api/v0/projects', (request) =>
       request.query.get('cursor') === 'next'
         ? new Promise((resolve) => (answer = resolve))
@@ -350,7 +351,7 @@ describe('ProjectsPage', () => {
 
   it('keeps the submit button focusable while creating, and announces the result', async () => {
     server.on('GET', '/api/v0/projects', { body: page([]) });
-    let answer: (reply: { status: number; body: unknown }) => void = (_value) => undefined;
+    let answer: (reply: { status: number; body: unknown }) => void = noAnswerYet;
     server.on('POST', '/api/v0/projects', () => new Promise((resolve) => (answer = resolve)));
     const { fixture, root } = await render();
     const status = root.querySelector('[role="status"]');

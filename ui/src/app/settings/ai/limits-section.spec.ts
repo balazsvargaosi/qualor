@@ -1,3 +1,4 @@
+import { noAnswerYet } from '../../../testing/pending';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { CONFIGURED, type } from '../../../testing/ai-settings';
@@ -497,7 +498,7 @@ describe('LimitsSection: its draft', () => {
 
   it('keeps an edit made while its save is on its way, unsaved', async () => {
     setup();
-    let answer: (saved: LlmSettings) => void = (_value) => undefined;
+    let answer: (saved: LlmSettings) => void = noAnswerYet;
     const sent: Budgets[] = [];
     const { fixture, root } = await render({
       saveLimits: (budgets) => {

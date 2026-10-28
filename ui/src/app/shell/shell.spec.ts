@@ -1,3 +1,4 @@
+import { noAnswerYet } from '../../testing/pending';
 import { ErrorHandler } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
@@ -89,7 +90,7 @@ describe('Shell', () => {
     const fixture = TestBed.createComponent(Shell);
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;
-    let answer: (leave: boolean) => void = (_value) => undefined;
+    let answer: (leave: boolean) => void = noAnswerYet;
     let asked = 0;
     TestBed.runInInjectionContext(() =>
       TestBed.inject(LeaveGuards).register({

@@ -1,3 +1,4 @@
+import { noAnswerYet } from '../../testing/pending';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { FakeServer, me, problem, provideFakeServer, settle } from '../../testing/fake-server';
@@ -47,7 +48,7 @@ describe('LoginPage', () => {
   });
 
   it('keeps the submit button focusable while signing in, and sends once', async () => {
-    let answer: (reply: { status: number }) => void = (_value) => undefined;
+    let answer: (reply: { status: number }) => void = noAnswerYet;
     server.on('POST', '/api/v0/auth/login', () => new Promise((resolve) => (answer = resolve)));
     server.on('GET', '/api/v0/auth/me', { body: me() });
     const { fixture, root } = await render();
