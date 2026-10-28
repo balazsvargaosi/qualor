@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { z } from 'zod';
-import { outboundRequest, type Resolver } from '../../http/outbound';
+import { outboundRequest, type OutboundFailed, type Resolver } from '../../http/outbound';
 import { VERSION } from '../../index';
 import { ScmError, type Paged, type ScmErrorKind, type ScmErrorReason } from '../provider';
 import { scmRefusedAddress } from '../url';
@@ -321,6 +321,46 @@ function gitlabMessage(body: Buffer, token: string): string | null {
   }
 }
 
+/** The methods the client sends. */
+type GitLabMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+
+/** The error for a GitLab request that got no answer: refused by the outbound rules, or no reply. */
+function transportError(failed: OutboundFailed): GitLabError {
+  switch (failed.cause) {
+    case 'not_public':
+      return new GitLabError(
+        'refused',
+        'The GitLab host resolves to a private, loopback or otherwise non-public address; list it in QUALOR_SCM_INTERNAL_HOSTS',
+        { reason: 'not_public' },
+      );
+    case 'refused_address':
+      return new GitLabError(
+        'refused',
+        'The GitLab host resolves to a link-local, cloud metadata or loopback address',
+        { reason: 'not_public' },
+      );
+    case 'unresolved':
+      return new GitLabError('transient', 'The GitLab host could not be resolved', {
+        reason: 'unresolved',
+      });
+    case 'too_large':
+      return new GitLabError('bad_answer', "GitLab's answer was not understood");
+    case 'timeout':
+    case 'connect_timeout':
+      return new GitLabError('transient', 'GitLab did not answer within 10 s', {
+        reason: 'timeout',
+      });
+    default:
+      return new GitLabError(
+        'transient',
+        failed.code
+          ? `GitLab could not be reached (${failed.code})`
+          : 'GitLab could not be reached',
+        { reason: 'unreachable' },
+      );
+  }
+}
+
 /**
  * GitLab REST v4 (scm.md §4.3), through {@link outboundRequest}: the connection's base URL only,
  * the SSRF rules of ruling W3 unless the host is listed in `QUALOR_SCM_INTERNAL_HOSTS`, 10 s per
@@ -360,7 +400,7 @@ export class GitLabClient {
     return `${this.projectPath(ref)}/merge_requests/${iid}`;
   }
 
-  private send(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: unknown) {
+  private send(method: GitLabMethod, url: string, body?: unknown) {
     if (this.requestCount >= this.maxRequests) {
       throw new GitLabError('budget', `More than ${this.maxRequests} GitLab requests in one job`);
     }
@@ -412,58 +452,25 @@ export class GitLabClient {
     }
   }
 
+  /** Sends a request; a GET that a moved project redirects is sent once more, to its new place. */
+  private async sendFollowing(method: GitLabMethod, path: string, body: unknown) {
+    const url = `${this.#connection.baseUrl}/api/v4${path}`;
+    const result = await this.send(method, url, body);
+    if (method !== 'GET' || result.kind === 'failed') return result;
+    // A renamed or moved project answers 301 with its numeric id: follow once, on this GitLab only.
+    const moved = this.movedProject(result.status, result.headers.location, url);
+    return moved ? this.send(method, moved, body) : result;
+  }
+
   /** `forbidden` is the text of a 403 ({@link GITLAB_FORBIDDEN}), which says what was refused. */
   private async call(
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    method: GitLabMethod,
     path: string,
     body?: unknown,
     forbidden: string = GITLAB_FORBIDDEN.request,
   ): Promise<{ status: number; headers: IncomingHttpHeaders; json: unknown }> {
-    let url = `${this.#connection.baseUrl}/api/v4${path}`;
-    let result = await this.send(method, url, body);
-    if (method === 'GET' && result.kind !== 'failed') {
-      // A renamed or moved project answers 301 with its numeric id: follow once, on this GitLab only.
-      const moved = this.movedProject(result.status, result.headers.location, url);
-      if (moved) {
-        url = moved;
-        result = await this.send(method, url, body);
-      }
-    }
-    if (result.kind === 'failed') {
-      switch (result.cause) {
-        case 'not_public':
-          throw new GitLabError(
-            'refused',
-            'The GitLab host resolves to a private, loopback or otherwise non-public address; list it in QUALOR_SCM_INTERNAL_HOSTS',
-            { reason: 'not_public' },
-          );
-        case 'refused_address':
-          throw new GitLabError(
-            'refused',
-            'The GitLab host resolves to a link-local, cloud metadata or loopback address',
-            { reason: 'not_public' },
-          );
-        case 'unresolved':
-          throw new GitLabError('transient', 'The GitLab host could not be resolved', {
-            reason: 'unresolved',
-          });
-        case 'too_large':
-          throw new GitLabError('bad_answer', "GitLab's answer was not understood");
-        case 'timeout':
-        case 'connect_timeout':
-          throw new GitLabError('transient', 'GitLab did not answer within 10 s', {
-            reason: 'timeout',
-          });
-        default:
-          throw new GitLabError(
-            'transient',
-            result.code
-              ? `GitLab could not be reached (${result.code})`
-              : 'GitLab could not be reached',
-            { reason: 'unreachable' },
-          );
-      }
-    }
+    const result = await this.sendFollowing(method, path, body);
+    if (result.kind === 'failed') throw transportError(result);
     const { status, headers } = result;
     if (status >= 200 && status < 300) {
       if (result.body.length === 0) return { status, headers, json: null };
