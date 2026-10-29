@@ -986,8 +986,8 @@ documentation link opens it: on the issue page, in the rules list, and on the ru
 request and pull request comments.
 
 The engine's version in a scan names the rules release, for example
-`1.30.0 + qualor-rules 2026.10.5`. When the Roslyn taint engine analysed only C# files, it is
-`qualor-taint 2026.10.5 + qualor-rules 2026.10.5`.
+`1.30.0 + qualor-rules 2026.10.6`. When the Roslyn taint engine analysed only C# files, it is
+`qualor-taint 2026.10.6 + qualor-rules 2026.10.6`.
 
 ### Settings
 

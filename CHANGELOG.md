@@ -8,6 +8,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ### Fixed
 
+- Qualor's security rules report SQL and NoSQL injection in TypeScript calls with type arguments,
+  such as `await pool.query<Row>(sql)`, which they missed. The images pin qualor-rules 2026.10.6.
 - On an issue's page, the file's line number stays whole instead of breaking inside it, and the
   project's Issues tab counts and opens the issues of the merge request the page shows rather than
   always the main branch's. The issues list does the same for `?branch=`.

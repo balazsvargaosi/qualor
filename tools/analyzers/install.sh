@@ -63,8 +63,8 @@ FINDSECBUGS_SHA256=6fa340344fa433ff46c2985dab1010e8bc739f9395c983594a5240095e92a
 # release of the qualor-rules repository, unless tools/analyzers/qualor-rules/ (git-ignored) holds
 # qualor-rules-$QUALOR_RULES_VERSION.tar.gz; release builds and the real-tool tests require it.
 # A bump re-runs the fixtures (fixtures/qualor-security) and the real-tool tests in the toolbox.
-QUALOR_RULES_VERSION=2026.10.5
-QUALOR_RULES_SHA256=cf99237b5fbd68eb9b1342fcad3a6e30807621a19def2d6c3efdadec05426fe3
+QUALOR_RULES_VERSION=2026.10.6
+QUALOR_RULES_SHA256=dccb4cbd894e6352e51f5d7641b7ffac1db230ca7cef9816648cef14b845eaf9
 QUALOR_RULES_URL=https://github.com/qualor-dev/qualor-rules/releases/download/v$QUALOR_RULES_VERSION/qualor-rules-$QUALOR_RULES_VERSION.tar.gz
 # SwiftLint (plan 8F), the Swift linter of the `swiftlint` engine. The release zip holds a
 # dynamically linked `swiftlint` (it needs the Swift runtime and glibc 2.38, neither in bookworm)

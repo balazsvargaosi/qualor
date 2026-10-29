@@ -92,7 +92,7 @@ image is pinned by digest.
 | OpenGrep                   | 1.30.0                                                | Qualor's security rules and your own rule files      |
 | Gitleaks                   | 8.30.1                                                | secrets                                              |
 | Trivy                      | 0.74.0, with a snapshot of its vulnerability database | dependencies                                         |
-| qualor-rules               | 2026.10.5                                             | Qualor's security rules                              |
+| qualor-rules               | 2026.10.6                                             | Qualor's security rules                              |
 
 The project's own ESLint runs on the bundled Node.js 22.23.4 (with npm and corepack). PMD, SpotBugs
 and detekt run on the Eclipse Temurin JRE 17.0.20+8. git is configured with `safe.directory '*'`,
