@@ -32,6 +32,12 @@ All notable changes to Qualor are listed here, newest first. The format follows
 - A table that scrolls sideways can be reached and scrolled from the keyboard, and a screen reader
   announces it by the name of its panel or table.
 
+### Security
+
+- Dependencies: `nodemailer` 10.1.4, `fast-uri` 4.2.3 and `ip-address` 10.7.5 in the server, and
+  `fast-uri` 3.1.9 in the scanner's HTML and CSS linters, which fix published advisories in these
+  packages.
+
 ## [0.12.0] - 2026-10-28
 
 ### Added

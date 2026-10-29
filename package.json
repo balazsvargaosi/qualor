@@ -14,6 +14,7 @@
       "@modelcontextprotocol/server": "2.3.0",
       "@tree-sitter-grammars/tree-sitter-kotlin>npm-check-updates": "-",
       "@xmldom/xmldom": "0.8.15",
+      "smtp-server>nodemailer": "10.1.4",
       "source-map-js": "1.2.2",
       "undici@^6": "6.29.1",
       "undici@^8": "8.12.3",
