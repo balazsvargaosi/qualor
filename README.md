@@ -81,7 +81,7 @@ Then create a project and a CI token: see [Quick start](docs/guide/quick-start.m
 ## Scan in CI
 
 Set `QUALOR_URL` and `QUALOR_TOKEN` (masked) as CI variables. The scanner image is
-`qualor/scanner:<tag>`, for example `0.12` or `0.12.0`.
+`qualor/scanner:<tag>`, for example `0.12` or `0.12.1`.
 
 **GitLab**, with the CI/CD component:
 

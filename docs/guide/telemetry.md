@@ -36,7 +36,7 @@ The whole report, as an example:
 {
   "schema": 2,
   "installationId": "3f0c9a52-6d1e-4c8b-9f0a-2b7d1e5c4a91",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "edition": "community",
   "platform": { "os": "linux", "arch": "x64", "node": "22.11.0", "runtime": "docker" },
   "database": "embedded",

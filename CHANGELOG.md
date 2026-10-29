@@ -6,6 +6,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-29
+
 ### Fixed
 
 - Qualor's security rules report SQL and NoSQL injection in TypeScript calls with type arguments,
