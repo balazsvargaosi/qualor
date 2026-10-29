@@ -93,6 +93,9 @@ async function save(fixture: { whenStable(): Promise<unknown> }, root: HTMLEleme
 }
 
 describe('LicensePolicyPage (6M §8)', () => {
+  // OrgContext keeps the chosen organization in localStorage; the next spec must not inherit it.
+  afterEach(() => localStorage.clear());
+
   it("shows the organisation's stored policy", async () => {
     const server = setup();
     FakeLicensePolicy.install(server, { policies: { [ORG_ID]: STORED } });
@@ -346,6 +349,9 @@ describe('LicensePolicyPage (6M §8)', () => {
 });
 
 describe('SettingsPage: Licence policy (6M §8)', () => {
+  // OrgContext keeps the chosen organization in localStorage; the next spec must not inherit it.
+  afterEach(() => localStorage.clear());
+
   async function labels(who: Who, features?: string[]): Promise<(string | undefined)[]> {
     setup(who, features);
     const fixture = TestBed.createComponent(SettingsPage);

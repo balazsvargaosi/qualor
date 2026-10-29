@@ -89,6 +89,9 @@ function upload(root: HTMLElement, selector: string, file: File): void {
 }
 
 describe('GitHubPage (github.md §2)', () => {
+  // OrgContext keeps the chosen organization in localStorage; the next spec must not inherit it.
+  afterEach(() => localStorage.clear());
+
   it('points to Repositories for the mapping of projects to repositories', async () => {
     setup();
     const { root } = await render();

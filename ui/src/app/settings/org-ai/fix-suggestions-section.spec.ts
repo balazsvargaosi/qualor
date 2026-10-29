@@ -124,6 +124,9 @@ async function save(fixture: Fixture, root: HTMLElement) {
 }
 
 describe('FixSuggestionsSection (AI settings redesign, Task 6)', () => {
+  // OrgContext keeps the chosen organization in localStorage; the next spec must not inherit it.
+  afterEach(() => localStorage.clear());
+
   it('shows the stored settings under its title, with the switch named by its name and described by its help', async () => {
     setup({
       organizations: { [ORG_ID]: { enabled: true, minSeverity: 'medium', maxPerAnalysis: 4 } },

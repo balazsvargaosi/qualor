@@ -246,6 +246,9 @@ async function setFold(fixture: Fixture, root: HTMLElement, open: boolean) {
 }
 
 describe('AiReviewPage (AI settings redesign, Task 5)', () => {
+  // OrgContext keeps the chosen organization in localStorage; the next spec must not inherit it.
+  afterEach(() => localStorage.clear());
+
   it('opens with the status: off, what the selection would review, and the button to switch on', async () => {
     setup('orgAdmin', { organizations: { [ORG_ID]: { projectIds: ALL_THREE } } });
     const { root } = await render();
